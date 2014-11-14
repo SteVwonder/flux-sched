@@ -22,7 +22,7 @@ typedef struct {
 	double time_limit;
 	int nnodes;
 	int ncpus;
-	double io_rate;
+	int64_t io_rate;
 	kvsdir_t kvs_dir;
 } job_t;
 

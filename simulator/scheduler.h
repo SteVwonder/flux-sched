@@ -77,6 +77,7 @@ typedef struct {
 typedef struct {
     uint64_t nnodes; /*!< num of nodes requested by a job */
     uint32_t ncores; /*!< num of cores requested by a job */
+    uint64_t io_rate; //amount of io bw (in MB) requested by a job
 } flux_req_t;
 
 

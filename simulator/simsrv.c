@@ -154,6 +154,8 @@ static int handle_next_event (ctx_t *ctx){
 	}
 	flux_log (ctx->h, LOG_INFO, "Triggering %s.  Curr sim time: %f", mod_name, sim_state->sim_time);
 
+	//usleep (1500);  //this sleep used to fix a race-condition, not sure if still necessary
+
 	*min_event_time = -1;
 	rc = send_trigger (ctx->h, mod_name, sim_state);
 
