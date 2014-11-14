@@ -187,7 +187,7 @@ int put_job_in_kvs (job_t *job)
 	if (!kvsdir_exists (job->kvs_dir, "ncpus"))
 		kvsdir_put_int (job->kvs_dir, "ncpus", job->ncpus);
 	if (!kvsdir_exists (job->kvs_dir, "io_rate"))
-		kvsdir_put_double (job->kvs_dir, "io_rate", job->io_rate);
+		kvsdir_put_int64 (job->kvs_dir, "io_rate", job->io_rate);
 
 	flux_t h = kvsdir_handle (job->kvs_dir);
 	kvs_commit (h);
@@ -219,7 +219,7 @@ job_t *pull_job_from_kvs (kvsdir_t kvsdir)
 	kvsdir_get_double (job->kvs_dir, "time_limit", &job->time_limit);
 	kvsdir_get_int (job->kvs_dir, "nnodes", &job->nnodes);
 	kvsdir_get_int (job->kvs_dir, "ncpus", &job->ncpus);
-	kvsdir_get_double (job->kvs_dir, "io_rate", &job->io_rate);
+	kvsdir_get_int64 (job->kvs_dir, "io_rate", &job->io_rate);
 
 	return job;
 }

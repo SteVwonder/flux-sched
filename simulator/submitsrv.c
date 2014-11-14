@@ -99,7 +99,7 @@ int insert_into_job (job_t *job, char *column_name, char *value)
 		job->execution_time = convert_time_to_sec (value);
 	}
 	else if (!strncmp (column_name, "IORate(MB)", 10)){ //ignore the \n at the end using strncmp
-		job->io_rate = atoi (value) * 1024 * 1024; //convert MB to bytes
+		job->io_rate = atol (value);
 	}
 	return 0;
 }
