@@ -36,10 +36,9 @@ unload:
 	$(FLUX) module load sim_sched
 	$(FLUX) module load submit
 	$(FLUX) module load sim
-	
+
 check:
 	echo "This is an empty depenendency"
-
 
 clean:
 	rm -f *.a *.o *.so
