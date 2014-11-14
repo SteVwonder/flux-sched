@@ -1,12 +1,12 @@
 #!/bin/bash
 
-#	--logdest=cmbd.log \
+#barrier,kvs,log,hb,job,event,log,sim,sim_exec
+#-M modctl, -M api, -M kvs, -M sim_sched, -M submit
+#    kvs:conf.hb.period-sec=1.5 \
+#    kvs:conf.log.reduction-timeout-msec=100 \
+#    kvs:conf.log.circular-buffer-entries=100000 \
+#    kvs:conf.log.persist-level=info \
+#	sim_sched:rdl-conf=conf/cab.lua \
+#	submit:job-csv=simulator/job_data/2014-06-01.csv'
 
-./cmbd --verbose --rank=0 --size=1 --hostlist=localhost \
-    --plugins=modctl,api,barrier,kvs,log,hb,job,event,log,sim,submit,sim_sched,sim_exec \
-    kvs:conf.hb.period-sec=1.5 \
-    kvs:conf.log.reduction-timeout-msec=100 \
-    kvs:conf.log.circular-buffer-entries=100000 \
-    kvs:conf.log.persist-level=info \
-	sim_sched:rdl-conf=conf/cab.lua \
-	submit:job-csv=simulator/job_data/2014-06-01.csv
+$HOME/Repositories/flux/flux-core/src/cmd/flux start --size=1 --cmbd-opts="--module=api,--module=kvs,--module=barrier,--module=modctl,--module=api,--module=sim,--module=sim_sched,--modopt=sim_sched:rdl-conf=../conf/hype.lua,--module=sim_exec,--module=submit,--modopt=submit:job-csv=job_data/2014-06-01.csv"
