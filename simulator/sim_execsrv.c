@@ -410,7 +410,7 @@ static int run_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	ctx_t *ctx = (ctx_t *) arg;
 	int *jobid = (int *) malloc (sizeof (int));
 
-	if (flux_msg_decode (*zmsg, &tag, &o) < 0 || o == NULL){
+	if (flux_msg_decode (*zmsg, &tag, &o) < 0){
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
 		Jput (o);
 		return -1;
