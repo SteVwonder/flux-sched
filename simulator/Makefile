@@ -3,8 +3,8 @@ include ../Makefile.inc
 CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS)
 LIBS = $(FLUX_LIBS) $(RDL_LIBS)
 
-CONF=../conf/hype.lua
-JOBDATA=job_data/2014-06-01.csv
+CONF=../conf/hype-io.lua
+JOBDATA=job_data/hype.csv
 
 COMMON_OBJS = simulator.o xzmalloc.o log.o jsonutil.o
 
