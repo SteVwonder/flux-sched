@@ -1722,12 +1722,14 @@ int mod_main (flux_t p, zhash_t *args)
     }
 
     if ((r = rdl_resource_get (rdl, resource))) {
+        flux_log (h, LOG_DEBUG, "setting up rdl resources");
         if (idlize_resources (r)) {
             flux_log (h, LOG_ERR, "failed to idlize %s: %s", resource,
                       strerror (errno));
             rc = -1;
             goto ret;
         }
+        flux_log (h, LOG_DEBUG, "successfully set up rdl resources");
     } else {
         flux_log (h, LOG_ERR, "failed to get %s: %s", resource,
                   strerror (errno));
@@ -1784,6 +1786,7 @@ int mod_main (flux_t p, zhash_t *args)
 
 skip_for_sim:
 	send_alive_request (h, module_name);
+    flux_log (h, LOG_DEBUG, "sent alive request");
 
     if (flux_reactor_start (h) < 0) {
         flux_log (h, LOG_ERR,
