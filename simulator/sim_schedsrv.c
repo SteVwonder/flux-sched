@@ -1022,12 +1022,13 @@ int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job, bool clear_
                 job->alloc.nnodes  = 0;
                 job->alloc.ncores  = 0;
 
-				job->rdl = rdl_accumulator_copy (a);
                 if (rdl_accumulator_is_empty(a)) {
                   flux_log (h, LOG_DEBUG, "no resources found in accumulator");
                 } else {
+                  job->rdl = rdl_accumulator_copy (a);
                   //deallocate_bandwidth (rdl, resource, job);
                   release_resources (rdl, resource, job);
+                  rdl_destroy (job->rdl);
                 }
 			}
 			rdl_accumulator_destroy (a);
