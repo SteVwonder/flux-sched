@@ -283,7 +283,7 @@ static int advance_time (ctx_t *ctx)
 
 //Take all of the scheduled job eventst that were queued up while we weren't running
 //and add those jobs to the set of running jobs
-//This also requires switching their state in the kvs (to trigger events in the scheudler)
+//This also requires switching their state in the kvs (to trigger events in the scheduler)
 static int handle_queued_events (ctx_t *ctx)
 {
 	job_t *job = NULL;
