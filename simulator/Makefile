@@ -26,6 +26,10 @@ sim_exec.so: sim_execsrv.o $(COMMON_OBJS)
 
 start:
 	$(FLUX) start
+callgrind:
+	valgrind --tool=callgrind --trace-children=yes $(FLUX) start
+valgrind:
+	valgrind --log-file="%p.valgrind.out" --tool=memcheck --leak-check=full --show-leak-kinds=all --trace-children=yes $(FLUX) start
 load:
 	$(FLUX) module load ./sim.so
 	$(FLUX) module load ./submit.so job-csv=$(JOBDATA)
