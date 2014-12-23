@@ -162,6 +162,8 @@ int parse_job_csv (flux_t h, char *filename, zlist_t *jobs)
 		zlist_append (jobs, curr_job);
 		fget_rc = fgets (curr_line, MAX_LINE_LEN, fp);
 		curr_column = zlist_first (header);
+        if (curr_line[0] == '#') //reached a comment line, stop processing file
+          break;
 	}
 	zlist_sort (jobs, compare_job_t);
 
