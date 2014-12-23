@@ -368,7 +368,7 @@ static void rdl_resource_destroy_nolist (struct resource *r)
 {
     if (r->rdl->L) {
         luaL_unref (r->rdl->L, LUA_GLOBALSINDEX, r->lua_ref);
-        lua_gc (r->rdl->L, LUA_GCCOLLECT, 0);
+        //lua_gc (r->rdl->L, LUA_GCCOLLECT, 0);
         r->rdl = NULL;
     }
     free (r->name);
@@ -873,7 +873,7 @@ void rdl_accumulator_destroy (struct rdl_accumulator *a)
 
     if (a->rdl) {
         luaL_unref (a->rdl->L, LUA_GLOBALSINDEX, a->lua_ref);
-        lua_gc (a->rdl->L, LUA_GCCOLLECT, 0);
+        //lua_gc (a->rdl->L, LUA_GCCOLLECT, 0);
         a->rdl = NULL;
     }
     free (a);
