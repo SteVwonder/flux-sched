@@ -13,13 +13,13 @@ BUILD = sim.so submit.so sim_sched.so sim_exec.so
 all:  $(BUILD)
 
 sim.so: simsrv.o $(COMMON_OBJS)
-	$(CC) -shared -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
 submit.so: submitsrv.o $(COMMON_OBJS)
-	$(CC) -shared -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
 sim_sched.so: sim_schedsrv.o $(COMMON_OBJS)
-	$(CC) -shared -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
 sim_exec.so: sim_execsrv.o $(COMMON_OBJS)
-	$(CC) -shared -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
 
 # N.B. "race fix" in job module is conditionally disabled
 # turn it on there if needed until there is a proper fix for the race
