@@ -372,7 +372,6 @@ static int start_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
 	JSON o;
-	const char *json_string;
 	char *tag;
 	double next_termination;
 	ctx_t *ctx = (ctx_t *) arg;
@@ -384,8 +383,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	}
 
 //Logging
-	json_string = Jtostr (o);
-	flux_log(h, LOG_DEBUG, "received a trigger (%s): %s", tag, json_string);
+	flux_log(h, LOG_DEBUG, "received a trigger (%s)", tag);
 
 //Handle the trigger
 	ctx->sim_state = json_to_sim_state (o);

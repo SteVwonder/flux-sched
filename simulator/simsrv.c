@@ -197,8 +197,9 @@ static int join_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 		return -1;
 	}
 
-	//TODO: this is horribly hackish, improve the handshake to avoid this hardcoded # of modules
-	//maybe use a timeout?
+	//TODO: this is horribly hackish, improve the handshake to avoid
+	//this hardcoded # of modules. maybe use a timeout?  ZMQ provides
+	//support for polling etc with timeouts, should try that
 	static int num_modules = 3;
 	num_modules--;
 	if (num_modules <= 0){
@@ -266,6 +267,12 @@ static int check_for_new_timers (const char *key, void *item, void *argument)
 
 static void copy_new_state_data (ctx_t *ctx, sim_state_t *curr_sim_state, sim_state_t *reply_sim_state)
 {
+    char *temp_swap_ptr;
+
+    temp_swap_ptr = curr_sim_state->rdl_string;
+    curr_sim_state->rdl_string = reply_sim_state->rdl_string;
+    reply_sim_state->rdl_string = temp_swap_ptr;
+
 	if (reply_sim_state->sim_time > curr_sim_state->sim_time)
 		curr_sim_state->sim_time = reply_sim_state->sim_time;
 

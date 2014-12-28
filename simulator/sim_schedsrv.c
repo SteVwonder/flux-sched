@@ -128,60 +128,11 @@ static void queue_timer_change (const char* module)
  *         Resource Description Library Setup
  *
  ****************************************************************/
-/*
-static void f_err (flux_t h, const char *msg, ...)
-{
-    va_list ap;
-    va_start (ap, msg);
-    flux_vlog (h, LOG_ERR, msg, ap);
-    va_end (ap);
-}
-
-static void setup_rdl_lua (void)
-{
-    flux_log (h, LOG_DEBUG, "LUA_PATH %s", getenv ("LUA_PATH"));
-    flux_log (h, LOG_DEBUG, "LUA_CPATH %s", getenv ("LUA_CPATH"));
-
-    rdllib_set_default_errf (h, (rdl_err_f)(&f_err));
-}
-*/
-
-#if 0
-/* XXX: Borrowed from flux.c and subject to change... */
-static void setup_rdl_lua (void)
-{
-    char *s;
-    char  exe_path [MAXPATHLEN];
-    char *exe_dir;
-    char *rdllib;
-
-    memset (exe_path, 0, MAXPATHLEN);
-    if (readlink ("/proc/self/exe", exe_path, MAXPATHLEN - 1) < 0)
-        err_exit ("readlink (/proc/self/exe)");
-    exe_dir = dirname (exe_path);
-
-    s = getenv ("LUA_CPATH");
-    setenvf ("LUA_CPATH", 1, "%s/dlua/?.so;%s", exe_dir, s ? s : ";");
-    s = getenv ("LUA_PATH");
-    setenvf ("LUA_PATH", 1, "%s/dlua/?.lua;%s", exe_dir, s ? s : ";");
-
-    flux_log (h, LOG_DEBUG, "LUA_PATH %s", getenv ("LUA_PATH"));
-    flux_log (h, LOG_DEBUG, "LUA_CPATH %s", getenv ("LUA_CPATH"));
-
-    asprintf (&rdllib, "%s/lib/librdl.so", exe_dir);
-    if (!dlopen (rdllib, RTLD_NOW | RTLD_GLOBAL)) {
-        flux_log (h, LOG_ERR, "dlopen %s failed", rdllib);
-        return;
-    }
-    free(rdllib);
-
-    rdllib_set_default_errf (h, (rdl_err_f)(&f_err));
-}
-#endif
 
 //Reply back to the sim module with the updated sim state (in JSON form)
 int send_reply_request (flux_t h, sim_state_t *sim_state)
 {
+  sim_state->rdl_string = rdl_serialize(rdl);
 	JSON o = sim_state_to_json (sim_state);
 	Jadd_bool (o, "event_finished", true);
 	if (flux_request_send (h, o, "%s", "sim.reply") < 0){
@@ -1688,13 +1639,14 @@ int mod_main (flux_t p, zhash_t *args)
         rc = -1;
         goto ret;
     }
-    //setup_rdl_lua ();
+
     if (!(l = rdllib_open ()) || !(rdl = rdl_loadfile (l, path))) {
         flux_log (h, LOG_ERR, "failed to load resources from %s: %s",
                   path, strerror (errno));
         rc = -1;
         goto ret;
     }
+
     if (!(resource = zhash_lookup (args, "rdl-resource"))) {
         flux_log (h, LOG_INFO, "using default rdl resource");
         resource = "default";
