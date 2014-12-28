@@ -8,6 +8,7 @@
 typedef struct {
   double sim_time;
   zhash_t *timers;
+  char *rdl_string;
 } sim_state_t;
 
 typedef struct {
@@ -38,8 +39,14 @@ void free_job (job_t *job);
 job_t *blank_job ();
 int send_alive_request (flux_t h, const char* module_name);
 
-/*
-struct rdl *get_rdl (flux_t h, char *path);
-void close_rdl ();
-*/
 #endif /* SIMULATOR_H */
+
+
+
+
+
+
+
+
+
+

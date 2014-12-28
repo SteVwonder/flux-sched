@@ -291,7 +291,6 @@ static int start_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
 	JSON o;
-	const char *json_string;
 	sim_state_t *sim_state;
 
 	if (flux_json_request_decode (*zmsg, &o) < 0) {

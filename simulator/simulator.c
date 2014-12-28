@@ -38,16 +38,12 @@
 #include "simulator.h"
 #include "rdl.h"
 
-/*
-static struct rdllib *l = NULL;
-static struct rdl *rdl = NULL;
-*/
-
 sim_state_t *new_simstate ()
 {
 	sim_state_t *sim_state = (sim_state_t*) malloc (sizeof (sim_state_t));
 	sim_state->timers = zhash_new();
 	sim_state->sim_time = 0;
+    sim_state->rdl_string = NULL;
 	return sim_state;
 }
 
@@ -70,13 +66,13 @@ int set_freefn (const char *key, void *item, void *argument)
 void free_simstate (sim_state_t* sim_state)
 {
 	if (sim_state != NULL){
-		if (sim_state->timers != NULL){
+		if (sim_state->timers != NULL)
 			zhash_destroy (& (sim_state->timers));
-		}
+        free (sim_state->rdl_string);
 		free (sim_state);
-		return;
-	}
-	fprintf (stderr, "free_simstate called on a NULL pointer\n");
+	} else {
+      fprintf (stderr, "free_simstate called on a NULL pointer\n");
+    }
 }
 
 static int add_timers_to_json (const char *key, void *item, void *argument)
@@ -101,6 +97,8 @@ JSON sim_state_to_json (sim_state_t *sim_state)
 	//build the main json obg
 	Jadd_double (o, "sim_time", sim_state->sim_time);
 	Jadd_obj (o, "event_timers", event_timers);
+    if (sim_state->rdl_string != NULL)
+      Jadd_str (o, "rdl", sim_state->rdl_string);
 
 	return o;
 }
@@ -129,11 +127,15 @@ sim_state_t* json_to_sim_state(JSON o)
 {
 	sim_state_t *sim_state = new_simstate();
 	JSON event_timers;
+    const char* rdl_string;
 
 	Jget_double (o, "sim_time", &sim_state->sim_time);
 	if (Jget_obj (o, "event_timers", &event_timers)){
 		add_timers_to_hash (event_timers, sim_state->timers);
 	}
+	if (Jget_str (o, "rdl", &rdl_string)){
+      sim_state->rdl_string = strdup (rdl_string);
+    }
 
 	return sim_state;
 }
@@ -237,63 +239,3 @@ int send_alive_request (flux_t h, const char* module_name)
 	Jput (o);
 	return 0;
 }
-
-/*
-static void f_err (flux_t h, const char *msg, ...)
-{
-    va_list ap;
-    va_start (ap, msg);
-    flux_vlog (h, LOG_ERR, msg, ap);
-    va_end (ap);
-}
-
-static void setup_rdl (flux_t h)
-{
-    char *s;
-    char  exe_path [MAXPATHLEN];
-    char *exe_dir;
-    char *rdllib;
-
-    memset (exe_path, 0, MAXPATHLEN);
-    if (readlink ("/proc/self/exe", exe_path, MAXPATHLEN - 1) < 0)
-        err_exit ("readlink (/proc/self/exe)");
-    exe_dir = dirname (exe_path);
-
-    s = getenv ("LUA_CPATH");
-    setenvf ("LUA_CPATH", 1, "%s/dlua/?.so;%s", exe_dir, s ? s : ";");
-    s = getenv ("LUA_PATH");
-    setenvf ("LUA_PATH", 1, "%s/dlua/?.lua;%s", exe_dir, s ? s : ";");
-
-    flux_log (h, LOG_DEBUG, "LUA_PATH %s", getenv ("LUA_PATH"));
-    flux_log (h, LOG_DEBUG, "LUA_CPATH %s", getenv ("LUA_CPATH"));
-
-    asprintf (&rdllib, "%s/lib/librdl.so", exe_dir);
-    if (!dlopen (rdllib, RTLD_NOW | RTLD_GLOBAL)) {
-        flux_log (h, LOG_ERR, "dlopen %s failed", rdllib);
-        return;
-    }
-    free(rdllib);
-
-    rdllib_set_default_errf (h, (rdl_err_f)(&f_err));
-}
-
-struct rdl* get_rdl (flux_t h, char *path)
-{
-	if (rdl == NULL) {
-		setup_rdl (h);
-		if (!(l = rdllib_open ()) || !(rdl = rdl_loadfile (l, path))) {
-			flux_log (h, LOG_ERR, "failed to load resources from %s: %s",
-					  path, strerror (errno));
-			return NULL;
-		}
-	}
-	return rdl;
-}
-
-void close_rdl ()
-{
-	if (rdl != NULL) {
-		//rdllib_close (l);
-	}
-}
-*/
