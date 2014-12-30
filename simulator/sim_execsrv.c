@@ -28,6 +28,7 @@
 #include <string.h>
 #include <errno.h>
 #include <json.h>
+#include <float.h>
 #include <flux/core.h>
 
 #include "src/common/libutil/jsonutil.h"
@@ -40,12 +41,16 @@
 static const char const *module_name = "sim_exec";
 
 typedef struct {
-	sim_state_t *sim_state;
-	zlist_t *queued_events; //holds int *
-	zlist_t *running_jobs; //holds job_t *
-	flux_t h;
-	double prev_sim_time;
+  sim_state_t *sim_state;
+  zlist_t *queued_events; //holds int *
+  zlist_t *running_jobs; //holds job_t *
+  flux_t h;
+  double prev_sim_time;
+  struct rdllib *rdllib;
+  struct rdl *rdl;
 } ctx_t;
+
+static double determine_io_penalty (ctx_t *ctx, job_t *job);
 
 static void freectx (ctx_t *ctx)
 {
@@ -59,6 +64,8 @@ static void freectx (ctx_t *ctx)
 		free_job (zlist_pop (ctx->running_jobs));
 	zlist_destroy (&ctx->running_jobs);
 
+    rdllib_close (ctx->rdllib);
+    free (ctx->rdl);
     free (ctx);
 }
 
@@ -73,6 +80,8 @@ static ctx_t *getctx (flux_t h)
 		ctx->queued_events = zlist_new ();
 		ctx->running_jobs = zlist_new ();
 		ctx->prev_sim_time = 0;
+        ctx->rdllib = rdllib_open();
+        ctx->rdl = NULL;
         flux_aux_set (h, "simsrv", ctx, (FluxFreeFn)freectx);
     }
 
@@ -102,19 +111,27 @@ static double calc_curr_progress (job_t *job, double sim_time)
 }
 
 //Calculate when the next job is going to terminate assuming no new jobs are added
-static double determine_next_termination (ctx_t *ctx)
+static double determine_next_termination (ctx_t *ctx, double curr_time)
 {
 	double next_termination = -1;
 	double curr_termination = -1;
+    double projected_future_io_time, job_io_penalty, computation_time_remaining;
 	zlist_t *running_jobs = ctx->running_jobs;
 	job_t *job = zlist_first (running_jobs);
 
 	while (job != NULL){
-		curr_termination = job->start_time + job->execution_time + job->io_time;
-		if (curr_termination < next_termination || next_termination < 0){
-			next_termination = curr_termination;
-		}
-		job = zlist_next (running_jobs);
+        curr_termination = job->start_time + job->execution_time + job->io_time;
+        computation_time_remaining = job->execution_time - ((curr_time - job->start_time) - job->io_time);
+        job_io_penalty = determine_io_penalty(ctx, job);
+        projected_future_io_time = (computation_time_remaining) * job_io_penalty;
+        //fprintf (stderr, "%34s\n", "--determine_next_termination--");
+        //fprintf (stderr, "%4s|%10s|%10s|%10s|%10s|%10s|%10s\n", "id", "start_time", "exec_time", "io_time", "curr_term", "io_penalty", "proj_io_t");
+        //fprintf (stderr, "%4d|%10.1f|%10.1f|%10.1f|%10.1f|%10.1f|%10.1f\n", job->id,  job->start_time, job->execution_time, job->io_time, curr_termination, job_io_penalty, projected_future_io_time);
+        curr_termination += projected_future_io_time;
+        if (curr_termination < next_termination || next_termination < 0){
+            next_termination = curr_termination;
+        }
+        job = zlist_next (running_jobs);
 	}
 
 	return next_termination;
@@ -205,7 +222,7 @@ static int handle_completed_jobs (ctx_t *ctx)
 		if (curr_progress < 1){
 			zlist_append (running_jobs, job);
 		} else {
-			flux_log (ctx->h, LOG_ERR, "handle completed jobs found a completed job");
+			flux_log (ctx->h, LOG_ERR, "handle_completed_jobs found a completed job");
 			complete_job (ctx, job, sim_time);
 		}
 		num_jobs--;
@@ -228,18 +245,165 @@ static double curr_io_rate (zlist_t *running_jobs)
 }
 */
 
+static int64_t get_alloc_bandwidth (struct resource *r)
+{
+	int64_t alloc_bw;
+	if (rdl_resource_get_int (r, "alloc_bw", &alloc_bw) == 0)
+      return alloc_bw;
+    else { //something got messed up, set it to zero and return zero
+      rdl_resource_set_int (r, "alloc_bw", 0);
+      return 0;
+    }
+}
+
+static int64_t get_max_bandwidth (struct resource *r)
+{
+	int64_t max_bw;
+	rdl_resource_get_int (r, "max_bw", &max_bw);
+	return max_bw;
+}
+
+/*
+static int64_t get_avail_bandwidth (struct resource *r)
+{
+  return get_max_bandwidth(r) - get_alloc_bandwidth(r);
+}
+*/
+
+//Compare two resources based on their alloc bandwidth
+//Return true if they should be swapped
+//AKA r1 has more alloc bandwidth than r2
+bool compare_resource_alloc_bw (void *item1, void *item2)
+{
+  struct resource *r1 = (struct resource*) item1;
+  struct resource *r2 = (struct resource*) item2;
+  return get_alloc_bandwidth(r1) > get_alloc_bandwidth(r2);
+}
+
+static double determine_job_min_bandwidth_helper(struct resource *r, double curr_min_bandwidth, char* jobtag_char)
+{
+  struct resource *curr_child;
+  double total_requested_bandwidth, child_min_bandwidth, curr_average_bandwidth, 
+      child_alloc_bandwidth, total_used_bandwidth, this_max_bandwidth, num_children;
+  JSON o, tags, jobtag_json, hierarchy;
+  zlist_t *child_list = zlist_new ();
+  const char *type;
+
+  o = rdl_resource_json(r);
+  Jget_obj (o, "hierarchy", &hierarchy);
+  //fprintf (stderr, "Entering determine job bw for %s\n", Jtostr(hierarchy));
+  Jput (hierarchy);
+  Jput (o);
+
+  //Check if leaf node in hierarchy
+  rdl_resource_iterator_reset (r);
+  curr_child = rdl_resource_next_child (r);
+  if (curr_child == NULL) {
+    o = rdl_resource_json(r);
+    Jget_obj(o, "tags", &tags);
+    if (!Jget_obj(tags, jobtag_char, &jobtag_json)) {
+      curr_min_bandwidth = DBL_MAX;
+    } //else, we want to return curr_min_bandwidth, continue through to cleanup
+    else {
+        Jget_str (o, "type", &type);
+        //fprintf (stderr, "Found leaf node, part of job. type: %s, BW: %g, tag: %s\n", type, curr_min_bandwidth, Jtostr(jobtag_json));
+    }
+    Jput(o);
+  }
+
+  //Sum the bandwidths of the parent's children
+  while (curr_child != NULL) {
+      o = rdl_resource_json (curr_child);
+      Jget_str (o, "type", &type);
+      //fprintf (stderr, "Type: %s\n", type);
+      if (!strcmp (type, "memory") == 0) {
+          total_requested_bandwidth += get_alloc_bandwidth (curr_child);
+          zlist_append (child_list, curr_child);
+      }
+      Jput (o);
+      curr_child = rdl_resource_next_child (r);
+  }
+  rdl_resource_iterator_reset (r);
+
+  //Sort child list based on alloc bw
+  zlist_sort (child_list, compare_resource_alloc_bw);
+  
+  //o = rdl_resource_json(r);
+  //const char *resource_string = Jtostr(o);
+  //Loop over all of the children
+  //fprintf (stderr, "Curr min bandwidth: %g - %s\n", curr_min_bandwidth, resource_string);
+  this_max_bandwidth = get_max_bandwidth (r);
+  total_used_bandwidth = (total_requested_bandwidth > this_max_bandwidth) ? this_max_bandwidth : total_requested_bandwidth;
+  //fprintf (stderr, "Total_requested_bw: %g, this_max_bw : %g, total_used_bw: %g\n", total_requested_bandwidth, this_max_bandwidth, total_used_bandwidth);
+  while (zlist_size (child_list) > 0) {
+    //Determine the amount of bandwidth to allocate to each child
+      num_children = zlist_size (child_list);
+    curr_average_bandwidth = (total_used_bandwidth / num_children);
+    curr_child = (struct resource*) zlist_pop (child_list);
+    child_alloc_bandwidth = get_alloc_bandwidth(curr_child);
+    //fprintf (stderr, "%34s", "--determine_job_min_bw_helper--\n");
+    //fprintf (stderr, "%10s|%10s|%10s|%10s\n", "avg_bw", "total_used", "size", "child_alloc_bw");
+    //fprintf (stderr, "%10g|%10g|%10g|%10g\n", curr_average_bandwidth, total_used_bandwidth, num_children, child_alloc_bandwidth);
+    if (child_alloc_bandwidth > 0) {
+      if (child_alloc_bandwidth > curr_average_bandwidth)
+        child_alloc_bandwidth = curr_average_bandwidth;
+
+      //Subtract the allocated bandwidth from the parent's total
+      total_used_bandwidth -= child_alloc_bandwidth;
+      //Recurse on the child
+      child_min_bandwidth = determine_job_min_bandwidth_helper(curr_child, child_alloc_bandwidth, jobtag_char);
+      //fprintf (stderr, "Child min bandwidth: %g\n", child_min_bandwidth);
+      if (child_min_bandwidth == 0) {
+        JSON child_json = rdl_resource_json (curr_child);
+        //fprintf (stderr, "child with 0 min bw: %s\n", Jtostr(child_json));
+        Jput (child_json);
+      } else {
+        //Set the min if the child's min is lower
+        curr_min_bandwidth = (child_min_bandwidth < curr_min_bandwidth) ? child_min_bandwidth : curr_min_bandwidth;
+        //fprintf (stderr, "Curr min bandwidth: %g - %s\n", curr_min_bandwidth, resource_string);
+      }
+    }
+    rdl_resource_destroy (curr_child);
+  }
+  //Jput(o);
+  //fprintf (stderr, "Remaining bandwidth (0?): %g\n", total_requested_bandwidth);
+  
+  //Cleanup
+  zlist_destroy (&child_list); //no need to rdl_resource destroy, done in above loop
+
+  return curr_min_bandwidth;
+}
+
+//Possible TODO: only call this function 1 time for all jobs (optimization)
+//Could return hash table of ids -> min bandwidth
+static double determine_job_min_bandwidth(job_t *job, struct rdl *rdl) {
+  char *jobtag;
+  struct resource *r = rdl_resource_get (rdl, "default");
+  asprintf (&jobtag, "lwj.%d", job->id);
+  return determine_job_min_bandwidth_helper (r, job->io_rate, jobtag);
+}
+
 //Get the resource tree of the job
 //Walk the tree and determine the most constrained resource (switch/pfs)
 //
-static double determine_io_penalty (job_t *job, struct rdl *rdl)
+static double determine_io_penalty (ctx_t *ctx, job_t *job)
 {
-	//Get the needed drain rate of the job (job->io_rate)
+  double io_penalty, min_bandwidth, job_bandwidth;
 
-	//Get the bottleneck in the path between the job and the pfs
+  //Get the needed drain rate of the job (job->io_rate)
+  job_bandwidth = (double) job->io_rate;
 
-	//Determine the penalty (needed rate / actual rate) - 1
+  //Get the minimum bandwidth between a resource in the job and the pfs
+  min_bandwidth = determine_job_min_bandwidth(job, ctx->rdl);
 
-	return 0;
+  //Determine the penalty (needed rate / actual rate) - 1
+  io_penalty = (job_bandwidth / min_bandwidth) - 1;
+
+  //fprintf (stderr, "%34s\n", "--determine_io_penalty--");
+  //fprintf (stderr, "%4s|%10s|%10s|%10s\n", "id", "job_bw", "min_bw", "io_penalty");
+  //fprintf (stderr, "%4d|%10g|%10g|%10g\n", job->id,  job_bandwidth, min_bandwidth, io_penalty);
+
+  return io_penalty;
 }
 
 //Model io contention that occurred between previous event and the curr sim time
@@ -251,23 +415,29 @@ static int advance_time (ctx_t *ctx)
 
 	job_t *job = NULL;
 	int num_jobs = -1;
-	double next_event = -1;
-	double next_termination = -1;
-	double curr_progress = -1;
-	double io_penalty = 0;
+	double next_event = -1, next_termination = -1, curr_progress = -1,
+        io_penalty = 0, io_percentage = 0;
 
 	//flux_t h = ctx->h;
 	zlist_t *running_jobs = ctx->running_jobs;
 	double sim_time = ctx->sim_state->sim_time;
 
 	while (curr_time < sim_time) {
-		next_termination = determine_next_termination (ctx);
-		next_event = sim_time < next_termination ? sim_time : next_termination; //min of the two
 		num_jobs = zlist_size (running_jobs);
+        if (num_jobs == 0) {
+            curr_time = sim_time;
+            break;
+        }
+        next_termination = determine_next_termination (ctx, curr_time);
+		next_event = sim_time < next_termination ? sim_time : next_termination; //min of the two
+        //fprintf (stderr, "%34s\n", "----advance time----");
+        //fprintf (stderr, "%22s|%22s|%10s|%10s|%10s\n", "curr_time", "sim_time", "next_term", "next_event", "num_jobs");
+        //fprintf (stderr, "%22.12f|%22.12f|%10.1f|%10.1f|%10d\n", curr_time,  sim_time, next_termination, next_event, num_jobs);
 		while (num_jobs > 0) {
 			job = zlist_pop (running_jobs);
-			io_penalty = determine_io_penalty (job, NULL);
-			job->io_time += (next_event - curr_time) * io_penalty;
+			io_penalty = determine_io_penalty (ctx, job);
+            io_percentage = (io_penalty / (io_penalty + 1));
+			job->io_time += (next_event - curr_time) * io_percentage;
 			curr_progress = calc_curr_progress (job, next_event);
 			if (curr_progress < 1)
 				zlist_append (running_jobs, job);
@@ -387,10 +557,13 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 //Handle the trigger
 	ctx->sim_state = json_to_sim_state (o);
+    rdllib_close(ctx->rdllib);
+    ctx->rdllib = rdllib_open();
+    ctx->rdl = rdl_load(ctx->rdllib, ctx->sim_state->rdl_string);
 	handle_queued_events (ctx);
 	advance_time (ctx);
 	handle_completed_jobs (ctx);
-	next_termination = determine_next_termination (ctx);
+	next_termination = determine_next_termination (ctx, ctx->sim_state->sim_time);
 	set_event_timer (ctx, "sim_exec", next_termination);
 	send_reply_request (h, ctx->sim_state);
 
