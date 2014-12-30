@@ -45,12 +45,14 @@ typedef struct {
     flux_t h;
     bool master;
     int rank;
+  FILE *output_file;
 } ctx_t;
 
 static void freectx (void *arg)
 {
     ctx_t *ctx = arg;
 	free_simstate (ctx->sim_state);
+    fclose(ctx->output_file);
     free (ctx);
 }
 
@@ -65,6 +67,7 @@ static ctx_t *getctx (flux_t h)
         ctx->rank = flux_rank (h);
 		ctx->sim_state = new_simstate ();
         flux_aux_set (h, "simsrv", ctx, freectx);
+        ctx->output_file = fopen ("sim_state_save.json", "w");
     }
 
     return ctx;
@@ -287,6 +290,16 @@ static void copy_new_state_data (ctx_t *ctx, sim_state_t *curr_sim_state, sim_st
 	zhash_foreach (reply_sim_state->timers, check_for_new_timers, ctx);
 }
 
+//Saves the rdl string out to disk
+static void save_sim_state (ctx_t *ctx)
+{
+  JSON output_json = sim_state_to_json(ctx->sim_state);
+  const char *output_string = Jtostr (output_json);
+  fputs (output_string, ctx->output_file);
+  fputc ('\n', ctx->output_file);
+  Jput(output_json);
+}
+
 //Recevied a reply to a trigger ("sim.reply")
 static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
@@ -313,6 +326,9 @@ static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	copy_new_state_data (ctx, curr_sim_state, reply_sim_state);
 
 	handle_next_event (ctx);
+
+    //Save out the rdl_string to disk while the next module is working
+    save_sim_state (ctx);
 
 	free_simstate (reply_sim_state);
 	Jput(request);
