@@ -753,6 +753,10 @@ function ResourceAccumulator:add (id, n, args)
     return true
 end
 
+function ResourceAccumulator:is_empty (args)
+   return table_empty (self.dst)
+end
+
 --
 -- Return true if any k,v pairs in t2 match a k,v pair in t1
 --

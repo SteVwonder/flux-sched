@@ -993,8 +993,10 @@ bool rdl_accumulator_is_empty (struct rdl_accumulator *a)
 
   lua_rdl_accumulator_method_push (a, "is_empty");
 
-  if (lua_pcall (L, 1, LUA_MULTRET, 0) || lua_isnoneornil (L, 1)) {
-    VERR (a->rdl->rl, "accumulator_is_empty: %s\n", lua_tostring (L, -1));
+  if (lua_pcall (L, 1, LUA_MULTRET, 0)) {
+    VERR (a->rdl->rl, "accumulator_is_empty had an error in pcall.  Additional info: %s\n", lua_tostring (L, -1));
+  } else if (lua_isnoneornil (L, -1)) {
+    VERR (a->rdl->rl, "lua method 'is_empty' returned none or nil. Additional info: %s\n", lua_tostring (L, -1));
   } else {
     ret_val = lua_toboolean(L, -1);
   }
