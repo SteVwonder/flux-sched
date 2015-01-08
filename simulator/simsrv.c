@@ -285,11 +285,14 @@ static void copy_new_state_data (ctx_t *ctx, sim_state_t *curr_sim_state, sim_st
 //Saves the rdl string out to disk
 static void save_sim_state (ctx_t *ctx)
 {
-  JSON output_json = sim_state_to_json(ctx->sim_state);
-  const char *output_string = Jtostr (output_json);
-  fputs (output_string, ctx->output_file);
-  fputc ('\n', ctx->output_file);
-  Jput(output_json);
+    static int line_num = 1;
+    JSON output_json = sim_state_to_json(ctx->sim_state);
+    const char *output_string = Jtostr (output_json);
+    fputs (output_string, ctx->output_file);
+    fputc ('\n', ctx->output_file);
+    Jput(output_json);
+    flux_log (ctx->h, LOG_DEBUG, "Saved rdl_string to line %d of ctx->output_file", line_num);
+    line_num++;
 }
 
 //Recevied a reply to a trigger ("sim.reply")
