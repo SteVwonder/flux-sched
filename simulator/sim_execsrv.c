@@ -120,16 +120,15 @@ static double determine_next_termination (ctx_t *ctx, double curr_time)
 	job_t *job = zlist_first (running_jobs);
 
 	while (job != NULL){
-        curr_termination = job->start_time + job->execution_time + job->io_time;
-        computation_time_remaining = job->execution_time - ((curr_time - job->start_time) - job->io_time);
-        job_io_penalty = determine_io_penalty(ctx, job);
-        projected_future_io_time = (computation_time_remaining) * job_io_penalty;
-        //fprintf (stderr, "%34s\n", "--determine_next_termination--");
-        //fprintf (stderr, "%4s|%10s|%10s|%10s|%10s|%10s|%10s\n", "id", "start_time", "exec_time", "io_time", "curr_term", "io_penalty", "proj_io_t");
-        //fprintf (stderr, "%4d|%10.1f|%10.1f|%10.1f|%10.1f|%10.1f|%10.1f\n", job->id,  job->start_time, job->execution_time, job->io_time, curr_termination, job_io_penalty, projected_future_io_time);
-        curr_termination += projected_future_io_time;
-        if (curr_termination < next_termination || next_termination < 0){
-            next_termination = curr_termination;
+        if (job->start_time <= curr_time) {
+            curr_termination = job->start_time + job->execution_time + job->io_time;
+            computation_time_remaining = job->execution_time - ((curr_time - job->start_time) - job->io_time);
+            job_io_penalty = determine_io_penalty(ctx, job);
+            projected_future_io_time = (computation_time_remaining) * job_io_penalty;
+            curr_termination += projected_future_io_time;
+            if (curr_termination < next_termination || next_termination < 0){
+                next_termination = curr_termination;
+            }
         }
         job = zlist_next (running_jobs);
 	}
@@ -284,14 +283,14 @@ static double determine_job_min_bandwidth_helper(struct resource *r, double curr
 {
   struct resource *curr_child;
   double total_requested_bandwidth, child_min_bandwidth, curr_average_bandwidth, 
-      child_alloc_bandwidth, total_used_bandwidth, this_max_bandwidth, num_children;
+      child_alloc_bandwidth, total_used_bandwidth, this_max_bandwidth, num_children,
+      this_alloc_bandwidth;
   JSON o, tags, jobtag_json, hierarchy;
   zlist_t *child_list = zlist_new ();
   const char *type;
 
   o = rdl_resource_json(r);
   Jget_obj (o, "hierarchy", &hierarchy);
-  //fprintf (stderr, "Entering determine job bw for %s\n", Jtostr(hierarchy));
   Jput (hierarchy);
   Jput (o);
 
@@ -303,10 +302,10 @@ static double determine_job_min_bandwidth_helper(struct resource *r, double curr
     Jget_obj(o, "tags", &tags);
     if (!Jget_obj(tags, jobtag_char, &jobtag_json)) {
       curr_min_bandwidth = DBL_MAX;
-    } //else, we want to return curr_min_bandwidth, continue through to cleanup
-    else {
-        Jget_str (o, "type", &type);
-        //fprintf (stderr, "Found leaf node, part of job. type: %s, BW: %g, tag: %s\n", type, curr_min_bandwidth, Jtostr(jobtag_json));
+    } else {
+        //Determine which is less, the bandwidth currently available to this resource, or the bandwidth allocated to it by the job
+        this_alloc_bandwidth = get_alloc_bandwidth (r);
+        curr_min_bandwidth = (curr_min_bandwidth < this_alloc_bandwidth) ? curr_min_bandwidth : this_alloc_bandwidth;
     }
     Jput(o);
   }
@@ -315,7 +314,6 @@ static double determine_job_min_bandwidth_helper(struct resource *r, double curr
   while (curr_child != NULL) {
       o = rdl_resource_json (curr_child);
       Jget_str (o, "type", &type);
-      //fprintf (stderr, "Type: %s\n", type);
       if (!strcmp (type, "memory") == 0) {
           total_requested_bandwidth += get_alloc_bandwidth (curr_child);
           zlist_append (child_list, curr_child);
@@ -328,22 +326,17 @@ static double determine_job_min_bandwidth_helper(struct resource *r, double curr
   //Sort child list based on alloc bw
   zlist_sort (child_list, compare_resource_alloc_bw);
   
-  //o = rdl_resource_json(r);
   //const char *resource_string = Jtostr(o);
   //Loop over all of the children
-  //fprintf (stderr, "Curr min bandwidth: %g - %s\n", curr_min_bandwidth, resource_string);
   this_max_bandwidth = get_max_bandwidth (r);
   total_used_bandwidth = (total_requested_bandwidth > this_max_bandwidth) ? this_max_bandwidth : total_requested_bandwidth;
-  //fprintf (stderr, "Total_requested_bw: %g, this_max_bw : %g, total_used_bw: %g\n", total_requested_bandwidth, this_max_bandwidth, total_used_bandwidth);
+  total_used_bandwidth = (total_used_bandwidth > curr_min_bandwidth) ? curr_min_bandwidth : total_used_bandwidth;
   while (zlist_size (child_list) > 0) {
     //Determine the amount of bandwidth to allocate to each child
-      num_children = zlist_size (child_list);
+    num_children = zlist_size (child_list);
     curr_average_bandwidth = (total_used_bandwidth / num_children);
     curr_child = (struct resource*) zlist_pop (child_list);
     child_alloc_bandwidth = get_alloc_bandwidth(curr_child);
-    //fprintf (stderr, "%34s", "--determine_job_min_bw_helper--\n");
-    //fprintf (stderr, "%10s|%10s|%10s|%10s\n", "avg_bw", "total_used", "size", "child_alloc_bw");
-    //fprintf (stderr, "%10g|%10g|%10g|%10g\n", curr_average_bandwidth, total_used_bandwidth, num_children, child_alloc_bandwidth);
     if (child_alloc_bandwidth > 0) {
       if (child_alloc_bandwidth > curr_average_bandwidth)
         child_alloc_bandwidth = curr_average_bandwidth;
@@ -352,21 +345,16 @@ static double determine_job_min_bandwidth_helper(struct resource *r, double curr
       total_used_bandwidth -= child_alloc_bandwidth;
       //Recurse on the child
       child_min_bandwidth = determine_job_min_bandwidth_helper(curr_child, child_alloc_bandwidth, jobtag_char);
-      //fprintf (stderr, "Child min bandwidth: %g\n", child_min_bandwidth);
       if (child_min_bandwidth == 0) {
         JSON child_json = rdl_resource_json (curr_child);
-        //fprintf (stderr, "child with 0 min bw: %s\n", Jtostr(child_json));
         Jput (child_json);
       } else {
         //Set the min if the child's min is lower
         curr_min_bandwidth = (child_min_bandwidth < curr_min_bandwidth) ? child_min_bandwidth : curr_min_bandwidth;
-        //fprintf (stderr, "Curr min bandwidth: %g - %s\n", curr_min_bandwidth, resource_string);
       }
     }
     rdl_resource_destroy (curr_child);
   }
-  //Jput(o);
-  //fprintf (stderr, "Remaining bandwidth (0?): %g\n", total_requested_bandwidth);
   
   //Cleanup
   zlist_destroy (&child_list); //no need to rdl_resource destroy, done in above loop
@@ -380,7 +368,7 @@ static double determine_job_min_bandwidth(job_t *job, struct rdl *rdl) {
   char *jobtag;
   struct resource *r = rdl_resource_get (rdl, "default");
   asprintf (&jobtag, "lwj.%d", job->id);
-  return determine_job_min_bandwidth_helper (r, job->io_rate, jobtag);
+  return determine_job_min_bandwidth_helper (r, get_max_bandwidth(r), jobtag);
 }
 
 //Get the resource tree of the job
@@ -398,10 +386,6 @@ static double determine_io_penalty (ctx_t *ctx, job_t *job)
 
   //Determine the penalty (needed rate / actual rate) - 1
   io_penalty = (job_bandwidth / min_bandwidth) - 1;
-
-  //fprintf (stderr, "%34s\n", "--determine_io_penalty--");
-  //fprintf (stderr, "%4s|%10s|%10s|%10s\n", "id", "job_bw", "min_bw", "io_penalty");
-  //fprintf (stderr, "%4d|%10g|%10g|%10g\n", job->id,  job_bandwidth, min_bandwidth, io_penalty);
 
   return io_penalty;
 }
@@ -429,21 +413,22 @@ static int advance_time (ctx_t *ctx)
             break;
         }
         next_termination = determine_next_termination (ctx, curr_time);
-		next_event = sim_time < next_termination ? sim_time : next_termination; //min of the two
-        //fprintf (stderr, "%34s\n", "----advance time----");
-        //fprintf (stderr, "%22s|%22s|%10s|%10s|%10s\n", "curr_time", "sim_time", "next_term", "next_event", "num_jobs");
-        //fprintf (stderr, "%22.12f|%22.12f|%10.1f|%10.1f|%10d\n", curr_time,  sim_time, next_termination, next_event, num_jobs);
+		next_event = ((sim_time < next_termination) || (next_termination < 0)) ? sim_time : next_termination; //min of the two
 		while (num_jobs > 0) {
 			job = zlist_pop (running_jobs);
-			io_penalty = determine_io_penalty (ctx, job);
-            io_percentage = (io_penalty / (io_penalty + 1));
-			job->io_time += (next_event - curr_time) * io_percentage;
-			curr_progress = calc_curr_progress (job, next_event);
-			if (curr_progress < 1)
-				zlist_append (running_jobs, job);
-			else
-				complete_job (ctx, job, next_event);
-			num_jobs--;
+            if (job->start_time <= curr_time) {
+                io_penalty = determine_io_penalty (ctx, job);
+                io_percentage = (io_penalty / (io_penalty + 1));
+                job->io_time += (next_event - curr_time) * io_percentage;
+                curr_progress = calc_curr_progress (job, next_event);
+                if (curr_progress < 1)
+                    zlist_append (running_jobs, job);
+                else
+                    complete_job (ctx, job, next_event);
+            } else {
+                    zlist_append (running_jobs, job);
+            }
+            num_jobs--;
 		}
 		curr_time = next_event;
 	}
