@@ -586,10 +586,10 @@ static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *an
     avail_bw = avail_bw; //used to stop the compiler warnings of an unused variable, temporary hack
 #if IOAWARE
 	if (avail_bw < job->req.io_rate) {
-      //JSON o = rdl_resource_json (r);
-      //flux_log (h, LOG_DEBUG, "not enough bandwidth (has: %ld, needs: %ld) at %s", avail_bw, job->req.io_rate, Jtostr (o));
-      //Jput (o);
-      return false;
+        //JSON o = rdl_resource_json (r);
+        //flux_log (h, LOG_DEBUG, "not enough bandwidth (has: %ld, needs: %ld) at %s", avail_bw, job->req.io_rate, Jtostr (o));
+        //Jput (o);
+        return false;
 	}
 
 	//Check if the ancestors have enough bandwidth
@@ -669,7 +669,7 @@ allocate_resources (struct resource *fr, struct rdl_accumulator *a,
               rdl_resource_tag (r, lwjtag);
               rdl_resource_delete_tag (r, IDLETAG);
               rdl_accumulator_add (a, r);
-              //flux_log (h, LOG_DEBUG, "allocated core: %s", json_object_to_json_string (o));
+              //flux_log (h, LOG_DEBUG, "allocated core: %s", json_object_to_json_string (0));
             }
         }
     }
@@ -689,9 +689,8 @@ allocate_resources (struct resource *fr, struct rdl_accumulator *a,
 }
 
 static int
-release_lwj_resource (struct rdl *rdl, struct resource *jr, int64_t lwj_id)
+release_lwj_resource (struct rdl *rdl, struct resource *jr, char *lwjtag)
 {
-    char *lwjtag = NULL;
     char *uri = NULL;
     const char *type = NULL;
     int rc = 0;
@@ -706,16 +705,15 @@ release_lwj_resource (struct rdl *rdl, struct resource *jr, int64_t lwj_id)
         o = rdl_resource_json (r);
         Jget_str (o, "type", &type);
         if (strcmp (type, CORETYPE) == 0) {
-            asprintf (&lwjtag, "lwj.%ld", lwj_id);
             rdl_resource_delete_tag (r, lwjtag);
             rdl_resource_tag (r, IDLETAG);
-            free (lwjtag);
         }
         //flux_log (h, LOG_DEBUG, "resource released: %s", json_object_to_json_string (o));
         json_object_put (o);
 
+        rdl_resource_iterator_reset(jr);
         while (!rc && (c = rdl_resource_next_child (jr))) {
-            rc = release_lwj_resource (rdl, c, lwj_id);
+            rc = release_lwj_resource (rdl, c, lwjtag);
             rdl_resource_destroy (c);
         }
     } else {
@@ -734,16 +732,18 @@ int release_resources (struct rdl *rdl, const char *uri, flux_lwj_t *job)
 {
     int rc = -1;
     struct resource *jr = rdl_resource_get (job->rdl, uri);
+    char *lwjtag = NULL;
+
+    asprintf (&lwjtag, "lwj.%ld", job->lwj_id);
 
     if (jr) {
-        rdl_resource_iterator_reset (jr);
-        rc = release_lwj_resource (rdl, jr, job->lwj_id);
+        rc = release_lwj_resource (rdl, jr, lwjtag);
         deallocate_bandwidth (rdl, uri, job);
     } else {
         flux_log (h, LOG_ERR, "release_resources failed to get resources: %s",
                   strerror (errno));
     }
-	rdl_destroy (job->rdl);
+    free (lwjtag);
 
     return rc;
 }
@@ -916,7 +916,9 @@ static int64_t get_free_count (struct rdl *rdl, const char *uri, const char *typ
  * schedule_job() searches through all of the idle resources (cores
  * right now) to satisfy a job's requirements.  If enough resources
  * are found, it proceeds to allocate those resources and update the
- * kvs's lwj entry in preparation for job execution.
+ * kvs's lwj entry in preparation for job execution. Returns 1 if the
+ * job was succesfully scheduled, 0 if it was not, -1 if there was an
+ * error.
  */
 int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job, bool clear_cache)
 {
@@ -962,6 +964,8 @@ int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job, bool clear_
 				job->rdl = rdl_accumulator_copy (a);
 				job->state = j_submitted;
 				rc = update_job (job);
+                if (rc == 0)
+                    rc = 1;
 				rdl_destroy (frdl);
 
 				//Clear the "cache"
@@ -989,7 +993,9 @@ int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job, bool clear_
                 }
 			}
 			rdl_accumulator_destroy (a);
-		}
+		} else {
+            flux_log (h, LOG_DEBUG, "not enough available cores, skipping this job");
+        }
 	}
 
 ret:
@@ -998,12 +1004,22 @@ ret:
     return rc;
 }
 
+bool job_compare_fn (void *item1, void *item2) {
+    flux_lwj_t *job1, *job2;
+    job1 = (flux_lwj_t *) item1;
+    job2 = (flux_lwj_t *) item2;
+
+    //TODO: switch this to use submit time
+    return (job1->lwj_id > job2->lwj_id);
+}
+
 int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs, bool resources_released)
 {
     flux_lwj_t *job = NULL;
-    int rc = 0;
+    int rc = 0, job_scheduled = 1;
     bool clear_cache = resources_released;
 
+    /*
     if (resources_released){
       flux_log (h, LOG_DEBUG, "Starting at the beginning of the jobs list");
       job = zlist_first (jobs);
@@ -1015,6 +1031,15 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs, bool resourc
 		if (job->state == j_unsched) {
 			rc = schedule_job(rdl, uri, job, clear_cache);
 			clear_cache = false;
+		}
+        job = zlist_next (jobs);
+    }
+    */
+    zlist_sort(jobs, job_compare_fn);
+    job = zlist_first (jobs);
+    while (job_scheduled && job) {
+		if (job->state == j_unsched) {
+			job_scheduled = schedule_job(rdl, uri, job, clear_cache);
 		}
         job = zlist_next (jobs);
     }
@@ -1440,7 +1465,7 @@ static void handle_kvs_queue ()
 	//zlist_sort (kvs_queue, compare_kvs_events);
 	while (zlist_size (kvs_queue) > 0){
 		kvs_event = (kvs_event_t *) zlist_pop (kvs_queue);
-		//flux_log (h, LOG_DEBUG, "Event to be handled - key: %s, val: %s", kvs_event->key, kvs_event->val);
+		flux_log (h, LOG_DEBUG, "Event to be handled - key: %s, val: %s", kvs_event->key, kvs_event->val);
 		lwjstate_cb (kvs_event->key, kvs_event->val, NULL, kvs_event->errnum);
 		free (kvs_event->key);
 		free (kvs_event->val);
