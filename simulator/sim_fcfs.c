@@ -548,16 +548,6 @@ static void deallocate_bandwidth (struct rdl *rdl, const char *uri, flux_lwj_t *
 	return;
 }
 
-static int64_t get_avail_bandwidth (struct resource *r)
-{
-	int64_t max_bw;
-	int64_t alloc_bw;
-
-	rdl_resource_get_int (r, "max_bw", &max_bw);
-	rdl_resource_get_int (r, "alloc_bw", &alloc_bw);
-	return max_bw - alloc_bw;
-}
-
 static void allocate_resource_bandwidth (struct resource *r, int64_t amount)
 {
 	int64_t old_alloc_bw;
@@ -574,34 +564,8 @@ static void allocate_resource_bandwidth (struct resource *r, int64_t amount)
 
 static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
 {
-	int64_t avail_bw;
 	struct resource *curr_r = NULL;
-	//Check if the resource has enough bandwidth
-	avail_bw = get_avail_bandwidth (r);
-    avail_bw = avail_bw; //used to stop the compiler warnings of an unused variable, temporary hack
-#if IOAWARE
-	if (avail_bw < job->req.io_rate) {
-        //JSON o = rdl_resource_json (r);
-        //flux_log (h, LOG_DEBUG, "not enough bandwidth (has: %ld, needs: %ld) at %s", avail_bw, job->req.io_rate, Jtostr (o));
-        //Jput (o);
-        return false;
-	}
 
-	//Check if the ancestors have enough bandwidth
- 	curr_r = zlist_first (ancestors);
-	while (curr_r != NULL) {
-		avail_bw = get_avail_bandwidth (curr_r);
-		if (avail_bw < job->req.io_rate) {
-			//JSON o = rdl_resource_json (curr_r);
-			//flux_log (h, LOG_DEBUG, "not enough bandwidth (has: %ld, needs: %ld) at %s", avail_bw, job->req.io_rate, Jtostr (o));
-			//Jput (o);
-			return false;
-		}
-		curr_r = zlist_next (ancestors);
-	}
-#endif
-	//If not, return false, else allocate the bandwith
-	//at resource and ancestors then return true
 	allocate_resource_bandwidth (r, job->req.io_rate);
  	curr_r = zlist_first (ancestors);
 	while (curr_r != NULL) {

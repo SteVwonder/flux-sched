@@ -73,11 +73,13 @@ typedef struct {
 /**
  *  Defines resource request info block.
  *  This needs to be expanded as RDL evolves.
+ *  TODO: standardize these data types
  */
 typedef struct {
     uint64_t nnodes; /*!< num of nodes requested by a job */
     uint32_t ncores; /*!< num of cores requested by a job */
     uint64_t io_rate; //amount of io bw (in MB) requested by a job
+    double walltime; //amount of time requested by a job
 } flux_req_t;
 
 
