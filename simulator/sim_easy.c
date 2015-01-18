@@ -1047,8 +1047,8 @@ bool job_backfill_eligible (flux_lwj_t *job, int64_t curr_free_cores, int64_t sh
     bool terminates_before_shadow_time = ((sim_state->sim_time + job->req.walltime) < shadow_time);
     int64_t min_of_curr_shadow_cores = (curr_free_cores < shadow_free_cores) ? curr_free_cores : shadow_free_cores;
 
-    fprintf (stderr, "backfill info - shadow_time: %f, curr_free_cores: %ld, shadow_free_cores: %ld, job_req_cores: %d\n", shadow_time, curr_free_cores, shadow_free_cores, job->req.ncores);
-    fprintf (stderr, "backfill info - term_before_shadow_time: %d, min_of_curr_shadow_cores: %ld\n", terminates_before_shadow_time, min_of_curr_shadow_cores);
+    flux_log (h, LOG_DEBUG, "backfill info - shadow_time: %f, curr_free_cores: %ld, shadow_free_cores: %ld, job_req_cores: %d", shadow_time, curr_free_cores, shadow_free_cores, job->req.ncores);
+    flux_log (h, LOG_DEBUG, "backfill info - term_before_shadow_time: %d, min_of_curr_shadow_cores: %ld", terminates_before_shadow_time, min_of_curr_shadow_cores);
 
     if (terminates_before_shadow_time && curr_free_cores >= job->req.ncores) {
         //Job ends before reserved job starts, make sure we have enough cores currently to schedule it
