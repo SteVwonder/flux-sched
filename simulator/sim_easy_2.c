@@ -1171,10 +1171,9 @@ static bool job_compare_termination_fn (void *item1, void *item2) {
 //are free, excluding the cores that will be used by the reserved job
 
 //The input rdl should be a copy that can be mutated to reflect the rdl's state @ shadow_time
-static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_rdl, const char *uri, zlist_t *running_jobs, double *shadow_time) {
+static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_rdl, const char *uri, zlist_t *running_jobs, double *shadow_time, int64_t *shadow_free_cores) {
     job_t *curr_job_t;
     flux_lwj_t *curr_lwj_job;
-    int64_t free_cores;
     struct rdl *frdl = NULL;
 
     if (zlist_size (running_jobs) == 0) {
@@ -1184,35 +1183,36 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_
 
     frdl = get_free_subset (shadow_rdl, "core");
     if (frdl) {
-        free_cores = get_free_count (frdl, uri, "core");
+        *shadow_free_cores = get_free_count (frdl, uri, "core");
         rdl_destroy (frdl);
     } else {
-        flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting free_cores = 0");
-        free_cores = 0;
+        flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting shadow_free_cores = 0");
+        *shadow_free_cores = 0;
     }
 
     zlist_sort(running_jobs, job_compare_termination_fn);
 
     curr_job_t = zlist_first (running_jobs);
-    while ((free_cores < reserved_job->req.ncores)) {
+    while ((*shadow_free_cores < reserved_job->req.ncores)) {
         if (curr_job_t == NULL) {
             flux_log (h, LOG_ERR, "Curr job is null");
         }
-        //flux_log (h, LOG_DEBUG, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d", reserved_job->req.ncores, free_cores, curr_job_t->id, curr_job_t->ncpus);
-        //fprintf (stderr, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d\n", reserved_job->req.ncores, free_cores, curr_job_t->id, curr_job_t->ncpus);
+        //flux_log (h, LOG_DEBUG, "calc_shadow_info - reserved_job req cores: %d, shadow_free_cores: %ld, curr_job: %d, curr_job_ncores: %d", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
+        //fprintf (stderr, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d\n", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
 
         //De-allocate curr_job_t's resources from the shadow_rdl
         curr_lwj_job = find_lwj(curr_job_t->id);
         //fprintf (stderr, "job %ld used %ld MB/s of IO per core\n", curr_lwj_job->lwj_id, curr_lwj_job->req.io_rate);
         release_resources (shadow_rdl, uri, curr_lwj_job);
 
-        free_cores += curr_job_t->ncpus;
+        *shadow_free_cores += curr_job_t->ncpus;
         *shadow_time = curr_job_t->start_time + curr_job_t->time_limit;
+        //flux_log (h, LOG_DEBUG, "calc_shadow_info - curr_job id: %d, curr_job submit_time: %f, curr_job start_time: %f, curr_job time_limit: %f, new shadow_time: %f", curr_job_t->id, curr_job_t->submit_time, curr_job_t->start_time, curr_job_t->time_limit, *shadow_time);
         curr_job_t = zlist_next (running_jobs);
     }
 
     flux_log (h, LOG_DEBUG, "Entering the exact shadow loop");
-    //fprintf (stderr, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d\n", reserved_job->req.ncores, free_cores, curr_job_t->id, curr_job_t->ncpus);
+    //fprintf (stderr, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d\n", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
     //fputs (rdl_serialize (shadow_rdl), stderr);
 
     //Do a loop checking if the reserved job can be scheduled (considering IO)
@@ -1221,17 +1221,20 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_
         if (curr_job_t == NULL) {
             flux_log (h, LOG_ERR, "Curr job is null");
         }
-        //flux_log (h, LOG_DEBUG, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d", reserved_job->req.ncores, free_cores, curr_job_t->id, curr_job_t->ncpus);
-        //fprintf (stderr, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d\n", reserved_job->req.ncores, free_cores, curr_job_t->id, curr_job_t->ncpus);
+        //flux_log (h, LOG_DEBUG, "calc_shadow_info - reserved_job req cores: %d, shadow_free_cores: %ld, curr_job: %d, curr_job_ncores: %d", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
+        //fprintf (stderr, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d\n", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
 
         //De-allocate curr_job_t's resources from the shadow_rdl
         curr_lwj_job = find_lwj(curr_job_t->id);
         //fprintf (stderr, "job %ld used %ld MB/s of IO per core\n", curr_lwj_job->lwj_id, curr_lwj_job->req.io_rate);
         release_resources (shadow_rdl, uri, curr_lwj_job);
 
+        *shadow_free_cores += curr_job_t->ncpus;
         *shadow_time = curr_job_t->start_time + curr_job_t->time_limit;
+        //flux_log (h, LOG_DEBUG, "calc_shadow_info - curr_job id: %d, curr_job submit_time: %f, curr_job start_time: %f, curr_job time_limit: %f, new shadow_time: %f", curr_job_t->id, curr_job_t->submit_time, curr_job_t->start_time, curr_job_t->time_limit, *shadow_time);
         curr_job_t = zlist_next (running_jobs);
     }
+    *shadow_free_cores -= reserved_job->req.ncores;
  
 }
 
@@ -1293,7 +1296,7 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
     kvsdir_t curr_kvs_dir;
     int rc = 0, job_scheduled = 1;
     double shadow_time = -1;
-    int64_t curr_free_cores = -1;
+    int64_t curr_free_cores = -1, shadow_free_cores = -1;
     struct rdl *frdl = NULL, *shadow_rdl = NULL;
     zlist_t *queued_jobs = zlist_dup (jobs), *running_jobs = zlist_new ();
 
@@ -1307,6 +1310,8 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
             if (job_scheduled) {
                 kvs_get_dir (h,  &curr_kvs_dir, "lwj.%d", curr_job->lwj_id);
                 curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+                if (curr_job_t->start_time == 0)
+                    curr_job_t->start_time = sim_state->sim_time;
                 zlist_append (running_jobs, curr_job_t);
             } else {
                 reserved_job = curr_job;
@@ -1323,12 +1328,14 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
         while (curr_lwj_job != NULL) {
             kvs_get_dir (h,  &curr_kvs_dir, "lwj.%d", curr_lwj_job->lwj_id);
             curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+            if (curr_job_t->start_time == 0)
+                curr_job_t->start_time = sim_state->sim_time;
             zlist_append (running_jobs, curr_job_t);
             curr_lwj_job = zlist_next (r_queue);
         }
-        calculate_shadow_info (reserved_job, shadow_rdl, uri, running_jobs, &shadow_time);
+        calculate_shadow_info (reserved_job, shadow_rdl, uri, running_jobs, &shadow_time, &shadow_free_cores);
 
-        flux_log(h, LOG_DEBUG, "Job %ld has the reservation - shadow time: %f", reserved_job->lwj_id, shadow_time);
+        flux_log(h, LOG_DEBUG, "Job %ld has the reservation - shadow time: %f, shadow free cores: %ld", reserved_job->lwj_id, shadow_time, shadow_free_cores);
         
         frdl = get_free_subset (rdl, "core");
         if (frdl) {
