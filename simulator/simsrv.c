@@ -126,7 +126,6 @@ static int handle_next_event (ctx_t *ctx){
 	keys = zhash_keys(timers);
 
 	//Get the next occuring event time/module
-	//TODO: convert this block of code into a zhash_foreach function
 	double *min_event_time = NULL, *curr_event_time = NULL;
 	char *mod_name = NULL, *curr_name = NULL;
 
@@ -290,7 +289,7 @@ static void copy_new_state_data (ctx_t *ctx, sim_state_t *curr_sim_state, sim_st
 	zhash_foreach (reply_sim_state->timers, check_for_new_timers, ctx);
 }
 
-//Saves the rdl string out to disk
+//Saves the sim_state out to disk
 static void save_sim_state (ctx_t *ctx)
 {
     static int line_num = 1;
@@ -329,9 +328,6 @@ static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	copy_new_state_data (ctx, curr_sim_state, reply_sim_state);
 
 	handle_next_event (ctx);
-
-    //Save out the rdl_string to disk while the next module is working
-    save_sim_state (ctx);
 
 	free_simstate (reply_sim_state);
 	Jput(request);
