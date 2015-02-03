@@ -71,7 +71,7 @@ static zlist_t *r_queue = NULL;
 static zlist_t *c_queue = NULL;
 static zlist_t *ev_queue = NULL;
 static flux_t h = NULL;
-static struct rdl *rdl = NULL;
+static struct rdl *global_rdl = NULL;
 static char* resource = NULL;
 static const char* IDLETAG = "idle";
 static const char* CORETYPE = "core";
@@ -132,9 +132,10 @@ static void queue_timer_change (const char* module)
 //Reply back to the sim module with the updated sim state (in JSON form)
 int send_reply_request (flux_t h, sim_state_t *sim_state)
 {
-  sim_state->rdl_string = rdl_serialize(rdl);
+  sim_state->rdl_string = rdl_serialize(global_rdl);
 	JSON o = sim_state_to_json (sim_state);
 	Jadd_bool (o, "event_finished", true);
+    Jadd_str (o, "mod_name", module_name);
 	if (flux_request_send (h, o, "%s", "sim.reply") < 0){
 		Jput (o);
 		return -1;
@@ -608,7 +609,7 @@ allocate_resources (struct resource *fr, struct rdl_accumulator *a,
     bool found = false;
 
     asprintf (&uri, "%s:%s", resource, rdl_resource_path (fr));
-    r = rdl_resource_get (rdl, uri);
+    r = rdl_resource_get (global_rdl, uri);
     free (uri);
 
     o = rdl_resource_json (r);
@@ -919,7 +920,11 @@ int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job, bool clear_
 		if (frdl) {
 			cores = get_free_count (frdl, uri, "core");
 			fr = rdl_resource_get (frdl, uri);
-		}
+		} else {
+            flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting cores = 0");
+            cores = 0;
+            fr = NULL;
+        }
 		cache_valid = true;
 	}
 
@@ -1008,8 +1013,8 @@ void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *rdl, const cha
         *free_cores = get_free_count (frdl, uri, "core");
         rdl_destroy (frdl);
     } else {
-        flux_log (h, LOG_ERR, "Failed to get count of free cores");
-        return;
+        flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting free_cores = 0");
+        *free_cores = 0;
     }
 
     while (curr_lwj_job != NULL) {
@@ -1082,23 +1087,6 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs, bool resourc
     int64_t shadow_free_cores = -1, curr_free_cores = -1;
     struct rdl *frdl = NULL;
 
-    /*
-    if (resources_released){
-      flux_log (h, LOG_DEBUG, "Starting at the beginning of the jobs list");
-      job = zlist_first (jobs);
-    } else {
-      flux_log (h, LOG_DEBUG, "Just checking the last job in the jobs list");
-      job = zlist_last (jobs);
-    }
-    while (!rc && job) {
-		if (job->state == j_unsched) {
-			rc = schedule_job(rdl, uri, job, clear_cache);
-			clear_cache = false;
-		}
-        job = zlist_next (jobs);
-    }
-    */
-
     zlist_sort(jobs, job_compare_id_fn);
 
     //Schedule all jobs at the front of the queue
@@ -1113,7 +1101,7 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs, bool resourc
     }
 
     //reserved job is now set, start backfilling
-    if (reserved_job) {
+    if (reserved_job && curr_job) {
         calculate_shadow_info (reserved_job, rdl, uri, &shadow_time, &shadow_free_cores);
         flux_log(h, LOG_DEBUG, "Job %ld has the reservation", reserved_job->lwj_id);
         flux_log(h, LOG_DEBUG, "Shadow info - shadow time: %f, shadow free cores: %ld", shadow_time, shadow_free_cores);
@@ -1123,22 +1111,27 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs, bool resourc
             curr_free_cores = get_free_count (frdl, uri, "core");
             rdl_destroy (frdl);
         } else {
-            flux_log (h, LOG_ERR, "Failed to get count of free cores");
-            rc = -1;
+            flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting curr_free_cores = 0");
+            curr_free_cores = 0;
         }
 
-        while (curr_job && shadow_time >= 0) {
+        while (curr_job && shadow_time >= 0 && curr_free_cores > 0) {
             if (curr_job->state == j_unsched &&
                 job_backfill_eligible (curr_job, curr_free_cores, shadow_free_cores, shadow_time)) {
                 flux_log(h, LOG_DEBUG, "Job %ld is eligible for backfilling. Attempting to schedule.", curr_job->lwj_id);
 
                 job_scheduled = schedule_job(rdl, uri, curr_job, clear_cache);
                 if (job_scheduled) {
-                    curr_free_cores -= curr_job->req.ncores;
+                    curr_free_cores -= curr_job->alloc.ncores;
                     if ((sim_state->sim_time + curr_job->req.walltime) >= shadow_time) {
-                        shadow_free_cores -= curr_job->req.ncores;
+                        shadow_free_cores -= curr_job->alloc.ncores;
                     }
+                    flux_log(h, LOG_DEBUG, "Job %ld was backfilled.", curr_job->lwj_id);
+                } else  {
+                    flux_log(h, LOG_DEBUG, "Job %ld was not backfillied", curr_job->lwj_id);
                 }
+            } else {
+                flux_log(h, LOG_DEBUG, "Job %ld is not eligible for backfilling, moving on to the next job.", curr_job->lwj_id);
             }
             curr_job = zlist_next (jobs);
         }    
@@ -1258,7 +1251,7 @@ action_j_event (flux_event_t *e)
             goto bad_transition;
         }
         e->lwj->state = j_unsched;
-        schedule_jobs (rdl, resource, p_queue, false);
+        schedule_jobs (global_rdl, resource, p_queue, false);
         break;
 
     case j_submitted:
@@ -1353,8 +1346,8 @@ action_r_event (flux_event_t *e)
     int rc = -1;
 
     if ((e->ev.re == r_released) || (e->ev.re == r_attempt)) {
-        release_resources (rdl, resource, e->lwj);
-        schedule_jobs (rdl, resource, p_queue, true);
+        release_resources (global_rdl, resource, e->lwj);
+        schedule_jobs (global_rdl, resource, p_queue, true);
         rc = 0;
     }
 
@@ -1779,7 +1772,7 @@ int mod_main (flux_t p, zhash_t *args)
         goto ret;
     }
 
-    if (!(l = rdllib_open ()) || !(rdl = rdl_loadfile (l, path))) {
+    if (!(l = rdllib_open ()) || !(global_rdl = rdl_loadfile (l, path))) {
         flux_log (h, LOG_ERR, "failed to load resources from %s: %s",
                   path, strerror (errno));
         rc = -1;
@@ -1791,7 +1784,7 @@ int mod_main (flux_t p, zhash_t *args)
         resource = "default";
     }
 
-    if ((r = rdl_resource_get (rdl, resource))) {
+    if ((r = rdl_resource_get (global_rdl, resource))) {
         flux_log (h, LOG_DEBUG, "setting up rdl resources");
         if (idlize_resources (r)) {
             flux_log (h, LOG_ERR, "failed to idlize %s: %s", resource,
