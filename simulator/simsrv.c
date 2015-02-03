@@ -118,7 +118,6 @@ static int handle_next_event (ctx_t *ctx){
 	keys = zhash_keys(timers);
 
 	//Get the next occuring event time/module
-	//TODO: convert this block of code into a zhash_foreach function
 	double *min_event_time = NULL, *curr_event_time = NULL;
 	char *mod_name = NULL, *curr_name = NULL;
 
@@ -282,7 +281,7 @@ static void copy_new_state_data (ctx_t *ctx, sim_state_t *curr_sim_state, sim_st
 	zhash_foreach (reply_sim_state->timers, check_for_new_timers, ctx);
 }
 
-//Saves the rdl string out to disk
+//Saves the sim_state out to disk
 static void save_sim_state (ctx_t *ctx)
 {
     static int line_num = 1;
@@ -301,15 +300,17 @@ static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	JSON request = NULL;
 	bool event_finished;
 	//const char *json_string;
+    const char *mod_name = NULL;
 	ctx_t *ctx = arg;
 	sim_state_t *curr_sim_state = ctx->sim_state;
 	sim_state_t *reply_sim_state;
 
 	if (flux_msg_decode (*zmsg, NULL, &request) < 0 || request == NULL
-		|| !Jget_bool (request, "event_finished", &event_finished)) {
-		flux_log (h, LOG_ERR, "%s: bad reply message", __FUNCTION__);
-		Jput(request);
-		return 0;
+		|| !Jget_bool (request, "event_finished", &event_finished)
+        || !Jget_str (request, "mod_name", &mod_name)) {
+        flux_log (h, LOG_ERR, "%s: bad reply message", __FUNCTION__);
+        Jput(request);
+        return 0;
 	}
 
 	//Logging
@@ -322,8 +323,9 @@ static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	handle_next_event (ctx);
 
-    //Save out the rdl_string to disk while the next module is working
-    save_sim_state (ctx);
+    //Save out the sim_state to disk while the next module is working
+    if (!strcmp (mod_name, "sim_sched"))
+        save_sim_state (ctx);
 
 	free_simstate (reply_sim_state);
 	Jput(request);

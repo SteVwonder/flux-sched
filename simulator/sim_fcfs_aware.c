@@ -135,6 +135,7 @@ int send_reply_request (flux_t h, sim_state_t *sim_state)
   sim_state->rdl_string = rdl_serialize(rdl);
 	JSON o = sim_state_to_json (sim_state);
 	Jadd_bool (o, "event_finished", true);
+    Jadd_str (o, "mod_name", module_name);
 	if (flux_request_send (h, o, "%s", "sim.reply") < 0){
 		Jput (o);
 		return -1;
