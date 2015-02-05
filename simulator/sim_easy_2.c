@@ -71,6 +71,7 @@ static zlist_t *r_queue = NULL;
 static zlist_t *c_queue = NULL;
 static zlist_t *ev_queue = NULL;
 static flux_t h = NULL;
+static struct rdllib *global_rdllib = NULL;
 static struct rdl *global_rdl = NULL;
 static char* resource = NULL;
 static const char* IDLETAG = "idle";
@@ -132,7 +133,7 @@ static void queue_timer_change (const char* module)
 //Reply back to the sim module with the updated sim state (in JSON form)
 int send_reply_request (flux_t h, sim_state_t *sim_state)
 {
-  sim_state->rdl_string = rdl_serialize(global_rdl);
+    sim_state->rdl_string = rdl_serialize(global_rdl);
 	JSON o = sim_state_to_json (sim_state);
 	Jadd_bool (o, "event_finished", true);
     Jadd_str (o, "mod_name", module_name);
@@ -142,7 +143,6 @@ int send_reply_request (flux_t h, sim_state_t *sim_state)
 	}
 	flux_log(h, LOG_DEBUG, "sent a reply request");
    Jput (o);
-   free_simstate (sim_state);
    return 0;
 }
 
@@ -504,38 +504,37 @@ static bool check_job_tag ()
 static void deallocate_bandwidth_helper (struct rdl *rdl, struct resource *jr,
 										 int64_t io_rate, zlist_t *ancestors)
 {
-	struct resource *r;
-	struct resource *c;
+	struct resource *curr, *child, *ancestor;
     char *uri = NULL;
 	const char *type = NULL;
 	JSON o = NULL;
 
     asprintf (&uri, "%s:%s", resource, rdl_resource_path (jr));
-    r = rdl_resource_get (rdl, uri);
+    curr = rdl_resource_get (rdl, uri);
 
-    if (r) {
-        o = rdl_resource_json (r);
+    if (curr) {
+        o = rdl_resource_json (curr);
         Jget_str (o, "type", &type);
         if (strcmp (type, CORETYPE) == 0) {
-			//Deallocate bandwidth
-			deallocate_resource_bandwidth (r, io_rate);
-			c = zlist_first (ancestors);
-			while (c != NULL) {
-
-				deallocate_resource_bandwidth (c, io_rate);
-				c = zlist_next (ancestors);
+			//Deallocate bandwidth of this resource
+			deallocate_resource_bandwidth (curr, io_rate);
+            //Deallocate bandwidth of this resource's ancestors
+			ancestor = zlist_first (ancestors);
+			while (ancestor != NULL) {
+				deallocate_resource_bandwidth (ancestor, io_rate);
+				ancestor = zlist_next (ancestors);
 			}
-			//flux_log (h, LOG_DEBUG, "resource bandwidth released: %s", json_object_to_json_string (o));
-        } else { //if not a core
-          zlist_push (ancestors, r);
-          while ((c = rdl_resource_next_child (jr))) {
-            deallocate_bandwidth_helper (rdl, c, io_rate, ancestors);
-            rdl_resource_destroy (c);
+        } else { //if not a core, recurse
+          zlist_push (ancestors, curr);
+          rdl_resource_iterator_reset (jr);
+          while ((child = rdl_resource_next_child (jr))) {
+            deallocate_bandwidth_helper (rdl, child, io_rate, ancestors);
+            rdl_resource_destroy (child);
           }
           zlist_pop (ancestors);
         }
-        json_object_put (o);
-
+        Jput (o);
+        rdl_resource_destroy (curr);
     } else {
         flux_log (h, LOG_ERR, "deallocate_bandswith_helper failed to get %s", uri);
     }
@@ -554,6 +553,7 @@ static void deallocate_bandwidth (struct rdl *rdl, const char *uri, flux_lwj_t *
     if (jr) {
         rdl_resource_iterator_reset (jr);
 		deallocate_bandwidth_helper (rdl, jr, job->req.io_rate, ancestors);
+        rdl_resource_destroy (jr);
     } else {
         flux_log (h, LOG_ERR, "deallocate_bandwidth failed to get resources: %s",
                   strerror (errno));
@@ -638,24 +638,21 @@ static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *an
  */
 static bool
 allocate_resources (struct rdl *rdl, struct resource *fr,
-                    struct rdl_accumulator *a,
+                    struct rdl_accumulator *accum,
                     flux_lwj_t *job, zlist_t *ancestors)
 {
     char *lwjtag = NULL;
     char *uri = NULL;
     const char *type = NULL;
-    json_object *o = NULL;
-    json_object *o2 = NULL;
-    json_object *o3 = NULL;
-    struct resource *c;
-    struct resource *r;
+    JSON o = NULL, o2 = NULL, o3 = NULL;
+    struct resource *child, *curr;
     bool found = false;
 
     asprintf (&uri, "%s:%s", resource, rdl_resource_path (fr));
-    r = rdl_resource_get (rdl, uri);
+    curr = rdl_resource_get (rdl, uri);
     free (uri);
 
-    o = rdl_resource_json (r);
+    o = rdl_resource_json (curr);
     Jget_str (o, "type", &type);
     asprintf (&lwjtag, "lwj.%ld", job->lwj_id);
     if (job->req.nnodes && (strcmp (type, "node") == 0)) {
@@ -679,29 +676,31 @@ allocate_resources (struct rdl *rdl, struct resource *fr,
         Jget_obj (o, "tags", &o2);
         Jget_obj (o2, IDLETAG, &o3);
         if (o3) {
-			if (allocate_bandwidth (job, r, ancestors)) {
+			if (allocate_bandwidth (job, curr, ancestors)) {
               job->req.ncores--;
               job->alloc.ncores++;
-              rdl_resource_tag (r, lwjtag);
-              rdl_resource_delete_tag (r, IDLETAG);
-              if (rdl_accumulator_add (a, r) < 0) {
+              rdl_resource_tag (curr, lwjtag);
+              rdl_resource_delete_tag (curr, IDLETAG);
+              if (rdl_accumulator_add (accum, curr) < 0) {
                   flux_log (h, LOG_ERR, "failed to allocate core: %s", Jtostr (o));
               }
-              //flux_log (h, LOG_DEBUG, "allocated core: %s", json_object_to_json_string (o));
             }
         }
     }
     free (lwjtag);
-    json_object_put (o);
+    Jput (o);
 
     found = !(job->req.nnodes || job->req.ncores);
 
-	zlist_push (ancestors, r);
-    while (!found && (c = rdl_resource_next_child (fr))) {
-        found = allocate_resources (rdl, c, a, job, ancestors);
-        rdl_resource_destroy (c);
+	zlist_push (ancestors, curr);
+    rdl_resource_iterator_reset (fr);
+    while (!found && (child = rdl_resource_next_child (fr))) {
+        found = allocate_resources (rdl, child, accum, job, ancestors);
+        rdl_resource_destroy (child);
     }
+    rdl_resource_iterator_reset (fr);
 	zlist_pop (ancestors);
+    rdl_resource_destroy (curr);
 
     return found;
 }
@@ -712,28 +711,29 @@ release_lwj_resource (struct rdl *rdl, struct resource *jr, char *lwjtag)
     char *uri = NULL;
     const char *type = NULL;
     int rc = 0;
-    json_object *o = NULL;
-    struct resource *c;
-    struct resource *r;
+    JSON o = NULL;
+    struct resource *child, *curr;
 
     asprintf (&uri, "%s:%s", resource, rdl_resource_path (jr));
-    r = rdl_resource_get (rdl, uri);
+    curr = rdl_resource_get (rdl, uri);
 
-    if (r) {
-        o = rdl_resource_json (r);
+    if (curr) {
+        o = rdl_resource_json (curr);
         Jget_str (o, "type", &type);
         if (strcmp (type, CORETYPE) == 0) {
-            rdl_resource_delete_tag (r, lwjtag);
-            rdl_resource_tag (r, IDLETAG);
+            rdl_resource_delete_tag (curr, lwjtag);
+            rdl_resource_tag (curr, IDLETAG);
         }
         //flux_log (h, LOG_DEBUG, "resource released: %s", json_object_to_json_string (o));
-        json_object_put (o);
+        Jput (o);
+        rdl_resource_destroy (curr);
 
-        rdl_resource_iterator_reset(jr);
-        while (!rc && (c = rdl_resource_next_child (jr))) {
-            rc = release_lwj_resource (rdl, c, lwjtag);
-            rdl_resource_destroy (c);
+        rdl_resource_iterator_reset (jr);
+        while (!rc && (child = rdl_resource_next_child (jr))) {
+            rc = release_lwj_resource (rdl, child, lwjtag);
+            rdl_resource_destroy (child);
         }
+        rdl_resource_iterator_reset (jr);
     } else {
         flux_log (h, LOG_ERR, "release_lwj_resource failed to get %s", uri);
         rc = -1;
@@ -757,6 +757,7 @@ int release_resources (struct rdl *rdl, const char *uri, flux_lwj_t *job)
     if (jr) {
         rc = release_lwj_resource (rdl, jr, lwjtag);
         deallocate_bandwidth (rdl, uri, job);
+        rdl_resource_destroy (jr);
     } else {
         flux_log (h, LOG_ERR, "release_resources failed to get resources: %s",
                   strerror (errno));
@@ -775,13 +776,10 @@ update_job_cores (struct resource *jr, flux_lwj_t *job,
                   uint64_t *pnode, uint32_t *pcores)
 {
     bool imanode = false;
-    char *key = NULL;
-    char *lwjtag = NULL;
+    char *key = NULL, *lwjtag = NULL;
     const char *type = NULL;
-    json_object *o = NULL;
-    json_object *o2 = NULL;
-    json_object *o3 = NULL;
-    struct resource *c;
+    JSON o = NULL, o2 = NULL, o3 = NULL;
+    struct resource *child;
     int rc = 0;
 
     if (jr) {
@@ -813,11 +811,11 @@ update_job_cores (struct resource *jr, flux_lwj_t *job,
         }
         free (lwjtag);
     }
-    json_object_put (o);
+    Jput (o);
 
-    while ((rc == 0) && (c = rdl_resource_next_child (jr))) {
-        rc = update_job_cores (c, job, pnode, pcores);
-        rdl_resource_destroy (c);
+    while ((rc == 0) && (child = rdl_resource_next_child (jr))) {
+        rc = update_job_cores (child, job, pnode, pcores);
+        rdl_resource_destroy (child);
     }
 
     if (imanode) {
@@ -852,14 +850,14 @@ update_job_resources (flux_lwj_t *job)
     uint64_t node = 0;
     uint32_t cores = 0;
     struct resource *jr = rdl_resource_get (job->rdl, resource);
-    if (jr == NULL)
-        fputs(rdl_serialize(job->rdl), stderr);
     int rc = -1;
 
-    if (jr != NULL)
+    if (jr) {
         rc = update_job_cores (jr, job, &node, &cores);
-    else
+        rdl_resource_destroy (jr);
+    } else {
         flux_log (h, LOG_ERR, "update_job_resources passed a null resource");
+    }
 
     return rc;
 }
@@ -917,15 +915,17 @@ static int64_t get_free_count (struct rdl *rdl, const char *uri, const char *typ
 
 	o = rdl_resource_aggregate_json (fr);
 	if (o) {
-		//const char *json_string = Jtostr (o);
-		//flux_log (h, LOG_DEBUG, "agg json - %s", json_string);
 		if (!Jget_int64(o, type, &count)) {
 			flux_log (h, LOG_ERR, "schedule_job failed to get %s: %d",
 					  type, rc);
 			return -1;
+		} else {
+			flux_log (h, LOG_DEBUG, "schedule_job found %ld idle %ss", count, type);
 		}
 		Jput (o);
 	}
+
+    rdl_resource_destroy (fr);
 
 	return count;
 }
@@ -1108,7 +1108,7 @@ static int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job)
             int old_io_rate = job->req.io_rate;
             int old_alloc_nnodes = job->alloc.nnodes;
             int old_alloc_ncores = job->alloc.ncores;
-            flux_log (h, LOG_DEBUG, "job %ld, nnodes: %d, ncores: %d, io_rate: %d", job->lwj_id, old_nnodes, old_ncores, old_io_rate);
+            //flux_log (h, LOG_DEBUG, "job %ld, nnodes: %d, ncores: %d, io_rate: %d", job->lwj_id, old_nnodes, old_ncores, old_io_rate);
 			rdl_resource_iterator_reset (fr);
 			a = rdl_accumulator_create (rdl);
 			if (allocate_resources (rdl, fr, a, job, ancestors)) {
@@ -1141,7 +1141,7 @@ static int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job)
 		} else {
             flux_log (h, LOG_DEBUG, "not enough available cores, skipping this job");
         }
-        //rdl_resource_destroy (fr);
+        rdl_resource_destroy (fr);
         rdl_destroy (frdl);
 	}
 
@@ -1245,18 +1245,15 @@ static bool backfill_job (struct rdl *rdl, struct rdl *shadow_rdl, const char *u
 
     flux_log (h, LOG_DEBUG, "backfill info - term_before_shadow_time: %d, curr_free_cores: %ld, job_req_cores: %d", terminates_before_shadow_time, *curr_free_cores, job->req.ncores);
 
-    /*
     if (*curr_free_cores < job->req.ncores) {
         return false;
-    } else 
-    */
-    if (terminates_before_shadow_time) {
+    } else if (terminates_before_shadow_time) {
         //Job ends before reserved job starts, and we have enough cores currently to schedule it
         if (schedule_job (rdl, uri, job)) {
             *curr_free_cores -= job->req.ncores;
             return true;
         }
-    } else  {
+    } else {
         //Job ends after reserved job starts, make sure we will have
         //enough free resources (cores + IO) at shadow time to not
         //delay the reserved job
@@ -1264,7 +1261,6 @@ static bool backfill_job (struct rdl *rdl, struct rdl *shadow_rdl, const char *u
         if (schedule_job_without_update(shadow_rdl, uri, job, &accum)){
             if (schedule_job (rdl, uri, job)) {
                 *curr_free_cores -= job->alloc.ncores;
-                //rdl_destroy (job_rdl);
                 return true;
             } else {
                 job->rdl = rdl_accumulator_copy (accum);
@@ -1920,6 +1916,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	send_reply_request (h, sim_state);
 
+    free_simstate (sim_state);
 	Jput (o);
 	zmsg_destroy (zmsg);
 	return 0;
@@ -1989,7 +1986,6 @@ int mod_main (flux_t p, zhash_t *args)
 {
     int rc = 0;
     char *path;
-    struct rdllib *l = NULL;
     struct resource *r = NULL;
 
     h = p;
@@ -2006,7 +2002,7 @@ int mod_main (flux_t p, zhash_t *args)
         goto ret;
     }
 
-    if (!(l = rdllib_open ()) || !(global_rdl = rdl_loadfile (l, path))) {
+    if (!(global_rdllib = rdllib_open ()) || !(global_rdl = rdl_loadfile (global_rdllib, path))) {
         flux_log (h, LOG_ERR, "failed to load resources from %s: %s",
                   path, strerror (errno));
         rc = -1;
@@ -2100,7 +2096,7 @@ skip_for_sim:
     zlist_destroy (&kvs_queue);
     zlist_destroy (&timer_queue);
 
-    rdllib_close(l);
+    rdllib_close(global_rdllib);
 
 ret:
     return rc;
