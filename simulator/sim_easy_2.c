@@ -470,8 +470,6 @@ static void deallocate_resource_bandwidth (struct resource *r, int64_t amount)
     rdl_resource_get_int (r, "alloc_bw", &old_alloc_bw);
     new_alloc_bw = old_alloc_bw - amount;
 
-    //flux_log (h, LOG_DEBUG, "deallocating bandwidth (was: %ld, is: %ld) at %s", old_alloc_bw, new_alloc_bw, Jtostr (o));
-
     if (new_alloc_bw < 0) {
       flux_log (h, LOG_ERR, "too much bandwidth deallocated (%ld) - %s",
                 amount, Jtostr (o));
@@ -509,6 +507,7 @@ static void deallocate_bandwidth_helper (struct rdl *rdl, struct resource *jr,
 	const char *type = NULL;
 	JSON o = NULL;
 
+    //TODO: check if this is necessary
     asprintf (&uri, "%s:%s", resource, rdl_resource_path (jr));
     curr = rdl_resource_get (rdl, uri);
 
@@ -583,10 +582,6 @@ static void allocate_resource_bandwidth (struct resource *r, int64_t amount)
 	rdl_resource_get_int (r, "alloc_bw", &old_alloc_bw);
 	new_alloc_bw = amount + old_alloc_bw;
 	rdl_resource_set_int (r, "alloc_bw", new_alloc_bw);
-
-    //JSON o = rdl_resource_json (r);
-    //flux_log (h, LOG_DEBUG, "allocating bandwidth (was: %ld, is: %ld) at %s", old_alloc_bw, new_alloc_bw, Jtostr (o));
-    //Jput(o);
 }
 
 static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
@@ -599,9 +594,6 @@ static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *an
 	avail_bw = get_avail_bandwidth (r);
 
 	if (avail_bw < job->req.io_rate) {
-        //JSON o = rdl_resource_json (r);
-        //flux_log (h, LOG_DEBUG, "not enough bandwidth (has: %ld, needs: %ld) at %s", avail_bw, job->req.io_rate, Jtostr (o));
-        //Jput (o);
         return false;
 	}
 
@@ -610,9 +602,6 @@ static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *an
 	while (curr_r != NULL) {
 		avail_bw = get_avail_bandwidth (curr_r);
 		if (avail_bw < job->req.io_rate) {
-			//JSON o = rdl_resource_json (curr_r);
-			//flux_log (h, LOG_DEBUG, "not enough bandwidth (has: %ld, needs: %ld) at %s", avail_bw, job->req.io_rate, Jtostr (o));
-			//Jput (o);
 			return false;
 		}
 		curr_r = zlist_next (ancestors);
@@ -668,7 +657,6 @@ allocate_resources (struct rdl *rdl, struct resource *fr,
             rdl_resource_delete_tag (r, IDLETAG);
             rdl_accumulator_add (a, r);
 			}*/
-			//flux_log (h, LOG_DEBUG, "allocated node: %s", json_object_to_json_string (o));
     } else if (job->req.ncores && (strcmp (type, CORETYPE) == 0) &&
                (job->req.ncores > job->req.nnodes)) {
         /* We put the (job->req.ncores > job->req.nnodes) requirement
@@ -724,7 +712,6 @@ release_lwj_resource (struct rdl *rdl, struct resource *jr, char *lwjtag)
             rdl_resource_delete_tag (curr, lwjtag);
             rdl_resource_tag (curr, IDLETAG);
         }
-        //flux_log (h, LOG_DEBUG, "resource released: %s", json_object_to_json_string (o));
         Jput (o);
         rdl_resource_destroy (curr);
 
@@ -784,9 +771,7 @@ update_job_cores (struct resource *jr, flux_lwj_t *job,
 
     if (jr) {
         o = rdl_resource_json (jr);
-        if (o) {
-            //flux_log (h, LOG_DEBUG, "updating: %s", json_object_to_json_string (o));
-        } else {
+        if (!o) {
             flux_log (h, LOG_ERR, "update_job_cores invalid resource");
             rc = -1;
             goto ret;
@@ -1026,8 +1011,6 @@ static int schedule_job_without_update (struct rdl *rdl, const char *uri, flux_l
             int old_alloc_nnodes = job->alloc.nnodes;
             int old_alloc_ncores = job->alloc.ncores;
 
-            //flux_log (h, LOG_DEBUG, "job %ld, nnodes: %d, ncores: %d, io_rate: %d", job->lwj_id, old_nnodes, old_ncores, old_io_rate);
-            //fprintf (stderr, "job %ld, nnodes: %d, ncores: %d, io_rate: %d\n", job->lwj_id, old_nnodes, old_ncores, old_io_rate);
 			rdl_resource_iterator_reset (fr);
 			*a = rdl_accumulator_create (rdl);
 			if (allocate_resources (rdl, fr, *a, job, ancestors)) {
@@ -1108,7 +1091,6 @@ static int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job)
             int old_io_rate = job->req.io_rate;
             int old_alloc_nnodes = job->alloc.nnodes;
             int old_alloc_ncores = job->alloc.ncores;
-            //flux_log (h, LOG_DEBUG, "job %ld, nnodes: %d, ncores: %d, io_rate: %d", job->lwj_id, old_nnodes, old_ncores, old_io_rate);
 			rdl_resource_iterator_reset (fr);
 			a = rdl_accumulator_create (rdl);
 			if (allocate_resources (rdl, fr, a, job, ancestors)) {
@@ -1197,23 +1179,16 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_
         if (curr_job_t == NULL) {
             flux_log (h, LOG_ERR, "Curr job is null");
         }
-        //flux_log (h, LOG_DEBUG, "calc_shadow_info - reserved_job req cores: %d, shadow_free_cores: %ld, curr_job: %d, curr_job_ncores: %d", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
-        //fprintf (stderr, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d\n", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
-
         //De-allocate curr_job_t's resources from the shadow_rdl
         curr_lwj_job = find_lwj(curr_job_t->id);
-        //fprintf (stderr, "job %ld used %ld MB/s of IO per core\n", curr_lwj_job->lwj_id, curr_lwj_job->req.io_rate);
         release_resources (shadow_rdl, uri, curr_lwj_job);
 
         *shadow_free_cores += curr_job_t->ncpus;
         *shadow_time = curr_job_t->start_time + curr_job_t->time_limit;
-        //flux_log (h, LOG_DEBUG, "calc_shadow_info - curr_job id: %d, curr_job submit_time: %f, curr_job start_time: %f, curr_job time_limit: %f, new shadow_time: %f", curr_job_t->id, curr_job_t->submit_time, curr_job_t->start_time, curr_job_t->time_limit, *shadow_time);
         curr_job_t = zlist_next (running_jobs);
     }
 
     flux_log (h, LOG_DEBUG, "Entering the exact shadow loop");
-    //fprintf (stderr, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d\n", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
-    //fputs (rdl_serialize (shadow_rdl), stderr);
 
     //Do a loop checking if the reserved job can be scheduled (considering IO)
     struct rdl_accumulator *accum = NULL;
@@ -1221,21 +1196,15 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_
         if (curr_job_t == NULL) {
             flux_log (h, LOG_ERR, "Curr job is null");
         }
-        //flux_log (h, LOG_DEBUG, "calc_shadow_info - reserved_job req cores: %d, shadow_free_cores: %ld, curr_job: %d, curr_job_ncores: %d", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
-        //fprintf (stderr, "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, curr_job_ncores: %d\n", reserved_job->req.ncores, *shadow_free_cores, curr_job_t->id, curr_job_t->ncpus);
-
         //De-allocate curr_job_t's resources from the shadow_rdl
         curr_lwj_job = find_lwj(curr_job_t->id);
-        //fprintf (stderr, "job %ld used %ld MB/s of IO per core\n", curr_lwj_job->lwj_id, curr_lwj_job->req.io_rate);
         release_resources (shadow_rdl, uri, curr_lwj_job);
 
         *shadow_free_cores += curr_job_t->ncpus;
         *shadow_time = curr_job_t->start_time + curr_job_t->time_limit;
-        //flux_log (h, LOG_DEBUG, "calc_shadow_info - curr_job id: %d, curr_job submit_time: %f, curr_job start_time: %f, curr_job time_limit: %f, new shadow_time: %f", curr_job_t->id, curr_job_t->submit_time, curr_job_t->start_time, curr_job_t->time_limit, *shadow_time);
         curr_job_t = zlist_next (running_jobs);
     }
     *shadow_free_cores -= reserved_job->req.ncores;
- 
 }
 
 //Determines if a job is eligible for backfilling or not
