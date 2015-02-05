@@ -471,8 +471,6 @@ static void deallocate_resource_bandwidth (struct resource *r, int64_t amount)
     rdl_resource_get_int (r, "alloc_bw", &old_alloc_bw);
     new_alloc_bw = old_alloc_bw - amount;
 
-    //flux_log (h, LOG_DEBUG, "deallocating bandwidth (was: %ld, is: %ld) at %s", old_alloc_bw, new_alloc_bw, Jtostr (o));
-
     if (new_alloc_bw < 0) {
       flux_log (h, LOG_ERR, "too much bandwidth deallocated (%ld) - %s",
                 amount, Jtostr (o));
@@ -572,10 +570,6 @@ static void allocate_resource_bandwidth (struct resource *r, int64_t amount)
 	rdl_resource_get_int (r, "alloc_bw", &old_alloc_bw);
 	new_alloc_bw = amount + old_alloc_bw;
 	rdl_resource_set_int (r, "alloc_bw", new_alloc_bw);
-
-    //JSON o = rdl_resource_json (r);
-    //flux_log (h, LOG_DEBUG, "allocating bandwidth (was: %ld, is: %ld) at %s", old_alloc_bw, new_alloc_bw, Jtostr (o));
-    //Jput(o);
 }
 
 static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
@@ -628,7 +622,6 @@ allocate_resources (struct resource *fr, struct rdl_accumulator *accum,
             rdl_resource_delete_tag (r, IDLETAG);
             rdl_accumulator_add (a, r);
 			}*/
-			//flux_log (h, LOG_DEBUG, "allocated node: %s", json_object_to_json_string (o));
     } else if (job->req.ncores && (strcmp (type, CORETYPE) == 0) &&
                (job->req.ncores > job->req.nnodes)) {
         /* We put the (job->req.ncores > job->req.nnodes) requirement
@@ -684,7 +677,6 @@ release_lwj_resource (struct rdl *rdl, struct resource *jr, char *lwjtag)
             rdl_resource_delete_tag (curr, lwjtag);
             rdl_resource_tag (curr, IDLETAG);
         }
-        //flux_log (h, LOG_DEBUG, "resource released: %s", json_object_to_json_string (o));
         Jput (o);
         rdl_resource_destroy (curr);
 
@@ -744,9 +736,7 @@ update_job_cores (struct resource *jr, flux_lwj_t *job,
 
     if (jr) {
         o = rdl_resource_json (jr);
-        if (o) {
-            //flux_log (h, LOG_DEBUG, "updating: %s", json_object_to_json_string (o));
-        } else {
+        if (!o) {
             flux_log (h, LOG_ERR, "update_job_cores invalid resource");
             rc = -1;
             goto ret;
@@ -941,7 +931,6 @@ int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job, bool clear_
             int old_io_rate = job->req.io_rate;
             int old_alloc_nnodes = job->alloc.nnodes;
             int old_alloc_ncores = job->alloc.ncores;
-            //flux_log (h, LOG_DEBUG, "job %ld, nnodes: %d, ncores: %d, io_rate: %d", job->lwj_id, old_nnodes, old_ncores, old_io_rate);
 			rdl_resource_iterator_reset (fr);
 			a = rdl_accumulator_create (rdl);
 			if (allocate_resources (fr, a, job, ancestors)) {
