@@ -285,14 +285,9 @@ static double determine_job_min_bandwidth_helper(struct resource *r, double curr
   double total_requested_bandwidth, child_min_bandwidth, curr_average_bandwidth, 
       child_alloc_bandwidth, total_used_bandwidth, this_max_bandwidth, num_children,
       this_alloc_bandwidth;
-  JSON o, tags, jobtag_json, hierarchy;
+  JSON o, tags, jobtag_json;
   zlist_t *child_list = zlist_new ();
   const char *type;
-
-  o = rdl_resource_json(r);
-  Jget_obj (o, "hierarchy", &hierarchy);
-  Jput (hierarchy);
-  Jput (o);
 
   //Check if leaf node in hierarchy
   rdl_resource_iterator_reset (r);
@@ -346,8 +341,8 @@ static double determine_job_min_bandwidth_helper(struct resource *r, double curr
       //Recurse on the child
       child_min_bandwidth = determine_job_min_bandwidth_helper(curr_child, child_alloc_bandwidth, jobtag_char);
       if (child_min_bandwidth == 0) {
-        JSON child_json = rdl_resource_json (curr_child);
-        Jput (child_json);
+        //JSON child_json = rdl_resource_json (curr_child);
+        //Jput (child_json);
       } else {
         //Set the min if the child's min is lower
         curr_min_bandwidth = (child_min_bandwidth < curr_min_bandwidth) ? child_min_bandwidth : curr_min_bandwidth;
@@ -366,9 +361,12 @@ static double determine_job_min_bandwidth_helper(struct resource *r, double curr
 //Could return hash table of ids -> min bandwidth
 static double determine_job_min_bandwidth(job_t *job, struct rdl *rdl) {
   char *jobtag;
+  double min_bw;
   struct resource *r = rdl_resource_get (rdl, "default");
   asprintf (&jobtag, "lwj.%d", job->id);
-  return determine_job_min_bandwidth_helper (r, get_max_bandwidth(r), jobtag);
+  min_bw = determine_job_min_bandwidth_helper (r, get_max_bandwidth(r), jobtag);
+  rdl_resource_destroy (r);
+  return min_bw;
 }
 
 //Get the resource tree of the job
@@ -543,7 +541,6 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 //Handle the trigger
 	ctx->sim_state = json_to_sim_state (o);
-    rdllib_close(ctx->rdllib);
     ctx->rdllib = rdllib_open();
     ctx->rdl = rdl_load(ctx->rdllib, ctx->sim_state->rdl_string);
 	handle_queued_events (ctx);
@@ -552,6 +549,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	next_termination = determine_next_termination (ctx, ctx->sim_state->sim_time);
 	set_event_timer (ctx, "sim_exec", next_termination);
 	send_reply_request (h, ctx->sim_state);
+    rdllib_close(ctx->rdllib);
 
 //Cleanup
 	free_simstate (ctx->sim_state);
