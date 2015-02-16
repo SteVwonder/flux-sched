@@ -633,6 +633,7 @@ allocate_resources (struct resource *fr, struct rdl_accumulator *accum,
               job->req.ncores--;
               job->alloc.ncores++;
               rdl_resource_tag (curr, lwjtag);
+              rdl_resource_set_int (curr, "lwj", job->lwj_id);
               rdl_resource_delete_tag (curr, IDLETAG);
               if (rdl_accumulator_add (accum, curr) < 0) {
                   flux_log (h, LOG_ERR, "failed to allocate core: %s", Jtostr (o));
@@ -675,6 +676,7 @@ release_lwj_resource (struct rdl *rdl, struct resource *jr, char *lwjtag)
         Jget_str (o, "type", &type);
         if (strcmp (type, CORETYPE) == 0) {
             rdl_resource_delete_tag (curr, lwjtag);
+            rdl_resource_delete_tag (curr, "lwj");
             rdl_resource_tag (curr, IDLETAG);
         }
         Jput (o);
