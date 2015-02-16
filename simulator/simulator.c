@@ -206,6 +206,9 @@ int put_job_in_kvs (job_t *job)
 
 job_t *pull_job_from_kvs (kvsdir_t kvsdir)
 {
+    if (kvsdir == NULL)
+        return NULL;
+
 	job_t *job = blank_job();
 
 	job->kvs_dir = kvsdir;

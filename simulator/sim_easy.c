@@ -1081,11 +1081,14 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs, bool resourc
 		if (curr_job->state == j_unsched) {
 			job_scheduled = schedule_job(rdl, uri, curr_job, clear_cache);
             if (job_scheduled) {
-                kvs_get_dir (h,  &curr_kvs_dir, "lwj.%d", curr_job->lwj_id);
-                curr_job_t = pull_job_from_kvs (curr_kvs_dir);
-                if (curr_job_t->start_time == 0)
-                    curr_job_t->start_time = sim_state->sim_time;
-                zlist_append (running_jobs, curr_job_t);
+                if (kvs_get_dir (h,  &curr_kvs_dir, "lwj.%ld", curr_lwj_job->lwj_id)) {
+                    flux_log (h, LOG_ERR, "lwj.%ld kvsdir not found", curr_lwj_job->lwj_id);
+                } else {
+                    curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+                    if (curr_job_t->start_time == 0)
+                        curr_job_t->start_time = sim_state->sim_time;
+                    zlist_append (running_jobs, curr_job_t);
+                }
             } else {
                 reserved_job = curr_job;
             }
@@ -1097,17 +1100,20 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs, bool resourc
     if (reserved_job && curr_job) {
         curr_lwj_job = zlist_first (r_queue);
         while (curr_lwj_job != NULL) {
-            kvs_get_dir (h,  &curr_kvs_dir, "lwj.%d", curr_lwj_job->lwj_id);
-            curr_job_t = pull_job_from_kvs (curr_kvs_dir);
-            if (curr_job_t->start_time == 0)
-                curr_job_t->start_time = sim_state->sim_time;
-            zlist_append (running_jobs, curr_job_t);
+            if (kvs_get_dir (h,  &curr_kvs_dir, "lwj.%ld", curr_lwj_job->lwj_id)) {
+                flux_log (h, LOG_ERR, "lwj.%ld kvsdir not found", curr_lwj_job->lwj_id);
+            } else {
+                curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+                if (curr_job_t->start_time == 0)
+                    curr_job_t->start_time = sim_state->sim_time;
+                zlist_append (running_jobs, curr_job_t);
+            }
             curr_lwj_job = zlist_next (r_queue);
         }
         calculate_shadow_info (reserved_job, rdl, uri, running_jobs, &shadow_time, &shadow_free_cores);
         flux_log(h, LOG_DEBUG, "Job %ld has the reservation", reserved_job->lwj_id);
         flux_log(h, LOG_DEBUG, "Shadow info - shadow time: %f, shadow free cores: %ld", shadow_time, shadow_free_cores);
-        
+
         frdl = get_free_subset (rdl, "core");
         if (frdl) {
             curr_free_cores = get_free_count (frdl, uri, "core");
@@ -1135,9 +1141,9 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs, bool resourc
             } else {
                 flux_log(h, LOG_DEBUG, "Job %ld is not eligible for backfilling, moving on to the next job.", curr_job->lwj_id);
             }
-            curr_job = zlist_next (jobs);
-        }    
-    }   
+            curr_job = zlist_next (queued_jobs);
+        }
+    }
 
 	flux_log (h, LOG_DEBUG, "Finished iterating over the jobs list");
     curr_job_t = zlist_pop (running_jobs);
@@ -1473,7 +1479,7 @@ lwjstate_cb (const char *key, const char *val, void *arg, int errnum)
     }
 
     if (extract_lwjid (key, &lwj_id) == -1) {
-        flux_log (h, LOG_ERR, "ill-formed key");
+        flux_log (h, LOG_ERR, "ill-formed key: %s", key);
         goto ret;
     }
     flux_log (h, LOG_DEBUG, "lwjstate_cb: %ld, %s", lwj_id, val);
@@ -1574,6 +1580,9 @@ newlwj_cb (const char *key, int64_t val, void *arg, int errnum)
             flux_log (h, LOG_ERR, "newlwj_cb key(%s), val(%ld): %s",
                       key, val, strerror (errnum));
             goto error;
+        } else {
+            flux_log (h, LOG_DEBUG, "newlwj_cb key(%s), val(%ld): %s",
+                      key, val, strerror (errnum));
         }
         goto ret;
     } else if (val < 0) {
