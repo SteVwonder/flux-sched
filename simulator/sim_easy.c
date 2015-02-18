@@ -133,6 +133,8 @@ static void queue_timer_change (const char* module)
 //Reply back to the sim module with the updated sim state (in JSON form)
 int send_reply_request (flux_t h, sim_state_t *sim_state)
 {
+    if (sim_state->rdl_string)
+        free (sim_state->rdl_string);
     sim_state->rdl_string = rdl_serialize(global_rdl);
 	JSON o = sim_state_to_json (sim_state);
 	Jadd_bool (o, "event_finished", true);
@@ -143,7 +145,6 @@ int send_reply_request (flux_t h, sim_state_t *sim_state)
 	}
 	flux_log(h, LOG_DEBUG, "sent a reply request");
    Jput (o);
-   free_simstate (sim_state);
    return 0;
 }
 
@@ -1706,6 +1707,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	send_reply_request (h, sim_state);
 
+    free_simstate (sim_state);
 	Jput (o);
 	zmsg_destroy (zmsg);
 	return 0;
