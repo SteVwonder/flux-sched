@@ -5,6 +5,7 @@ LIBS = $(FLUX_LIBS) $(RDL_LIBS)
 
 CONF=../conf/hype-io.lua
 JOBDATA=job_data/hype-large.sorted.csv
+SAVEPATH=./
 
 COMMON_OBJS = simulator.o xzmalloc.o log.o jsonutil.o
 
@@ -31,7 +32,7 @@ callgrind:
 valgrind:
 	valgrind --log-file="%p.valgrind.out" --tool=memcheck --leak-check=full --show-leak-kinds=all --trace-children=yes $(FLUX) start
 load:
-	$(FLUX) module load ./sim.so
+	$(FLUX) module load ./sim.so save-path=$(SAVEPATH)
 	$(FLUX) module load ./submit.so job-csv=$(JOBDATA)
 	$(FLUX) module load ./sim_exec.so
 unload:
