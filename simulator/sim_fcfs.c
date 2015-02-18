@@ -132,6 +132,8 @@ static void queue_timer_change (const char* module)
 //Reply back to the sim module with the updated sim state (in JSON form)
 int send_reply_request (flux_t h, sim_state_t *sim_state)
 {
+    if (sim_state->rdl_string)
+        free (sim_state->rdl_string);
     sim_state->rdl_string = rdl_serialize(rdl);
 	JSON o = sim_state_to_json (sim_state);
 	Jadd_bool (o, "event_finished", true);

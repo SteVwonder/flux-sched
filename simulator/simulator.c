@@ -100,6 +100,7 @@ JSON sim_state_to_json (sim_state_t *sim_state)
     if (sim_state->rdl_string != NULL)
       Jadd_str (o, "rdl", sim_state->rdl_string);
 
+    Jput (event_timers);
 	return o;
 }
 
