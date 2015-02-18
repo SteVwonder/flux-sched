@@ -4,21 +4,21 @@ CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS)
 LIBS = $(FLUX_LIBS) $(RDL_LIBS)
 
 CONF=../conf/hype-io.lua
-JOBDATA=job_data/hype.csv
+JOBDATA=job_data/hype-large.sorted.csv
 
 COMMON_OBJS = simulator.o xzmalloc.o log.o jsonutil.o
 
-BUILD = sim.so submit.so sim_sched.so sim_exec.so
+SCHEDULERS_C = $(wildcard sim_fcfs*.c) $(wildcard sim_easy*.c) $(wildcard sim_ilp*.c)
+SCHEDULERS_SO = $(SCHEDULERS_C:sim_%.c=sim_sched_%.so)
+
+BUILD = sim.so submit.so sim_exec.so $(SCHEDULERS_SO)
 
 all:  $(BUILD)
 
-sim.so: simsrv.o $(COMMON_OBJS)
+sim_sched_%.so: sim_%.c $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
-submit.so: submitsrv.o $(COMMON_OBJS)
-	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
-sim_sched.so: sim_schedsrv.o $(COMMON_OBJS)
-	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
-sim_exec.so: sim_execsrv.o $(COMMON_OBJS)
+
+%.so : %srv.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
 
 # N.B. "race fix" in job module is conditionally disabled
@@ -33,13 +33,14 @@ valgrind:
 load:
 	$(FLUX) module load ./sim.so
 	$(FLUX) module load ./submit.so job-csv=$(JOBDATA)
-	$(FLUX) module load ./sim_sched.so rdl-conf=$(CONF)
 	$(FLUX) module load ./sim_exec.so
 unload:
 	$(FLUX) module load sim_exec
 	$(FLUX) module load sim_sched
 	$(FLUX) module load submit
 	$(FLUX) module load sim
+sim_sched_%: sim_sched_%.so load
+	$(FLUX) module load ./$@.so rdl-conf=$(CONF)
 
 check:
 	echo "This is an empty depenendency"
