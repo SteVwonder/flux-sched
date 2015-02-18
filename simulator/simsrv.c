@@ -58,6 +58,13 @@ static void freectx (ctx_t *ctx)
 static ctx_t *getctx (flux_t h)
 {
     ctx_t *ctx = (ctx_t *)flux_aux_get (h, "simsrv");
+    int max_fname_len = 100, i = 0;
+    char filename[max_fname_len];
+
+    snprintf (filename, max_fname_len, "sim_state_save.json");
+    for (i = 0; access( filename, F_OK ) != -1; i++) { //file already exists
+        snprintf (filename, max_fname_len, "sim_state_save.%d.json", i);
+    }
 
     if (!ctx) {
         ctx = xzmalloc (sizeof (*ctx));
@@ -65,7 +72,7 @@ static ctx_t *getctx (flux_t h)
         ctx->master = flux_treeroot (h);
         ctx->rank = flux_rank (h);
 		ctx->sim_state = new_simstate ();
-        ctx->output_file = fopen ("sim_state_save.json", "w");
+        ctx->output_file = fopen (filename, "w");
         flux_aux_set (h, "simsrv", ctx, (FluxFreeFn)freectx);
     }
 
