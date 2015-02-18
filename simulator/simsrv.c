@@ -45,7 +45,7 @@ typedef struct {
     flux_t h;
     bool master;
     int rank;
-  FILE *output_file;
+    FILE *output_file;
 } ctx_t;
 
 static void freectx (ctx_t *ctx)
@@ -55,15 +55,15 @@ static void freectx (ctx_t *ctx)
     free (ctx);
 }
 
-static ctx_t *getctx (flux_t h)
+static ctx_t *getctx (flux_t h, char* save_path)
 {
     ctx_t *ctx = (ctx_t *)flux_aux_get (h, "simsrv");
     int max_fname_len = 100, i = 0;
     char filename[max_fname_len];
 
-    snprintf (filename, max_fname_len, "sim_state_save.json");
+    snprintf (filename, max_fname_len, "%s/sim_state_save.json", save_path);
     for (i = 0; access( filename, F_OK ) != -1; i++) { //file already exists
-        snprintf (filename, max_fname_len, "sim_state_save.%d.json", i);
+        snprintf (filename, max_fname_len, "%s/sim_state_save.%d.json", save_path, i);
     }
 
     if (!ctx) {
@@ -374,17 +374,26 @@ const int htablen = sizeof (htab) / sizeof (htab[0]);
 
 int mod_main(flux_t h, zhash_t *args)
 {
-	ctx_t *ctx = getctx(h);
+	ctx_t *ctx;
+    char* sim_state_save_path;
+
 	if (flux_rank (h) != 0) {
 		flux_log(h, LOG_ERR, "sim module must only run on rank 0");
 		return -1;
 	}
 	flux_log (h, LOG_INFO, "sim comms module starting");
 
+    if (!(sim_state_save_path = zhash_lookup (args, "save-path"))) {
+        flux_log (h, LOG_ERR, "save-path argument is not set, defaulting to ./");
+        sim_state_save_path = "./";
+    }
+    ctx = getctx(h, sim_state_save_path);
+
 	if (flux_msghandler_addvec (h, htab, htablen, ctx) < 0) {
 		flux_log (h, LOG_ERR, "flux_msghandler_add: %s", strerror (errno));
 		return -1;
 	}
+
 	sleep(1);
 	flux_log (h, LOG_DEBUG, "sim left sleep");
 	if (send_start_event (h) < 0){
