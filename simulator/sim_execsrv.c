@@ -181,14 +181,16 @@ static int handle_completed_jobs (ctx_t *ctx)
 
 	while (num_jobs > 0){
 		job = zlist_pop (running_jobs);
-		if (job->execution_time > 0)
+		if (job->execution_time > 0) {
 			curr_progress = calc_curr_progress (job, ctx->sim_state->sim_time);
-		else
+        } else {
 			curr_progress = 1;
+			flux_log (ctx->h, LOG_DEBUG, "handle_completed_jobs found a job (%d) with execution time <= 0 (%f), setting progress = 1", job->id, job->execution_time);
+        }
 		if (curr_progress < 1){
 			zlist_append (running_jobs, job);
 		} else {
-			flux_log (ctx->h, LOG_ERR, "handle_completed_jobs found a completed job");
+			flux_log (ctx->h, LOG_DEBUG, "handle_completed_jobs found a completed job");
 			complete_job (ctx, job, sim_time);
 		}
 		num_jobs--;
