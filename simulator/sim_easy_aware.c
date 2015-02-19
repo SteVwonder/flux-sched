@@ -651,6 +651,7 @@ allocate_resources (struct rdl *rdl, struct resource *fr,
     struct resource *child, *curr;
     bool found = false;
 
+    //TODO: check if this is necessary
     asprintf (&uri, "%s:%s", resource, rdl_resource_path (fr));
     curr = rdl_resource_get (rdl, uri);
     free (uri);
@@ -682,6 +683,7 @@ allocate_resources (struct rdl *rdl, struct resource *fr,
               job->req.ncores--;
               job->alloc.ncores++;
               rdl_resource_tag (curr, lwjtag);
+              rdl_resource_set_int (curr, "lwj", job->lwj_id);
               rdl_resource_delete_tag (curr, IDLETAG);
               if (rdl_accumulator_add (accum, curr) < 0) {
                   flux_log (h, LOG_ERR, "failed to allocate core: %s", Jtostr (o));
@@ -724,6 +726,7 @@ release_lwj_resource (struct rdl *rdl, struct resource *jr, char *lwjtag)
         Jget_str (o, "type", &type);
         if (strcmp (type, CORETYPE) == 0) {
             rdl_resource_delete_tag (curr, lwjtag);
+            rdl_resource_delete_tag (curr, "lwj");
             rdl_resource_tag (curr, IDLETAG);
         }
         Jput (o);
@@ -928,66 +931,6 @@ static int64_t get_free_count (struct rdl *rdl, const char *uri, const char *typ
 
 	return count;
 }
-
-/*
-static int job_is_schedulable (struct rdl *rdl, const char *uri, flux_lwj_t *job)
-{
-    //int64_t nodes = -1;
-    int rc = 0;
-
-	//The "cache"
-    int64_t cores = -1;
-    struct rdl *frdl = NULL;
-    struct resource *fr = NULL;
-    struct rdl_accumulator *a = NULL;
-
-    if (!job || !rdl || !uri) {
-        flux_log (h, LOG_ERR, "job_is_schedulable invalid arguments");
-        goto ret;
-    }
-
-    frdl = get_free_subset (rdl, "core");
-    if (frdl) {
-        cores = get_free_count (frdl, uri, "core");
-        fr = rdl_resource_get (frdl, uri);
-    }
-
-	if (frdl && fr && cores > 0) {
-		if (cores >= job->req.ncores) {
-            zlist_t *ancestors = zlist_new ();
-            //TODO: revert this in the deallocation/rollback
-            int old_nnodes = job->req.nnodes;
-            int old_ncores = job->req.ncores;
-            int old_io_rate = job->req.io_rate;
-			rdl_resource_iterator_reset (fr);
-			a = rdl_accumulator_create (rdl);
-			if (allocate_resources (rdl, fr, a, job, ancestors)) {
-				flux_log (h, LOG_DEBUG, "job %ld is schedulable", job->lwj_id);                
-                rc = 1;
-            }
-            job->req.io_rate = old_io_rate;
-            job->req.nnodes = old_nnodes;
-            job->req.ncores = old_ncores;
-            job->alloc.nnodes  = 0;
-            job->alloc.ncores  = 0;
-
-            if (!rdl_accumulator_is_empty(a)) {
-                job->rdl = rdl_accumulator_copy (a);
-                release_resources (rdl, resource, job);
-                rdl_destroy (job->rdl);
-            }
-            //TODO: clear the list and free each element (or set freefn)
-            zlist_destroy (&ancestors);
-            rdl_accumulator_destroy (a);
-		}
-        //rdl_resource_destroy (fr);
-        rdl_destroy (frdl);
-	}
-
-ret:
-    return rc;
-}
-*/
 
 static int schedule_job_without_update (struct rdl *rdl, const char *uri, flux_lwj_t *job, struct rdl_accumulator **a)
 {
@@ -1678,7 +1621,7 @@ lwjstate_cb (const char *key, const char *val, void *arg, int errnum)
     }
 
     if (extract_lwjid (key, &lwj_id) == -1) {
-        flux_log (h, LOG_ERR, "ill-formed key");
+        flux_log (h, LOG_ERR, "ill-formed key: %s", key);
         goto ret;
     }
     flux_log (h, LOG_DEBUG, "lwjstate_cb: %ld, %s", lwj_id, val);
@@ -1779,6 +1722,9 @@ newlwj_cb (const char *key, int64_t val, void *arg, int errnum)
             flux_log (h, LOG_ERR, "newlwj_cb key(%s), val(%ld): %s",
                       key, val, strerror (errnum));
             goto error;
+        } else {
+            flux_log (h, LOG_DEBUG, "newlwj_cb key(%s), val(%ld): %s",
+                      key, val, strerror (errnum));
         }
         goto ret;
     } else if (val < 0) {
