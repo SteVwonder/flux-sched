@@ -236,6 +236,24 @@ stab_rlookup (struct stab_struct *ss, int i)
     return "unknown";
 }
 
+static int unwatch_lwj (flux_lwj_t *job) {
+    char *key = NULL;
+    int rc = 0;
+
+    if (asprintf (&key, "lwj.%ld.state", job->lwj_id) < 0) {
+        flux_log (h, LOG_ERR, "update_job_state key create failed");
+        rc = -1;
+    } else if (kvs_unwatch (h, key)) {
+        flux_log (h, LOG_ERR, "failed to unwatch %s", key);
+        rc = -1;
+    } else {
+        flux_log (h, LOG_DEBUG, "unwatched %s", key);
+    }
+
+    free (key);
+    return rc;
+}
+
 /*
  * Update the job's kvs entry for state and mark the time.
  * Intended to be part of a series of changes, so the caller must
@@ -1503,6 +1521,7 @@ action_j_event (flux_event_t *e)
         }
         /* TODO move this to j_complete case once reaped is implemented */
         move_to_c_queue (e->lwj);
+        unwatch_lwj (e->lwj);
         issue_res_event (e->lwj);
         break;
 
