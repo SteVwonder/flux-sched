@@ -1,11 +1,12 @@
 include ../Makefile.inc
 
 CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS)
+GLPK_LIBS = -lglpk -lgmp -lm
 LIBS = $(FLUX_LIBS) $(RDL_LIBS)
 
 CONF=../conf/hype-io.lua
 JOBDATA=job_data/hype-large.sorted.csv
-SAVEPATH=./
+SAVEPATH=/nfs/tmp2/herbein1
 
 COMMON_OBJS = simulator.o xzmalloc.o log.o jsonutil.o
 
@@ -15,6 +16,9 @@ SCHEDULERS_SO = $(SCHEDULERS_C:sim_%.c=sim_sched_%.so)
 BUILD = sim.so submit.so sim_exec.so $(SCHEDULERS_SO)
 
 all:  $(BUILD)
+
+sim_sched_ilp.so: sim_ilp.c $(COMMON_OBJS)
+	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS) $(GLPK_LIBS)
 
 sim_sched_%.so: sim_%.c $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
