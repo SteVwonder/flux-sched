@@ -5,10 +5,11 @@ GLPK_LIBS = -lglpk -lgmp -lm
 LIBS = $(FLUX_LIBS) $(RDL_LIBS)
 
 CONF=../conf/hype-io.lua
-JOBDATA=job_data/hype-large.sorted.csv
+JOBDATA=job_data/hype-large.ilp.csv
 SAVEPATH=/nfs/tmp2/herbein1
 
 COMMON_OBJS = simulator.o xzmalloc.o log.o jsonutil.o
+LP_OBJS = flux_ilp.o
 
 SCHEDULERS_C = $(wildcard sim_fcfs*.c) $(wildcard sim_easy*.c) $(wildcard sim_ilp*.c)
 SCHEDULERS_SO = $(SCHEDULERS_C:sim_%.c=sim_sched_%.so)
@@ -17,7 +18,7 @@ BUILD = sim.so submit.so sim_exec.so $(SCHEDULERS_SO)
 
 all:  $(BUILD)
 
-sim_sched_ilp.so: sim_ilp.c $(COMMON_OBJS)
+sim_sched_ilp.so: sim_ilp.c $(COMMON_OBJS) $(LP_OBJS)
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS) $(GLPK_LIBS)
 
 sim_sched_%.so: sim_%.c $(COMMON_OBJS)
