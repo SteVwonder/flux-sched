@@ -1433,11 +1433,61 @@ void schedule_jobs_from_ilp (struct rdl* rdl, struct rdl* free_rdl, const char *
         job_ilp = zlist_next (scheduled_jobs);
     }
 
-    glp_delete_prob (lp);
     zlist_destroy (&ancestors);
     zlist_destroy (&scheduled_jobs);
 }
 
+static void backfill_jobs (struct rdl *rdl, const char *uri, zlist_t *queued_jobs, zlist_t *running_jobs,
+                           flux_lwj_t *reserved_job) {
+
+    glp_prob *lp;
+    double shadow_time;
+    int64_t curr_free_cores = -1, shadow_free_cores = -1;
+    struct rdl *shadow_rdl = NULL, *free_rdl = NULL;
+    zlist_t *eligible_jobs = NULL;
+    flux_lwj_t *curr_job = NULL;
+
+    shadow_rdl = rdl_copy (rdl);
+    calculate_shadow_info (reserved_job, shadow_rdl, uri, running_jobs, &shadow_time, &shadow_free_cores);
+
+    flux_log(h, LOG_DEBUG, "Job %ld has the reservation - shadow time: %f, shadow free cores: %ld",
+             reserved_job->lwj_id, shadow_time, shadow_free_cores);
+
+    free_rdl = get_free_subset (rdl, "core");
+    if (free_rdl) {
+        curr_free_cores = get_free_count (free_rdl, uri, "core");
+    } else {
+        flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting curr_free_cores = 0");
+        curr_free_cores = 0;
+    }
+
+    eligible_jobs = zlist_new();
+    curr_job = zlist_next (queued_jobs);
+    while (curr_job && shadow_time >= 0 && curr_free_cores > 0) {
+        if (curr_job->state == j_unsched) {
+            if (job_backfill_eligible (rdl, shadow_rdl, uri, curr_job, curr_free_cores, shadow_time)) {
+                flux_log(h, LOG_DEBUG, "Job %ld is eligible for backfilling, adding to ILP problem.", curr_job->lwj_id);
+                zlist_append(eligible_jobs, curr_job);
+            } else {
+                flux_log(h, LOG_DEBUG, "Job %ld is not eligible for backfilling. Not added to ILP problem.", curr_job->lwj_id);
+            }
+        }
+        curr_job = zlist_next (queued_jobs);
+    }
+
+    if (zlist_size (eligible_jobs) > 1) {
+        lp = build_ilp_problem (eligible_jobs, curr_free_cores,
+                                shadow_free_cores, shadow_time);
+        schedule_jobs_from_ilp (rdl, free_rdl, uri, lp, eligible_jobs, curr_free_cores);
+        glp_delete_prob (lp);
+    } else if (zlist_size (eligible_jobs) == 1) {
+        schedule_job (rdl, uri, zlist_pop (eligible_jobs));
+    }
+
+    zlist_destroy (&eligible_jobs);
+    rdl_destroy (free_rdl);
+    rdl_destroy (shadow_rdl);
+}
 
 bool job_compare_id_fn (void *item1, void *item2) {
     flux_lwj_t *job1, *job2;
@@ -1454,10 +1504,7 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
     job_t *curr_job_t = NULL;
     kvsdir_t curr_kvs_dir;
     int rc = 0, job_scheduled = 1;
-    double shadow_time = -1;
-    int64_t curr_free_cores = -1, shadow_free_cores = -1;
-    struct rdl *shadow_rdl = NULL, *free_rdl = NULL;
-    zlist_t *queued_jobs = zlist_dup (jobs), *running_jobs = zlist_new (), *eligible_jobs = zlist_new();
+    zlist_t *queued_jobs = zlist_dup (jobs), *running_jobs = zlist_new ();
 
     zlist_sort(queued_jobs, job_compare_id_fn);
 
@@ -1472,17 +1519,15 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
                 if (curr_job_t->start_time == 0)
                     curr_job_t->start_time = sim_state->sim_time;
                 zlist_append (running_jobs, curr_job_t);
+                curr_job = zlist_next (queued_jobs);
             } else {
                 reserved_job = curr_job;
             }
 		}
-        curr_job = zlist_next (queued_jobs);
     }
 
     //reserved job is now set, start backfilling
-    if (reserved_job && curr_job) {
-        shadow_rdl = rdl_copy (rdl);
-
+    if (reserved_job) {
         curr_lwj_job = zlist_first (r_queue);
         while (curr_lwj_job != NULL) {
             kvs_get_dir (h,  &curr_kvs_dir, "lwj.%d", curr_lwj_job->lwj_id);
@@ -1492,40 +1537,9 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
             zlist_append (running_jobs, curr_job_t);
             curr_lwj_job = zlist_next (r_queue);
         }
-        calculate_shadow_info (reserved_job, shadow_rdl, uri, running_jobs, &shadow_time, &shadow_free_cores);
-
-        flux_log(h, LOG_DEBUG, "Job %ld has the reservation - shadow time: %f, shadow free cores: %ld", reserved_job->lwj_id, shadow_time, shadow_free_cores);
-
-        free_rdl = get_free_subset (rdl, "core");
-        if (free_rdl) {
-            curr_free_cores = get_free_count (free_rdl, uri, "core");
-        } else {
-            flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting curr_free_cores = 0");
-            curr_free_cores = 0;
-        }
-
-        while (curr_job && shadow_time >= 0 && curr_free_cores > 0) {
-            if (curr_job->state == j_unsched) {
-                if (job_backfill_eligible (rdl, shadow_rdl, uri, curr_job, curr_free_cores, shadow_time)) {
-                    flux_log(h, LOG_DEBUG, "Job %ld is eligible for backfilling, adding to ILP problem.", curr_job->lwj_id);
-                    zlist_append(eligible_jobs, curr_job);
-                } else {
-                    flux_log(h, LOG_DEBUG, "Job %ld is not eligible for backfilling. Not added to ILP problem.", curr_job->lwj_id);
-                }
-            }
-            curr_job = zlist_next (queued_jobs);
-        }
-        if (zlist_size (eligible_jobs) > 1) {
-            glp_prob* lp = build_ilp_problem (eligible_jobs, curr_free_cores, shadow_free_cores, shadow_time);
-            schedule_jobs_from_ilp (rdl, free_rdl, uri, lp, eligible_jobs, curr_free_cores);
-        } else if (zlist_size (eligible_jobs) == 1) {
-            schedule_job (rdl, uri, zlist_first(eligible_jobs));
-        }
-        rdl_destroy (free_rdl);
-        rdl_destroy (shadow_rdl);
+        backfill_jobs(rdl, uri, queued_jobs, running_jobs, reserved_job);
     }
 
-	flux_log (h, LOG_DEBUG, "Finished iterating over the queued_jobs list");
     //Cleanup
     curr_job_t = zlist_pop (running_jobs);
     while (curr_job_t != NULL) {
