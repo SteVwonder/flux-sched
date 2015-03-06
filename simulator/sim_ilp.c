@@ -608,6 +608,27 @@ static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *an
 	return true;
 }
 
+static bool allocate_core (flux_lwj_t *job, struct resource *resource,
+                           zlist_t *ancestors, struct rdl_accumulator *accum,
+                           char *lwjtag) {
+    bool output = false;
+    JSON o;
+    if (allocate_bandwidth (job, resource, ancestors)) {
+        job->req.ncores--;
+        job->alloc.ncores++;
+        rdl_resource_tag (resource, lwjtag);
+        rdl_resource_set_int (resource, "lwj", job->lwj_id);
+        rdl_resource_delete_tag (resource, IDLETAG);
+        if (rdl_accumulator_add (accum, resource) < 0) {
+            o = rdl_resource_json (resource);
+            flux_log (h, LOG_ERR, "failed to allocate core: %s", Jtostr (o));
+        } else {
+            output = true;
+        }
+    }
+    return output;
+}
+
 /*
  * Walk the tree, find the required resources and tag with the lwj_id
  * to which it is allocated.
@@ -624,7 +645,6 @@ allocate_resources (struct rdl *rdl, struct resource *fr,
     struct resource *child, *curr;
     bool found = false;
 
-    //TODO: check if this is necessary
     asprintf (&uri, "%s:%s", global_rdl_resource, rdl_resource_path (fr));
     curr = rdl_resource_get (rdl, uri);
     free (uri);
@@ -652,16 +672,7 @@ allocate_resources (struct rdl *rdl, struct resource *fr,
         Jget_obj (o, "tags", &o2);
         Jget_obj (o2, IDLETAG, &o3);
         if (o3) {
-			if (allocate_bandwidth (job, curr, ancestors)) {
-              job->req.ncores--;
-              job->alloc.ncores++;
-              rdl_resource_tag (curr, lwjtag);
-              rdl_resource_set_int (curr, "lwj", job->lwj_id);
-              rdl_resource_delete_tag (curr, IDLETAG);
-              if (rdl_accumulator_add (accum, curr) < 0) {
-                  flux_log (h, LOG_ERR, "failed to allocate core: %s", Jtostr (o));
-              }
-            }
+            allocate_core(job, curr, ancestors, accum, lwjtag);
         }
     }
     free (lwjtag);
@@ -1179,45 +1190,6 @@ static bool job_backfill_eligible (struct rdl *rdl, struct rdl *shadow_rdl, cons
     return scheduled;
 }
 
-/*
-//Determines if a job is eligible for backfilling or not
-//If it is, attempts to schedule it
-static bool backfill_job (struct rdl *rdl, struct rdl *shadow_rdl, const char *uri, flux_lwj_t *job, int64_t *curr_free_cores, double shadow_time) {
-    bool terminates_before_shadow_time = ((sim_state->sim_time + job->req.walltime) < shadow_time);
-
-    flux_log (h, LOG_DEBUG, "backfill info - term_before_shadow_time: %d, curr_free_cores: %ld, job_req_cores: %d", terminates_before_shadow_time, *curr_free_cores, job->req.ncores);
-
-    if (*curr_free_cores < job->req.ncores) {
-        return false;
-    } else if (terminates_before_shadow_time) {
-        //Job ends before reserved job starts, and we have enough cores currently to schedule it
-        if (schedule_job (rdl, uri, job)) {
-            *curr_free_cores -= job->req.ncores;
-            return true;
-        }
-    } else {
-        //Job ends after reserved job starts, make sure we will have
-        //enough free resources (cores + IO) at shadow time to not
-        //delay the reserved job
-        struct rdl_accumulator *accum = NULL;
-        if (schedule_job_without_update(shadow_rdl, uri, job, &accum)){
-            if (schedule_job (rdl, uri, job)) {
-                *curr_free_cores -= job->alloc.ncores;
-                return true;
-            } else {
-                job->rdl = rdl_accumulator_copy (accum);
-                release_resources(shadow_rdl, uri, job);
-                rdl_destroy (job->rdl);
-                rdl_accumulator_destroy (accum);
-                return false;
-            }
-        }
-    }
-
-    return false;
-}
-*/
-
 static void generate_lp_constraints (glp_prob *lp, zlist_t *eligible_jobs,
                                      flux_ilp_matrix* ilp_mat, int num_rows,
                                      int curr_free_cores, int shadow_free_cores,
@@ -1279,32 +1251,18 @@ static void generate_lp_constraints (glp_prob *lp, zlist_t *eligible_jobs,
     }
 }
 
-static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_cores, int64_t shadow_free_cores, double shadow_time) {
-    int num_cols, num_rows, num_jobs, matrix_size, row_idx, col_idx, jobs_on_starting_idx;
-    int64_t i, j;
+void generate_objective_function (glp_prob *lp, zlist_t *eligible_jobs,
+                                  flux_ilp_matrix* ilp_mat, int num_cols,
+                                  int curr_free_cores, int jobs_on_idx) {
+    int row_idx, col_idx, num_jobs;
     double value;
+    int64_t i, j;
     flux_lwj_t *curr_job = NULL;
-    glp_prob *lp;
-    flux_ilp_matrix *ilp_mat;
     int max_name_len = 100;
     char name[max_name_len];
 
     num_jobs = zlist_size (eligible_jobs);
-    num_rows = num_jobs + curr_free_cores + 1; //number of "subject to" constraints, +1 due to backfilling constraint
-    num_cols = (num_jobs * curr_free_cores) + //jobs could be placed on any core
-        (num_jobs);  //the jobX_on decision variables, determine if a job
-    matrix_size = (num_cols * num_rows) + 1; //+1 since glpk is 1 indexed
-    jobs_on_starting_idx = num_cols - num_jobs + 1;
-
-    ilp_mat = new_ilp_matrix(num_rows * curr_free_cores);
-
-    lp = glp_create_prob();
-    glp_set_prob_name (lp, "sched_ilp");
     glp_set_obj_dir (lp, GLP_MAX);
-
-    generate_lp_constraints(lp, eligible_jobs, ilp_mat, num_rows, curr_free_cores,
-                            shadow_free_cores, shadow_time, jobs_on_starting_idx);
-
     glp_add_cols (lp, num_cols);
     curr_job = zlist_first (eligible_jobs);
     int64_t col_num = 0;
@@ -1320,26 +1278,30 @@ static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_co
     }
 
     curr_job = zlist_first (eligible_jobs);
-    for (i = jobs_on_starting_idx; curr_job != NULL; i++) {
+    for (i = jobs_on_idx; curr_job != NULL; i++) {
         snprintf (name, max_name_len, "job%03ld_on", curr_job->lwj_id);
         glp_set_col_name (lp, i, name);
         glp_set_col_kind (lp, i, GLP_BV);
         glp_set_obj_coef (lp, i, 0);
 
-        row_idx = (i - jobs_on_starting_idx) + 1;
-        col_idx = (num_cols - num_jobs) + (i - jobs_on_starting_idx) + 1;
+        row_idx = (i - jobs_on_idx) + 1;
+        col_idx = (num_cols - num_jobs) + (i - jobs_on_idx) + 1;
         value = -1 * (double)curr_job->req.ncores;
         insert_into_ilp_matrix(ilp_mat, row_idx, col_idx, value);
         curr_job = zlist_next (eligible_jobs);
     }
 
-    load_matrix_into_ilp (ilp_mat, lp);
+}
 
+static void save_ilp_to_file (glp_prob *lp) {
     static int iter = 0;
     char* filename;
     asprintf (&filename, "sched.%d.lp", iter++);
     glp_write_lp(lp, NULL, filename);
     free (filename);
+}
+
+static void solve_ilp (glp_prob *lp) {
     glp_iocp params;
     glp_init_iocp (&params);
     params.presolve = GLP_ON;
@@ -1347,6 +1309,33 @@ static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_co
     if (err) {
         flux_log (h, LOG_ERR, "glpk error: %d", err);
     }
+}
+
+static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_cores, int64_t shadow_free_cores, double shadow_time) {
+    int num_cols, num_rows, num_jobs, jobs_on_starting_idx;
+    glp_prob *lp;
+    flux_ilp_matrix *ilp_mat;
+
+    num_jobs = zlist_size (eligible_jobs);
+    num_rows = num_jobs + curr_free_cores + 1; //number of "subject to" constraints, +1 due to backfilling constraint
+    num_cols = (num_jobs * curr_free_cores) + //jobs could be placed on any core
+        (num_jobs);  //the jobX_on decision variables, determine if a job
+    jobs_on_starting_idx = num_cols - num_jobs + 1;
+
+    ilp_mat = new_ilp_matrix(num_rows * curr_free_cores);
+
+    lp = glp_create_prob();
+    glp_set_prob_name (lp, "sched_ilp");
+
+    generate_lp_constraints(lp, eligible_jobs, ilp_mat, num_rows, curr_free_cores,
+                            shadow_free_cores, shadow_time, jobs_on_starting_idx);
+
+    generate_objective_function(lp, eligible_jobs, ilp_mat, num_cols,
+                                curr_free_cores, jobs_on_starting_idx);
+
+    load_matrix_into_ilp (ilp_mat, lp);
+    save_ilp_to_file(lp);
+    solve_ilp(lp);
 
     free_ilp_matrix(ilp_mat);
 
@@ -1376,19 +1365,11 @@ void schedule_jobs_from_ilp_helper (glp_prob* lp, struct rdl *rdl, struct resour
             col_val = glp_mip_col_val (lp, col_idx);
             if (col_val == 1) {
                 job = job_ilp->job;
-                if (allocate_bandwidth (job, main_rdl_resource, ancestors)) {
-                    job->req.ncores--;
-                    job->alloc.ncores++;
-                    rdl_resource_tag (main_rdl_resource, job_ilp->lwjtag);
-                    rdl_resource_set_int (main_rdl_resource, "lwj", job->lwj_id);
-                    rdl_resource_delete_tag (main_rdl_resource, IDLETAG);
-                    if (rdl_accumulator_add (job_ilp->accum, main_rdl_resource) < 0) {
-                        flux_log (h, LOG_ERR, "failed to allocate core: %s", Jtostr (o));
-                    }
-                    break; //we already found the job for this core, move on to next core
-                } else {
+                if (!allocate_core (job, main_rdl_resource, ancestors,
+                                   job_ilp->accum, job_ilp->lwjtag)) {
                     flux_log (h, LOG_ERR, "failed to allocate bandwidth for job %ld on %s", job->lwj_id, Jtostr(o));
                 }
+                break; //we already found the job for this core, move on to next core
             }
             job_ilp = zlist_next (scheduled_jobs);
         }
@@ -1538,7 +1519,7 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
             glp_prob* lp = build_ilp_problem (eligible_jobs, curr_free_cores, shadow_free_cores, shadow_time);
             schedule_jobs_from_ilp (rdl, free_rdl, uri, lp, eligible_jobs, curr_free_cores);
         } else if (zlist_size (eligible_jobs) == 1) {
-            //schedule_job (rdl, uri, zlist_first(eligible_jobs));
+            schedule_job (rdl, uri, zlist_first(eligible_jobs));
         }
         rdl_destroy (free_rdl);
         rdl_destroy (shadow_rdl);
