@@ -41,6 +41,7 @@
 #include "rdl.h"
 #include "scheduler.h"
 #include "simulator.h"
+#include "flux_ilp.h"
 
 #define MAX_STR_LEN 128
 
@@ -1217,34 +1218,18 @@ static bool backfill_job (struct rdl *rdl, struct rdl *shadow_rdl, const char *u
 }
 */
 
-static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_cores, int64_t shadow_free_cores, double shadow_time) {
-    int num_cols, num_rows, num_jobs, matrix_size, row_idx, col_idx, jobs_on_starting_idx,
-        non_zero_elements = 0, max_name_len = 100;
-    int *rows, *cols;
-    int64_t i, j;
-    double *vals;
+static void generate_lp_constraints (glp_prob *lp, zlist_t *eligible_jobs,
+                                     flux_ilp_matrix* ilp_mat, int num_rows,
+                                     int curr_free_cores, int shadow_free_cores,
+                                     double shadow_time, int jobs_on_idx) {
+    int row_idx, col_idx, num_jobs;
     double value;
+    int64_t i, j;
     flux_lwj_t *curr_job = NULL;
-    glp_prob *lp;
+    int max_name_len = 100;
     char name[max_name_len];
 
     num_jobs = zlist_size (eligible_jobs);
-    num_rows = num_jobs + curr_free_cores + 1; //number of "subject to" constraints, +1 due to backfilling constraint
-    num_cols = (num_jobs * curr_free_cores) + //jobs could be placed on any core
-        (num_jobs);  //the jobX_on decision variables, determine if a job
-    matrix_size = (num_cols * num_rows) + 1; //+1 since glpk is 1 indexed
-    jobs_on_starting_idx = num_cols - num_jobs + 1;
-
-    flux_log (h, LOG_DEBUG, "Num jobs: %d, num_cols: %d, num_rows: %d, matrix_size: %d", num_jobs, num_cols, num_rows, matrix_size);
-
-    rows = (int*) calloc (matrix_size, sizeof (int));
-    cols = (int*) calloc (matrix_size, sizeof (int));
-    vals = (double*) calloc (matrix_size, sizeof (double));
-
-    lp = glp_create_prob();
-    glp_set_prob_name (lp, "sched_ilp");
-    glp_set_obj_dir (lp, GLP_MAX);
-
     glp_add_rows (lp, num_rows);
     curr_job = zlist_first (eligible_jobs);
     for (i = 1; curr_job != NULL; i++) {
@@ -1256,10 +1241,7 @@ static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_co
             row_idx = i;
             col_idx = ((i-1) * curr_free_cores) + j;
             value = 1;
-            rows[non_zero_elements + 1] = row_idx;
-            cols[non_zero_elements + 1] = col_idx;
-            vals[non_zero_elements + 1] = value;
-            non_zero_elements++;
+            insert_into_ilp_matrix(ilp_mat, row_idx, col_idx, value);
         }
         curr_job = zlist_next (eligible_jobs);
     }
@@ -1272,10 +1254,7 @@ static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_co
             row_idx = i;
             col_idx = ((j-1) * curr_free_cores) + (i - num_jobs);
             value = 1;
-            rows[non_zero_elements + 1] = row_idx;
-            cols[non_zero_elements + 1] = col_idx;
-            vals[non_zero_elements + 1] = value;
-            non_zero_elements++;
+            insert_into_ilp_matrix(ilp_mat, row_idx, col_idx, value);
         }
         curr_job = zlist_next (eligible_jobs);
     }
@@ -1285,19 +1264,46 @@ static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_co
     glp_set_row_name (lp, num_rows, "backfill");
     glp_set_row_bnds (lp, num_rows, GLP_DB, 0, shadow_free_cores);
     curr_job = zlist_first (eligible_jobs);
-    for (i = jobs_on_starting_idx; curr_job != NULL; i++) {
+    for (i = jobs_on_idx; curr_job != NULL; i++) {
         kvs_get_dir (h,  &curr_kvs_dir, "lwj.%d", curr_job->lwj_id);
         curr_job_t = pull_job_from_kvs (curr_kvs_dir);
         if (curr_job_t->start_time == 0)
             curr_job_t->start_time = sim_state->sim_time;
         if (curr_job_t->start_time + curr_job_t->execution_time > shadow_time) {
-          rows[non_zero_elements + 1] = num_rows;
-          cols[non_zero_elements + 1] = i;
-          vals[non_zero_elements + 1] = curr_job->req.ncores;
-          non_zero_elements++;
+            row_idx = num_rows;
+            col_idx = i;
+            value = curr_job->req.ncores;
+            insert_into_ilp_matrix(ilp_mat, row_idx, col_idx, value);
         }
         curr_job = zlist_next (eligible_jobs);
     }
+}
+
+static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_cores, int64_t shadow_free_cores, double shadow_time) {
+    int num_cols, num_rows, num_jobs, matrix_size, row_idx, col_idx, jobs_on_starting_idx;
+    int64_t i, j;
+    double value;
+    flux_lwj_t *curr_job = NULL;
+    glp_prob *lp;
+    flux_ilp_matrix *ilp_mat;
+    int max_name_len = 100;
+    char name[max_name_len];
+
+    num_jobs = zlist_size (eligible_jobs);
+    num_rows = num_jobs + curr_free_cores + 1; //number of "subject to" constraints, +1 due to backfilling constraint
+    num_cols = (num_jobs * curr_free_cores) + //jobs could be placed on any core
+        (num_jobs);  //the jobX_on decision variables, determine if a job
+    matrix_size = (num_cols * num_rows) + 1; //+1 since glpk is 1 indexed
+    jobs_on_starting_idx = num_cols - num_jobs + 1;
+
+    ilp_mat = new_ilp_matrix(num_rows * curr_free_cores);
+
+    lp = glp_create_prob();
+    glp_set_prob_name (lp, "sched_ilp");
+    glp_set_obj_dir (lp, GLP_MAX);
+
+    generate_lp_constraints(lp, eligible_jobs, ilp_mat, num_rows, curr_free_cores,
+                            shadow_free_cores, shadow_time, jobs_on_starting_idx);
 
     glp_add_cols (lp, num_cols);
     curr_job = zlist_first (eligible_jobs);
@@ -1323,15 +1329,11 @@ static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_co
         row_idx = (i - jobs_on_starting_idx) + 1;
         col_idx = (num_cols - num_jobs) + (i - jobs_on_starting_idx) + 1;
         value = -1 * (double)curr_job->req.ncores;
-        rows[non_zero_elements + 1] = row_idx;
-        cols[non_zero_elements + 1] = col_idx;
-        vals[non_zero_elements + 1] = value;
-        non_zero_elements++;
-
+        insert_into_ilp_matrix(ilp_mat, row_idx, col_idx, value);
         curr_job = zlist_next (eligible_jobs);
     }
 
-    glp_load_matrix (lp, non_zero_elements, rows, cols, vals);
+    load_matrix_into_ilp (ilp_mat, lp);
 
     static int iter = 0;
     char* filename;
@@ -1346,19 +1348,10 @@ static glp_prob* build_ilp_problem (zlist_t *eligible_jobs, int64_t curr_free_co
         flux_log (h, LOG_ERR, "glpk error: %d", err);
     }
 
-    free (rows);
-    free (cols);
-    free (vals);
+    free_ilp_matrix(ilp_mat);
 
     return lp;
 }
-
-typedef struct {
-    flux_lwj_t *job;
-    struct rdl_accumulator *accum;
-    int starting_idx;
-    char *lwjtag;
-} flux_job_ilp;
 
 
 //core num should be 0 at root of recursive tree (first call)
@@ -1414,7 +1407,7 @@ void schedule_jobs_from_ilp_helper (glp_prob* lp, struct rdl *rdl, struct resour
 }
 
 void schedule_jobs_from_ilp (struct rdl* rdl, struct rdl* free_rdl, const char *uri, glp_prob* lp, zlist_t* eligible_jobs, int num_free_cores) {
-    int num_jobs, num_cols, col_offset, i, col_idx, core_num = 0;
+    int num_jobs, num_cols, col_offset, i, col_idx, starting_idx, core_num = 0;
     double z, col_val;
     flux_lwj_t *curr_job;
     const char *col_name;
@@ -1434,14 +1427,10 @@ void schedule_jobs_from_ilp (struct rdl* rdl, struct rdl* free_rdl, const char *
         col_val = glp_mip_col_val (lp, col_idx);
         if (col_val == 1) {
             col_name = glp_get_col_name (lp, col_idx);
-            flux_log (h, LOG_DEBUG, "%s: %f", col_name, col_val);
-            job_ilp = malloc (sizeof (flux_job_ilp));
-            job_ilp->accum = rdl_accumulator_create(rdl);
-            job_ilp->job = curr_job;
-            job_ilp->starting_idx = (i * num_free_cores) + 1;
-            asprintf (&(job_ilp->lwjtag), "lwj.%ld", curr_job->lwj_id);
+            starting_idx = (i * num_free_cores) + 1;
+            job_ilp = new_job_ilp (curr_job, rdl, starting_idx);
             zlist_append (scheduled_jobs, job_ilp);
-            zlist_freefn (scheduled_jobs, job_ilp, free, true);
+            zlist_freefn (scheduled_jobs, job_ilp, freefn_job_ilp, true);
         }
         curr_job = zlist_next (eligible_jobs);
     }
@@ -1451,8 +1440,6 @@ void schedule_jobs_from_ilp (struct rdl* rdl, struct rdl* free_rdl, const char *
     schedule_jobs_from_ilp_helper (lp, rdl, resource, ancestors, scheduled_jobs, &core_num);
     rdl_resource_destroy (resource);
 
-    glp_delete_prob (lp);
-    zlist_destroy (&ancestors);
     job_ilp = zlist_first (scheduled_jobs);
     while (job_ilp != NULL) {
         curr_job = job_ilp->job;
@@ -1462,10 +1449,11 @@ void schedule_jobs_from_ilp (struct rdl* rdl, struct rdl* free_rdl, const char *
         if (update_job (curr_job)) {
             flux_log (h, LOG_ERR, "error updating job %ld's state", curr_job->lwj_id);
         }
-        rdl_accumulator_destroy (job_ilp->accum);
-        free (job_ilp->lwjtag);
         job_ilp = zlist_next (scheduled_jobs);
     }
+
+    glp_delete_prob (lp);
+    zlist_destroy (&ancestors);
     zlist_destroy (&scheduled_jobs);
 }
 
