@@ -219,7 +219,7 @@ Hierarchy "default"
             }},
             Resource {"switch", name = "edge_switch72", tags = { max_bw = 72000 }, children = {
                ListOf{ Node, ids = "1279-1294", args = { name = "cab", sockets = {"0-7", "8-15"}, tags = { max_bw = 4000 }}}
-            }}    
+            }}
          }}
       }}
    }}
