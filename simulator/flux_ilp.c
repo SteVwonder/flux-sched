@@ -69,10 +69,11 @@ static void increase_ilp_matrix (flux_ilp_matrix *ilp_mat) {
     ilp_mat->cols = (int*) realloc (ilp_mat->cols, new_size * sizeof (int));
     ilp_mat->vals = (double*) realloc (ilp_mat->vals, new_size * sizeof (double));
     for (i = ilp_mat->curr_max_size; i < new_size; i++) {
-        ilp_mat->rows = 0;
-        ilp_mat->cols = 0;
-        ilp_mat->vals = 0;
+        ilp_mat->rows[i] = 0;
+        ilp_mat->cols[i] = 0;
+        ilp_mat->vals[i] = 0;
     }
+    ilp_mat->curr_max_size = new_size;
 }
 
 void insert_into_ilp_matrix(flux_ilp_matrix *ilp_mat, int row, int col, double val) {
