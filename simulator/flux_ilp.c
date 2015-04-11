@@ -48,6 +48,7 @@ void freefn_job_ilp (void *job_ilp) {
 
 flux_ilp_matrix* new_ilp_matrix(int starting_size) {
     flux_ilp_matrix* ilp_mat = malloc (sizeof (flux_ilp_matrix));
+    starting_size = (starting_size > 0) ? starting_size : 16;
     ilp_mat->curr_max_size = starting_size;
     ilp_mat->non_zero_elements = 0;
     ilp_mat->rows = (int*) calloc (starting_size, sizeof (int));
