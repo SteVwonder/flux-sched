@@ -43,7 +43,6 @@ sim_state_t *new_simstate ()
 	sim_state_t *sim_state = (sim_state_t*) malloc (sizeof (sim_state_t));
 	sim_state->timers = zhash_new();
 	sim_state->sim_time = 0;
-    sim_state->rdl_string = NULL;
 	return sim_state;
 }
 
@@ -68,7 +67,6 @@ void free_simstate (sim_state_t* sim_state)
 	if (sim_state != NULL){
 		if (sim_state->timers != NULL)
 			zhash_destroy (& (sim_state->timers));
-        free (sim_state->rdl_string);
 		free (sim_state);
 	} else {
       fprintf (stderr, "free_simstate called on a NULL pointer\n");
@@ -97,8 +95,6 @@ JSON sim_state_to_json (sim_state_t *sim_state)
 	//build the main json obg
 	Jadd_double (o, "sim_time", sim_state->sim_time);
 	Jadd_obj (o, "event_timers", event_timers);
-    if (sim_state->rdl_string != NULL)
-      Jadd_str (o, "rdl", sim_state->rdl_string);
 
     Jput (event_timers);
 	return o;
@@ -128,15 +124,11 @@ sim_state_t* json_to_sim_state(JSON o)
 {
 	sim_state_t *sim_state = new_simstate();
 	JSON event_timers;
-    const char* rdl_string;
 
 	Jget_double (o, "sim_time", &sim_state->sim_time);
 	if (Jget_obj (o, "event_timers", &event_timers)){
 		add_timers_to_hash (event_timers, sim_state->timers);
 	}
-	if (Jget_str (o, "rdl", &rdl_string)){
-      sim_state->rdl_string = strdup (rdl_string);
-    }
 
 	return sim_state;
 }

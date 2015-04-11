@@ -481,6 +481,34 @@ static int start_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	return 0;
 }
 
+static int rdl_update_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+{
+	JSON o = NULL;
+	char *tag = NULL;
+    const char *rdl_string = NULL;
+	ctx_t *ctx = (ctx_t *) arg;
+
+	if (flux_msg_decode (*zmsg, &tag, &o) < 0 || o == NULL){
+		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
+		Jput (o);
+		return -1;
+	}
+
+    Jget_str(o, "rdl_string", &rdl_string);
+    if (rdl_string) {
+        flux_log (h, LOG_DEBUG, "resetting rdllib & rdl based on rdl.update string");
+        rdllib_close(ctx->rdllib);
+        ctx->rdllib = rdllib_open();
+        ctx->rdl = rdl_load(ctx->rdllib, rdl_string);
+    } else {
+        return -1;
+    }
+
+    Jput (o);
+
+    return 0;
+}
+
 //Handle trigger requests from the sim module ("sim_exec.trigger")
 static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
@@ -501,8 +529,6 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 //Handle the trigger
 	ctx->sim_state = json_to_sim_state (o);
-    ctx->rdllib = rdllib_open();
-    ctx->rdl = rdl_load(ctx->rdllib, ctx->sim_state->rdl_string);
 	handle_queued_events (ctx);
     job_hash = determine_all_min_bandwidth (ctx->rdl, ctx->running_jobs);
 	advance_time (ctx, job_hash);
@@ -510,7 +536,6 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	next_termination = determine_next_termination (ctx, ctx->sim_state->sim_time, job_hash);
 	set_event_timer (ctx, "sim_exec", next_termination);
 	send_reply_request (h, ctx->sim_state);
-    rdllib_close(ctx->rdllib);
 
 //Cleanup
 	free_simstate (ctx->sim_state);
@@ -549,6 +574,7 @@ static int run_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 static msghandler_t htab[] = {
     { FLUX_MSGTYPE_EVENT,   "sim.start",        start_cb },
+    { FLUX_MSGTYPE_EVENT,   "rdl.update",        rdl_update_cb },
     { FLUX_MSGTYPE_REQUEST, "sim_exec.trigger",   trigger_cb },
     { FLUX_MSGTYPE_REQUEST, "sim_exec.run.*",   run_cb },
 };
@@ -564,6 +590,10 @@ int mod_main(flux_t h, zhash_t *args)
 	flux_log (h, LOG_INFO, "module starting");
 
 	if (flux_event_subscribe (h, "sim.start") < 0){
+        flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
+		return -1;
+	}
+	if (flux_event_subscribe (h, "rdl.update") < 0){
         flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
 		return -1;
 	}

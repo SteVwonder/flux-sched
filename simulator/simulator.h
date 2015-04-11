@@ -6,9 +6,8 @@
 #include "src/common/libutil/shortjson.h"
 
 typedef struct {
-  double sim_time;
-  zhash_t *timers;
-  char *rdl_string;
+    double sim_time;
+    zhash_t *timers;
 } sim_state_t;
 
 typedef struct {

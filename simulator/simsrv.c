@@ -276,14 +276,9 @@ static int check_for_new_timers (const char *key, void *item, void *argument)
 
 static void copy_new_state_data (ctx_t *ctx, sim_state_t *curr_sim_state, sim_state_t *reply_sim_state)
 {
-    char *temp_swap_ptr;
-
-    temp_swap_ptr = curr_sim_state->rdl_string;
-    curr_sim_state->rdl_string = reply_sim_state->rdl_string;
-    reply_sim_state->rdl_string = temp_swap_ptr;
-
-	if (reply_sim_state->sim_time > curr_sim_state->sim_time)
+	if (reply_sim_state->sim_time > curr_sim_state->sim_time) {
 		curr_sim_state->sim_time = reply_sim_state->sim_time;
+    }
 
 	zhash_foreach (reply_sim_state->timers, check_for_new_timers, ctx);
 }
@@ -297,7 +292,7 @@ static void save_sim_state (ctx_t *ctx)
     fputs (output_string, ctx->output_file);
     fputc ('\n', ctx->output_file);
     Jput(output_json);
-    flux_log (ctx->h, LOG_DEBUG, "Saved rdl_string to line %d of ctx->output_file", line_num);
+    flux_log (ctx->h, LOG_DEBUG, "Saved sim_state to line %d of ctx->output_file", line_num);
     line_num++;
 }
 
