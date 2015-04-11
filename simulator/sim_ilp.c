@@ -148,8 +148,8 @@ int send_reply_request (flux_t h, sim_state_t *sim_state)
 		return -1;
 	}
 	flux_log(h, LOG_DEBUG, "sent a reply request");
-   Jput (o);
-   return 0;
+    Jput (o);
+    return 0;
 }
 
 static int
@@ -1361,7 +1361,7 @@ void generate_objective_function (glp_prob *lp, zlist_t *eligible_jobs,
                                   const char* resource_type, zlist_t* resource_list,
                                   int jobs_on_idx)
 {
-    int num_jobs, num_free_resources;
+    int num_free_resources;
     double upper_bound;
     int64_t i, j, col_num;
     flux_lwj_t *curr_job = NULL;
@@ -1371,7 +1371,6 @@ void generate_objective_function (glp_prob *lp, zlist_t *eligible_jobs,
 
     num_free_resources = zlist_size (resource_list);
 
-    num_jobs = zlist_size (eligible_jobs);
     glp_set_obj_dir (lp, GLP_MAX);
     glp_add_cols (lp, num_cols);
     //I flip-flopped the nesting of the loops to only perform the strcmp's
@@ -1553,9 +1552,8 @@ static zlist_t* schedule_jobs_from_ilp (struct rdl* rdl, struct rdl* free_rdl,
                                         const char* resource_type, zlist_t *res_list)
 {
     int num_jobs, num_cols, col_offset, i, col_idx, starting_idx, num_free_resources;
-    double z, col_val;
+    double col_val;
     flux_lwj_t *curr_job = NULL;
-    const char *col_name = NULL;
     zlist_t *ancestors = NULL, *scheduled_jobs = NULL, *scheduled_lwjs = NULL;
     flux_job_ilp *job_ilp = NULL;
     struct resource *job_rdl_root = NULL;
@@ -1565,8 +1563,6 @@ static zlist_t* schedule_jobs_from_ilp (struct rdl* rdl, struct rdl* free_rdl,
     num_jobs = zlist_size (eligible_jobs);
     num_cols = glp_get_num_cols (lp);
 
-    z = glp_mip_obj_val (lp);
-
     scheduled_jobs = zlist_new ();
     col_offset = num_cols - num_jobs;
     curr_job = zlist_first (eligible_jobs);
@@ -1574,7 +1570,6 @@ static zlist_t* schedule_jobs_from_ilp (struct rdl* rdl, struct rdl* free_rdl,
         col_idx = i + col_offset + 1;
         col_val = glp_mip_col_val (lp, col_idx);
         if (col_val == 1) {
-            col_name = glp_get_col_name (lp, col_idx);
             starting_idx = (i * num_free_resources) + 1;
             job_ilp = new_job_ilp (curr_job, rdl, starting_idx);
             zlist_append (scheduled_jobs, job_ilp);
@@ -2337,7 +2332,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	clock_t start, diff;
 	double seconds;
 
-	if (flux_msg_decode (*zmsg, &tag, &o) < 0 || o == NULL){
+	if (flux_msg_decode (*zmsg, &tag, &o) < 0 || o == NULL) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
 		Jput (o);
 		return -1;
