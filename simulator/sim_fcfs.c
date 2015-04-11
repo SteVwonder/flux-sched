@@ -71,8 +71,9 @@ static zlist_t *r_queue = NULL;
 static zlist_t *c_queue = NULL;
 static zlist_t *ev_queue = NULL;
 static flux_t h = NULL;
-static struct rdl *rdl = NULL;
-static char* resource = NULL;
+static struct rdllib *global_rdllib = NULL;
+static struct rdl *global_rdl = NULL;
+static char* global_rdl_resource = NULL;
 static const char* IDLETAG = "idle";
 static const char* CORETYPE = "core";
 
@@ -539,7 +540,7 @@ static void deallocate_bandwidth_helper (struct rdl *rdl, struct resource *jr,
 	const char *type = NULL;
 	JSON o = NULL;
 
-    asprintf (&uri, "%s:%s", resource, rdl_resource_path (jr));
+    asprintf (&uri, "%s:%s", global_rdl_resource, rdl_resource_path (jr));
     r = rdl_resource_get (rdl, uri);
 
     if (r) {
@@ -566,7 +567,7 @@ static void deallocate_bandwidth_helper (struct rdl *rdl, struct resource *jr,
         json_object_put (o);
 
     } else {
-        flux_log (h, LOG_ERR, "deallocate_bandswith_helper failed to get %s", uri);
+        flux_log (h, LOG_ERR, "deallocate_bandwidth_helper failed to get %s", uri);
     }
     free (uri);
 
@@ -599,10 +600,6 @@ static void allocate_resource_bandwidth (struct resource *r, int64_t amount)
 	rdl_resource_get_int (r, "alloc_bw", &old_alloc_bw);
 	new_alloc_bw = amount + old_alloc_bw;
 	rdl_resource_set_int (r, "alloc_bw", new_alloc_bw);
-
-    //JSON o = rdl_resource_json (r);
-    //flux_log (h, LOG_DEBUG, "allocating bandwidth (was: %ld, is: %ld) at %s", old_alloc_bw, new_alloc_bw, Jtostr (o));
-    //Jput(o);
 }
 
 static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
@@ -637,8 +634,8 @@ allocate_resources (struct resource *fr, struct rdl_accumulator *a,
     struct resource *r;
     bool found = false;
 
-    asprintf (&uri, "%s:%s", resource, rdl_resource_path (fr));
-    r = rdl_resource_get (rdl, uri);
+    asprintf (&uri, "%s:%s", global_rdl_resource, rdl_resource_path (fr));
+    r = rdl_resource_get (global_rdl, uri);
     free (uri);
 
     o = rdl_resource_json (r);
@@ -657,7 +654,6 @@ allocate_resources (struct resource *fr, struct rdl_accumulator *a,
             rdl_resource_delete_tag (r, IDLETAG);
             rdl_accumulator_add (a, r);
 			}*/
-			//flux_log (h, LOG_DEBUG, "allocated node: %s", json_object_to_json_string (o));
     } else if (job->req.ncores && (strcmp (type, CORETYPE) == 0) &&
                (job->req.ncores > job->req.nnodes)) {
         /* We put the (job->req.ncores > job->req.nnodes) requirement
@@ -700,7 +696,7 @@ release_lwj_resource (struct rdl *rdl, struct resource *jr, char *lwjtag)
     struct resource *c;
     struct resource *r;
 
-    asprintf (&uri, "%s:%s", resource, rdl_resource_path (jr));
+    asprintf (&uri, "%s:%s", global_rdl_resource, rdl_resource_path (jr));
     r = rdl_resource_get (rdl, uri);
 
     if (r) {
@@ -835,7 +831,7 @@ update_job_resources (flux_lwj_t *job)
 {
     uint64_t node = 0;
     uint32_t cores = 0;
-    struct resource *jr = rdl_resource_get (job->rdl, resource);
+    struct resource *jr = rdl_resource_get (job->rdl, global_rdl_resource);
     int rc = -1;
 
     if (jr)
@@ -990,7 +986,7 @@ int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job, bool clear_
                 } else {
                   job->rdl = rdl_accumulator_copy (a);
                   //deallocate_bandwidth (rdl, resource, job);
-                  release_resources (rdl, resource, job);
+                  release_resources (rdl, global_rdl_resource, job);
                   rdl_destroy (job->rdl);
                 }
 			}
@@ -1159,7 +1155,7 @@ action_j_event (flux_event_t *e)
             goto bad_transition;
         }
         e->lwj->state = j_unsched;
-        schedule_jobs (rdl, resource, p_queue, false);
+        schedule_jobs (global_rdl, global_rdl_resource, p_queue, false);
         break;
 
     case j_submitted:
@@ -1255,8 +1251,8 @@ action_r_event (flux_event_t *e)
     int rc = -1;
 
     if ((e->ev.re == r_released) || (e->ev.re == r_attempt)) {
-        release_resources (rdl, resource, e->lwj);
-        schedule_jobs (rdl, resource, p_queue, true);
+        release_resources (global_rdl, global_rdl_resource, e->lwj);
+        schedule_jobs (global_rdl, global_rdl_resource, p_queue, true);
         rc = 0;
     }
 
@@ -1373,7 +1369,7 @@ lwjstate_cb (const char *key, const char *val, void *arg, int errnum)
     }
 
     if (extract_lwjid (key, &lwj_id) == -1) {
-        flux_log (h, LOG_ERR, "ill-formed key");
+        flux_log (h, LOG_ERR, "ill-formed key: %s", key);
         goto ret;
     }
     flux_log (h, LOG_DEBUG, "lwjstate_cb: %ld, %s", lwj_id, val);
@@ -1474,6 +1470,9 @@ newlwj_cb (const char *key, int64_t val, void *arg, int errnum)
             flux_log (h, LOG_ERR, "newlwj_cb key(%s), val(%ld): %s",
                       key, val, strerror (errnum));
             goto error;
+        } else {
+            flux_log (h, LOG_DEBUG, "newlwj_cb key(%s), val(%ld): %s",
+                      key, val, strerror (errnum));
         }
         goto ret;
     } else if (val < 0) {
@@ -1490,12 +1489,14 @@ newlwj_cb (const char *key, int64_t val, void *arg, int errnum)
 	//j->lwj_id = val;
     j->lwj_id = val - 1;
     j->state = j_null;
-    snprintf (path, MAX_STR_LEN, "lwj.%ld", j->lwj_id);
+
     if (zlist_append (p_queue, j) == -1) {
         flux_log (h, LOG_ERR,
                   "appending a job to pending queue failed");
         goto error;
     }
+
+    snprintf (path, MAX_STR_LEN, "lwj.%ld", j->lwj_id);
     if (reg_lwj_state_hdlr (path, (KVSSetStringF *) queue_kvs_cb) == -1) {
         flux_log (h, LOG_ERR,
                   "register lwj state change "
@@ -1603,7 +1604,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
         rdl_changed = true;
     }
 
-    send_rdl_update (h, rdl);
+    send_rdl_update (h, global_rdl);
 	send_reply_request (h, sim_state);
 
     free_simstate (sim_state);
@@ -1676,7 +1677,6 @@ int mod_main (flux_t p, zhash_t *args)
 {
     int rc = 0;
     char *path;
-    struct rdllib *l = NULL;
     struct resource *r = NULL;
 
     h = p;
@@ -1693,29 +1693,29 @@ int mod_main (flux_t p, zhash_t *args)
         goto ret;
     }
 
-    if (!(l = rdllib_open ()) || !(rdl = rdl_loadfile (l, path))) {
+    if (!(global_rdllib = rdllib_open ()) || !(global_rdl = rdl_loadfile (global_rdllib, path))) {
         flux_log (h, LOG_ERR, "failed to load resources from %s: %s",
                   path, strerror (errno));
         rc = -1;
         goto ret;
     }
 
-    if (!(resource = zhash_lookup (args, "rdl-resource"))) {
+    if (!(global_rdl_resource = zhash_lookup (args, "rdl-resource"))) {
         flux_log (h, LOG_INFO, "using default rdl resource");
-        resource = "default";
+        global_rdl_resource = "default";
     }
 
-    if ((r = rdl_resource_get (rdl, resource))) {
+    if ((r = rdl_resource_get (global_rdl, global_rdl_resource))) {
         flux_log (h, LOG_DEBUG, "setting up rdl resources");
         if (idlize_resources (r)) {
-            flux_log (h, LOG_ERR, "failed to idlize %s: %s", resource,
+            flux_log (h, LOG_ERR, "failed to idlize %s: %s", global_rdl_resource,
                       strerror (errno));
             rc = -1;
             goto ret;
         }
         flux_log (h, LOG_DEBUG, "successfully set up rdl resources");
     } else {
-        flux_log (h, LOG_ERR, "failed to get %s: %s", resource,
+        flux_log (h, LOG_ERR, "failed to get %s: %s", global_rdl_resource,
                   strerror (errno));
         rc = -1;
         goto ret;
@@ -1787,7 +1787,7 @@ skip_for_sim:
     zlist_destroy (&kvs_queue);
     zlist_destroy (&timer_queue);
 
-    rdllib_close(l);
+    rdllib_close(global_rdllib);
 
 ret:
     return rc;
