@@ -339,10 +339,14 @@ static double determine_io_penalty (double job_bandwidth, double min_bandwidth)
 {
     double io_penalty;
 
-  //Determine the penalty (needed rate / actual rate) - 1
-  io_penalty = (job_bandwidth / min_bandwidth) - 1;
+    if (job_bandwidth < min_bandwidth) {
+        return 0;
+    }
 
-  return io_penalty;
+    //Determine the penalty (needed rate / actual rate) - 1
+    io_penalty = (job_bandwidth / min_bandwidth) - 1;
+
+    return io_penalty;
 }
 
 //Model io contention that occurred between previous event and the curr sim time
