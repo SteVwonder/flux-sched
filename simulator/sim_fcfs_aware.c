@@ -42,6 +42,7 @@
 #include "simulator.h"
 
 #define MAX_STR_LEN 128
+#define SCHED_INTERVAL 30
 
 static const char *module_name = "sim_sched";
 
@@ -77,6 +78,7 @@ static char* global_rdl_resource = NULL;
 static const char* IDLETAG = "idle";
 static const char* CORETYPE = "core";
 
+static bool run_schedule_loop = false;
 static bool rdl_changed = true;
 static bool in_sim = false;
 static sim_state_t *sim_state = NULL;
@@ -114,15 +116,37 @@ static void set_next_event(const char* module)
 	}
 }
 
+static void queue_timer_change (const char* module)
+{
+	zlist_append (timer_queue, (void *) module);
+}
+
 static void handle_timer_queue ()
 {
 	while (zlist_size (timer_queue) > 0)
 		set_next_event (zlist_pop (timer_queue));
+
+    //Set scheduler loop to run in next occuring scheduler block
+    double *this_timer = zhash_lookup(sim_state->timers, module_name);
+    double next_schedule_block = sim_state->sim_time +
+      (SCHED_INTERVAL - ((int)sim_state->sim_time % SCHED_INTERVAL));
+    if (run_schedule_loop &&
+        (next_schedule_block < *this_timer || *this_timer < 0)) {
+        *this_timer = next_schedule_block;
+    }
 }
 
-static void queue_timer_change (const char* module)
-{
-	zlist_append (timer_queue, (void *) module);
+static void queue_schedule_loop () {
+    flux_log (h, LOG_DEBUG, "Schedule loop queued");
+    run_schedule_loop = true;
+}
+
+static bool should_run_schedule_loop () {
+    return run_schedule_loop && !((int)sim_state->sim_time % 30);
+}
+
+static void end_schedule_loop () {
+    run_schedule_loop = false;
 }
 
 /****************************************************************
@@ -1217,7 +1241,8 @@ action_j_event (flux_event_t *e)
             goto bad_transition;
         }
         e->lwj->state = j_unsched;
-        schedule_jobs (global_rdl, global_rdl_resource, p_queue, false);
+        queue_schedule_loop();
+        //schedule_jobs (global_rdl, global_rdl_resource, p_queue, false);
         break;
 
     case j_submitted:
@@ -1314,7 +1339,7 @@ action_r_event (flux_event_t *e)
 
     if ((e->ev.re == r_released) || (e->ev.re == r_attempt)) {
         release_resources (global_rdl, global_rdl_resource, e->lwj);
-        schedule_jobs (global_rdl, global_rdl_resource, p_queue, true);
+        //schedule_jobs (global_rdl, global_rdl_resource, p_queue, true);
         rc = 0;
     }
 
@@ -1609,6 +1634,7 @@ static int newlwj_rpc (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	return 0;
 }
 
+#if 0
 static int
 event_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
@@ -1623,12 +1649,39 @@ event_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
     return 0;
 }
+#endif
+
+static void handle_event_queue ()
+{
+    flux_event_t *e = NULL;
+    bool resources_released = false;
+
+    for (e = (flux_event_t *) zlist_pop (ev_queue);
+         e != NULL;
+         e = (flux_event_t *) zlist_pop (ev_queue))
+    {
+        if (e->t == res_event) {
+            resources_released = !action (e) || resources_released;
+        } else {
+            action (e);
+        }
+        free (e);
+        //zlist_sort(ev_queue, compare_events);
+    }
+
+    if (resources_released) {
+      queue_schedule_loop();
+      //schedule_jobs (global_rdl, global_rdl_resource, p_queue);
+    }
+
+}
 
 static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
 	JSON o = NULL;
 	clock_t start, diff;
 	double seconds;
+    bool sched_loop;
 
     if (flux_json_request_decode (*zmsg, &o) < 0) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
@@ -1646,11 +1699,22 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	start = clock();
 
 	handle_kvs_queue();
-	event_cb (h, typemask, zmsg, arg);
+    handle_event_queue ();
+
+    if ((sched_loop = should_run_schedule_loop())) {
+      flux_log (h, LOG_DEBUG, "Running the schedule loop");
+      schedule_jobs (global_rdl, global_rdl_resource, p_queue, true);
+      end_schedule_loop();
+    }
 
 	diff = clock() - start;
 	seconds = ((double) diff) / CLOCKS_PER_SEC;
 	sim_state->sim_time += seconds;
+    if (sched_loop) {
+        flux_log (h, LOG_DEBUG, "scheduler timer: events + loop took %f seconds", seconds);
+    } else {
+        flux_log (h, LOG_DEBUG, "scheduler timer: events took %f seconds", seconds);
+    }
 
 	handle_timer_queue();
 
@@ -1727,7 +1791,7 @@ static int start_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 static msghandler_t htab[] = {
     { FLUX_MSGTYPE_EVENT,   "sim.start",     start_cb },
     { FLUX_MSGTYPE_REQUEST, "sim_sched.trigger", trigger_cb },
-    { FLUX_MSGTYPE_EVENT,   "sim_sched.event",   event_cb },
+    //{ FLUX_MSGTYPE_EVENT,   "sim_sched.event",   event_cb },
     { FLUX_MSGTYPE_REQUEST, "sim_sched.lwj-watch",  newlwj_rpc },
 };
 
