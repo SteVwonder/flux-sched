@@ -3,7 +3,7 @@ Hierarchy "default"
 {
    Resource{ "filesystem", name="pfs", tags = { max_bw = 48000 }, children = {
       Resource {"gateway", name = "gateway_node_pool", tags = { max_bw = 48000 }, children = {
-         Resource {"switch", name = "core_switch_pool", tags = { max_bw = 64000 }, children = {
+         Resource {"core_switch", name = "core_switch_pool", tags = { max_bw = 64000 }, children = {
             Resource {"switch", name = "edge_switch1", tags = { max_bw = 72000 }, children = {
                ListOf{ Node, ids = "1-18", args = { name = "cab", sockets = {"0-7", "8-15"}, tags = { max_bw = 4000 }}}
             }},
