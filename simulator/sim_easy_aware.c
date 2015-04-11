@@ -73,7 +73,7 @@ static zlist_t *ev_queue = NULL;
 static flux_t h = NULL;
 static struct rdllib *global_rdllib = NULL;
 static struct rdl *global_rdl = NULL;
-static char* resource = NULL;
+static char* global_rdl_resource = NULL;
 static const char* IDLETAG = "idle";
 static const char* CORETYPE = "core";
 
@@ -165,8 +165,8 @@ int send_reply_request (flux_t h, sim_state_t *sim_state)
 		return -1;
 	}
 	flux_log(h, LOG_DEBUG, "sent a reply request");
-   Jput (o);
-   return 0;
+    Jput (o);
+    return 0;
 }
 
 static int
@@ -257,7 +257,8 @@ stab_rlookup (struct stab_struct *ss, int i)
     return "unknown";
 }
 
-static int unwatch_lwj (flux_lwj_t *job) {
+static int unwatch_lwj (flux_lwj_t *job)
+{
     char *key = NULL;
     int rc = 0;
 
@@ -549,7 +550,7 @@ static void deallocate_bandwidth_helper (struct rdl *rdl, struct resource *jr,
 	JSON o = NULL;
 
     //TODO: check if this is necessary
-    asprintf (&uri, "%s:%s", resource, rdl_resource_path (jr));
+    asprintf (&uri, "%s:%s", global_rdl_resource, rdl_resource_path (jr));
     curr = rdl_resource_get (rdl, uri);
 
     if (curr) {
@@ -576,7 +577,7 @@ static void deallocate_bandwidth_helper (struct rdl *rdl, struct resource *jr,
         Jput (o);
         rdl_resource_destroy (curr);
     } else {
-        flux_log (h, LOG_ERR, "deallocate_bandswith_helper failed to get %s", uri);
+        flux_log (h, LOG_ERR, "deallocate_bandwidth_helper failed to get %s", uri);
     }
     free (uri);
 
@@ -672,8 +673,7 @@ allocate_resources (struct rdl *rdl, struct resource *fr,
     struct resource *child, *curr;
     bool found = false;
 
-    //TODO: check if this is necessary
-    asprintf (&uri, "%s:%s", resource, rdl_resource_path (fr));
+    asprintf (&uri, "%s:%s", global_rdl_resource, rdl_resource_path (fr));
     curr = rdl_resource_get (rdl, uri);
     free (uri);
 
@@ -739,7 +739,7 @@ release_lwj_resource (struct rdl *rdl, struct resource *jr, char *lwjtag)
     JSON o = NULL;
     struct resource *child, *curr;
 
-    asprintf (&uri, "%s:%s", resource, rdl_resource_path (jr));
+    asprintf (&uri, "%s:%s", global_rdl_resource, rdl_resource_path (jr));
     curr = rdl_resource_get (rdl, uri);
 
     if (curr) {
@@ -872,7 +872,7 @@ update_job_resources (flux_lwj_t *job)
 {
     uint64_t node = 0;
     uint32_t cores = 0;
-    struct resource *jr = rdl_resource_get (job->rdl, resource);
+    struct resource *jr = rdl_resource_get (job->rdl, global_rdl_resource);
     int rc = -1;
 
     if (jr) {
@@ -1000,7 +1000,7 @@ static int schedule_job_without_update (struct rdl *rdl, const char *uri, flux_l
                     flux_log (h, LOG_DEBUG, "no resources found in accumulator");
                 } else {
                     job->rdl = rdl_accumulator_copy (*a);
-                    release_resources (rdl, resource, job);
+                    release_resources (rdl, global_rdl_resource, job);
                     rdl_destroy (job->rdl);
                     rdl_accumulator_destroy (*a);
                 }
@@ -1091,7 +1091,7 @@ static int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job)
                   flux_log (h, LOG_DEBUG, "no resources found in accumulator");
                 } else {
                   job->rdl = rdl_accumulator_copy (a);
-                  release_resources (rdl, resource, job);
+                  release_resources (rdl, global_rdl_resource, job);
                   rdl_destroy (job->rdl);
                 }
 			}
@@ -1111,13 +1111,14 @@ ret:
 
 
 //Return true if job1 is expected to terminate after job2
-static bool job_compare_termination_fn (void *item1, void *item2) {
+static bool job_compare_termination_fn (void *item1, void *item2)
+{
     job_t *job1, *job2;
     double term1, term2;
 
     job1 = (job_t *) item1;
     job2 = (job_t *) item2;
-    
+
     term1 = job1->start_time + job1->time_limit;
     term2 = job2->start_time + job2->time_limit;
 
@@ -1428,7 +1429,7 @@ action_j_event (flux_event_t *e)
             goto bad_transition;
         }
         e->lwj->state = j_unsched;
-        schedule_jobs (global_rdl, resource, p_queue);
+        schedule_jobs (global_rdl, global_rdl_resource, p_queue);
         break;
 
     case j_submitted:
@@ -1524,8 +1525,8 @@ action_r_event (flux_event_t *e)
     int rc = -1;
 
     if ((e->ev.re == r_released) || (e->ev.re == r_attempt)) {
-        release_resources (global_rdl, resource, e->lwj);
-        schedule_jobs (global_rdl, resource, p_queue);
+        release_resources (global_rdl, global_rdl_resource, e->lwj);
+        schedule_jobs (global_rdl, global_rdl_resource, p_queue);
         rc = 0;
     }
 
@@ -1973,22 +1974,22 @@ int mod_main (flux_t p, zhash_t *args)
         goto ret;
     }
 
-    if (!(resource = zhash_lookup (args, "rdl-resource"))) {
+    if (!(global_rdl_resource = zhash_lookup (args, "rdl-resource"))) {
         flux_log (h, LOG_INFO, "using default rdl resource");
-        resource = "default";
+        global_rdl_resource = "default";
     }
 
-    if ((r = rdl_resource_get (global_rdl, resource))) {
+    if ((r = rdl_resource_get (global_rdl, global_rdl_resource))) {
         flux_log (h, LOG_DEBUG, "setting up rdl resources");
         if (idlize_resources (r)) {
-            flux_log (h, LOG_ERR, "failed to idlize %s: %s", resource,
+            flux_log (h, LOG_ERR, "failed to idlize %s: %s", global_rdl_resource,
                       strerror (errno));
             rc = -1;
             goto ret;
         }
         flux_log (h, LOG_DEBUG, "successfully set up rdl resources");
     } else {
-        flux_log (h, LOG_ERR, "failed to get %s: %s", resource,
+        flux_log (h, LOG_ERR, "failed to get %s: %s", global_rdl_resource,
                   strerror (errno));
         rc = -1;
         goto ret;
