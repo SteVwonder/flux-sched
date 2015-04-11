@@ -81,6 +81,7 @@ static const char* CORETYPE = "core";
 static const char* NODETYPE = "node";
 static const char* SWITCHTYPE = "switch";
 
+static bool rdl_changed = true;
 static bool in_sim = false;
 static sim_state_t *sim_state = NULL;
 static zlist_t *kvs_queue = NULL;
@@ -134,12 +135,32 @@ static void queue_timer_change (const char* module)
  *
  ****************************************************************/
 
+int send_rdl_update (flux_t h, struct rdl* rdl) {
+    JSON o = Jnew();
+    char* rdl_string;
+
+    if (!rdl_changed) {
+        return 0;
+    }
+
+    flux_log (h, LOG_DEBUG, "rdl changed, broadcast new rdl_string");
+    rdl_string = rdl_serialize(rdl);
+
+    Jadd_str(o, "rdl_string", rdl_string);
+
+	if (flux_event_send (h, o, "%s", "rdl.update") < 0){
+		Jput(o);
+		return -1;
+	}
+
+    rdl_changed = false;
+    Jput (o);
+    return 0;
+}
+
 //Reply back to the sim module with the updated sim state (in JSON form)
 int send_reply_request (flux_t h, sim_state_t *sim_state)
 {
-    if (sim_state->rdl_string)
-        free (sim_state->rdl_string);
-    sim_state->rdl_string = rdl_serialize(global_rdl);
 	JSON o = sim_state_to_json (sim_state);
 	Jadd_bool (o, "event_finished", true);
     Jadd_str (o, "mod_name", module_name);
@@ -2342,6 +2363,9 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	sim_state = json_to_sim_state (o);
 
+    int old_r_size = zlist_size (r_queue);
+    int old_c_size = zlist_size (c_queue);
+
 	start = clock();
 
 	handle_kvs_queue();
@@ -2353,6 +2377,16 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	handle_timer_queue();
 
+    int new_r_size = zlist_size (r_queue);
+    int new_c_size = zlist_size (c_queue);
+
+    if (new_r_size != old_r_size ||
+        new_c_size != old_c_size)
+    {
+        rdl_changed = true;
+    }
+
+    send_rdl_update (h, global_rdl);
 	send_reply_request (h, sim_state);
 
     free_simstate (sim_state);
