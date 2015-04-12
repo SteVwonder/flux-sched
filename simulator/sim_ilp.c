@@ -1339,7 +1339,7 @@ static void generate_lp_constraints (glp_prob *lp, zlist_t *eligible_jobs,
         o = rdl_resource_json (curr_resource);
         Jget_obj(o, "hierarchy", &o2);
         Jget_str (o2, "default", &hierarchy);
-        printf ("Checking resource (%ld) %s\n", i, hierarchy);
+        flux_log (h, LOG_DEBUG, "Checking resource (%ld) %s\n", i, hierarchy);
 
         snprintf (name, max_name_len, "%s%04ld", resource_type, i);
         if (strcmp (resource_type, CORETYPE) == 0) {
@@ -1567,7 +1567,7 @@ void schedule_jobs_from_ilp_helper (glp_prob *lp, const char* resource_type,
     int i, col_val, col_idx, num_remaining;
     flux_job_ilp* job_ilp;
 
-    printf ("Num resources: %d, num jobs: %d\n",
+    flux_log (h, LOG_DEBUG, "Num resources: %d, num jobs: %d\n",
             (int)zlist_size (res_list), (int)zlist_size (scheduled_jobs));
     for (i=0, curr_resource = zlist_first (res_list);
          curr_resource != NULL;
