@@ -1024,7 +1024,7 @@ static int schedule_job_without_update (struct rdl *rdl, const char *uri, flux_l
                     flux_log (h, LOG_DEBUG, "no resources found in accumulator");
                 } else {
                     job->rdl = rdl_accumulator_copy (*a);
-                    release_resources (rdl, global_rdl_resource, job);
+                    release_resources (rdl, uri, job);
                     rdl_destroy (job->rdl);
                     rdl_accumulator_destroy (*a);
                 }
@@ -1115,7 +1115,7 @@ static int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job)
                   flux_log (h, LOG_DEBUG, "no resources found in accumulator");
                 } else {
                   job->rdl = rdl_accumulator_copy (a);
-                  release_resources (rdl, global_rdl_resource, job);
+                  release_resources (rdl, uri, job);
                   rdl_destroy (job->rdl);
                 }
 			}
@@ -1276,11 +1276,14 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
 		if (curr_job->state == j_unsched) {
 			job_scheduled = schedule_job (rdl, uri, curr_job);
             if (job_scheduled) {
-                kvs_get_dir (h,  &curr_kvs_dir, "lwj.%d", curr_job->lwj_id);
-                curr_job_t = pull_job_from_kvs (curr_kvs_dir);
-                if (curr_job_t->start_time == 0)
-                    curr_job_t->start_time = sim_state->sim_time;
-                zlist_append (running_jobs, curr_job_t);
+                if (kvs_get_dir (h,  &curr_kvs_dir, "lwj.%ld", curr_job->lwj_id)) {
+                    flux_log (h, LOG_ERR, "lwj.%ld kvsdir not found", curr_job->lwj_id);
+                } else {
+                    curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+                    if (curr_job_t->start_time == 0)
+                        curr_job_t->start_time = sim_state->sim_time;
+                    zlist_append (running_jobs, curr_job_t);
+                }
             } else {
                 reserved_job = curr_job;
             }
@@ -1294,11 +1297,14 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
 
         curr_lwj_job = zlist_first (r_queue);
         while (curr_lwj_job != NULL) {
-            kvs_get_dir (h,  &curr_kvs_dir, "lwj.%d", curr_lwj_job->lwj_id);
-            curr_job_t = pull_job_from_kvs (curr_kvs_dir);
-            if (curr_job_t->start_time == 0)
-                curr_job_t->start_time = sim_state->sim_time;
-            zlist_append (running_jobs, curr_job_t);
+            if (kvs_get_dir (h,  &curr_kvs_dir, "lwj.%ld", curr_lwj_job->lwj_id)) {
+                flux_log (h, LOG_ERR, "lwj.%ld kvsdir not found", curr_lwj_job->lwj_id);
+            } else {
+                curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+                if (curr_job_t->start_time == 0)
+                    curr_job_t->start_time = sim_state->sim_time;
+                zlist_append (running_jobs, curr_job_t);
+            }
             curr_lwj_job = zlist_next (r_queue);
         }
         calculate_shadow_info (reserved_job, shadow_rdl, uri, running_jobs, &shadow_time, &shadow_free_cores);
