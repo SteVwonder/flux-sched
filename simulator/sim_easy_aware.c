@@ -1169,6 +1169,8 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_
     if (zlist_size (running_jobs) == 0) {
         flux_log (h, LOG_ERR, "No running jobs and reserved job still doesn't fit.");
         return;
+    } else {
+        flux_log (h, LOG_DEBUG, "calculate_shadow_info found %zu jobs currently running", zlist_size (running_jobs));
     }
 
     frdl = get_free_subset (shadow_rdl, "core");
@@ -1186,9 +1188,15 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_
     while ((*shadow_free_cores < reserved_job->req.ncores)) {
         if (curr_job_t == NULL) {
             flux_log (h, LOG_ERR, "Curr job is null");
+            break;
+        } else if (curr_job_t->ncpus < 1) {
+            flux_log (h, LOG_ERR, "Curr job %d incorrectly requires < 1 cpu: %d", curr_job_t->id, curr_job_t->ncpus);
         }
         //De-allocate curr_job_t's resources from the shadow_rdl
         curr_lwj_job = find_lwj(curr_job_t->id);
+        if (curr_lwj_job->alloc.ncores != curr_job_t->ncpus) {
+            flux_log (h, LOG_ERR, "Job %d's ncpus don't match: %d (lwj_job) and %d (job_t)", curr_job_t->id, curr_lwj_job->alloc.ncores, curr_job_t->ncpus);
+        }
         release_resources (shadow_rdl, uri, curr_lwj_job);
 
         *shadow_free_cores += curr_job_t->ncpus;
@@ -1203,9 +1211,15 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_
     while (!schedule_job_without_update (shadow_rdl, uri, reserved_job, &accum)) {
         if (curr_job_t == NULL) {
             flux_log (h, LOG_ERR, "Curr job is null");
+            break;
+        } else if (curr_job_t->ncpus < 1) {
+            flux_log (h, LOG_ERR, "Curr job %d incorrectly requires < 1 cpu: %d", curr_job_t->id, curr_job_t->ncpus);
         }
         //De-allocate curr_job_t's resources from the shadow_rdl
         curr_lwj_job = find_lwj(curr_job_t->id);
+        if (curr_lwj_job->alloc.ncores != curr_job_t->ncpus) {
+            flux_log (h, LOG_ERR, "Job %d's ncpus don't match: %d (lwj_job) and %d (job_t)", curr_job_t->id, curr_lwj_job->alloc.ncores, curr_job_t->ncpus);
+        }
         release_resources (shadow_rdl, uri, curr_lwj_job);
 
         *shadow_free_cores += curr_job_t->ncpus;

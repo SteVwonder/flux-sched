@@ -143,7 +143,9 @@ int parse_job_csv (flux_t h, char *filename, zlist_t *jobs)
 		populate_header (curr_line, header);
 		fget_rc = fgets (curr_line, MAX_LINE_LEN, fp);
 		curr_column = zlist_first (header);
-	}
+	} else {
+        flux_log (h, LOG_ERR, "header not found");
+    }
 
 	//Start making jobs from the actual data
 	while (fget_rc != NULL && feof (fp) == 0) {
