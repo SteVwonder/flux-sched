@@ -754,7 +754,7 @@ function ResourceAccumulator:add (id, n, args)
 end
 
 function ResourceAccumulator:is_empty (args)
-   return table_empty (self.dst)
+   return table_empty (self.dst) or table_empty (self.dst.__hierarchy)
 end
 
 --
