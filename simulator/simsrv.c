@@ -46,12 +46,15 @@ typedef struct {
     bool master;
     int rank;
     FILE *output_file;
+    bool rdl_changed;
+    char* rdl_string;
 } ctx_t;
 
 static void freectx (ctx_t *ctx)
 {
 	free_simstate (ctx->sim_state);
-    fclose(ctx->output_file);
+    fclose (ctx->output_file);
+    free (ctx->rdl_string);
     free (ctx);
 }
 
@@ -73,6 +76,8 @@ static ctx_t *getctx (flux_t h, char* save_path)
         ctx->rank = flux_rank (h);
 		ctx->sim_state = new_simstate ();
         ctx->output_file = fopen (filename, "w");
+        ctx->rdl_string = NULL;
+        ctx->rdl_changed = false;
         flux_aux_set (h, "simsrv", ctx, (FluxFreeFn)freectx);
     }
 
@@ -138,6 +143,7 @@ static int handle_next_event (ctx_t *ctx){
 	}
 	if (min_event_time == NULL){
 		flux_log (ctx->h, LOG_INFO, "No events remaining");
+        dump_kvs_dir(ctx->h, ".");
 		return -1;
 	}
 	while (zlist_size (keys) > 0){
@@ -288,12 +294,43 @@ static void save_sim_state (ctx_t *ctx)
 {
     static int line_num = 1;
     JSON output_json = sim_state_to_json(ctx->sim_state);
+    if (ctx->rdl_changed) {
+        Jadd_str(output_json, "rdl", ctx->rdl_string);
+        ctx->rdl_changed = false;
+    }
     const char *output_string = Jtostr (output_json);
     fputs (output_string, ctx->output_file);
     fputc ('\n', ctx->output_file);
     Jput(output_json);
     flux_log (ctx->h, LOG_DEBUG, "Saved sim_state to line %d of ctx->output_file", line_num);
     line_num++;
+}
+
+static int rdl_update_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+{
+	JSON o = NULL;
+	char *tag = NULL;
+    const char *rdl_string = NULL;
+	ctx_t *ctx = (ctx_t *) arg;
+
+	if (flux_msg_decode (*zmsg, &tag, &o) < 0 || o == NULL){
+		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
+		Jput (o);
+		return -1;
+	}
+
+    Jget_str(o, "rdl_string", &rdl_string);
+    if (rdl_string) {
+        free (ctx->rdl_string);
+        ctx->rdl_string = strdup (rdl_string);
+        ctx->rdl_changed = true;
+    } else {
+        Jput (o);
+        return -1;
+    }
+
+    Jput (o);
+    return 0;
 }
 
 //Recevied a reply to a trigger ("sim.reply")
@@ -323,11 +360,13 @@ static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	reply_sim_state = json_to_sim_state (request);
 	copy_new_state_data (ctx, curr_sim_state, reply_sim_state);
 
-	handle_next_event (ctx);
+	if (handle_next_event (ctx) < 0) {
+        exit(-1);
+    }
 
     //Save out the sim_state to disk while the next module is working
-    if (!strcmp (mod_name, "sim_sched"))
-        save_sim_state (ctx);
+    //if (!strcmp (mod_name, "sim_sched"))
+    save_sim_state (ctx);
 
 	free_simstate (reply_sim_state);
 	Jput(request);
@@ -364,6 +403,7 @@ static msghandler_t htab[] = {
     { FLUX_MSGTYPE_REQUEST, "sim.join",       join_cb },
     { FLUX_MSGTYPE_REQUEST, "sim.reply",      reply_cb },
     { FLUX_MSGTYPE_REQUEST, "sim.alive",      alive_cb },
+    { FLUX_MSGTYPE_EVENT,   "rdl.update",     rdl_update_cb },
 };
 const int htablen = sizeof (htab) / sizeof (htab[0]);
 
@@ -384,6 +424,10 @@ int mod_main(flux_t h, zhash_t *args)
     }
     ctx = getctx(h, sim_state_save_path);
 
+	if (flux_event_subscribe (h, "rdl.update") < 0){
+        flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
+		return -1;
+	}
 	if (flux_msghandler_addvec (h, htab, htablen, ctx) < 0) {
 		flux_log (h, LOG_ERR, "flux_msghandler_add: %s", strerror (errno));
 		return -1;
