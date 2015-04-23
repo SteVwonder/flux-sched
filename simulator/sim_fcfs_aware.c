@@ -175,6 +175,7 @@ int send_rdl_update (flux_t h, struct rdl* rdl) {
 
     rdl_changed = false;
     Jput (o);
+    free (rdl_string);
     return 0;
 }
 
@@ -190,7 +191,6 @@ int send_reply_request (flux_t h, sim_state_t *sim_state)
 	}
 	flux_log(h, LOG_DEBUG, "sent a reply request");
    Jput (o);
-   free_simstate (sim_state);
    return 0;
 }
 
