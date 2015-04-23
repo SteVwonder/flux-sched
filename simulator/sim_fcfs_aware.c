@@ -298,8 +298,12 @@ static int unwatch_lwj (flux_lwj_t *job)
     } else {
         flux_log (h, LOG_DEBUG, "unwatched %s", key);
     }
-
     free (key);
+
+    asprintf (&key, "lwj.%ld", job->lwj_id);
+    dump_kvs_dir (h, key);
+    free (key);
+
     return rc;
 }
 
