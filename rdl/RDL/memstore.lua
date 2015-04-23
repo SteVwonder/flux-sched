@@ -23,7 +23,9 @@
 --\***************************************************************************/
 --
 local URI = require 'RDL.uri'
-local serialize = require 'RDL.serialize'
+local serpent = require("serpent")
+local serialize = serpent.dump
+--local serialize = require 'RDL.serialize'
 
 local MemStore = {}
 MemStore.__index = MemStore
@@ -1132,7 +1134,8 @@ local function load_file (f)
 end
 
 local function load_string (s)
-    return load_serialized (s, loadstring)
+   return serpent.load(s)
+    --return load_serialized (s, loadstring)
 end
 
 return {new = new, bless = bless_memstore}
