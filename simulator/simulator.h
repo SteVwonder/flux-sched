@@ -38,14 +38,6 @@ void free_job (job_t *job);
 job_t *blank_job ();
 int send_alive_request (flux_t h, const char* module_name);
 
+void dump_kvs_dir (flux_t h, const char *path);
+
 #endif /* SIMULATOR_H */
-
-
-
-
-
-
-
-
-
-

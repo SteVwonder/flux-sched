@@ -234,3 +234,65 @@ int send_alive_request (flux_t h, const char* module_name)
 	Jput (o);
 	return 0;
 }
+
+static void dump_kvs_val (const char *key, JSON o)
+{
+    switch (json_object_get_type (o)) {
+        case json_type_null:
+            printf ("%s = nil\n", key);
+            break;
+        case json_type_boolean:
+            printf ("%s = %s\n", key, json_object_get_boolean (o)
+                                      ? "true" : "false");
+            break;
+        case json_type_double:
+            printf ("%s = %f\n", key, json_object_get_double (o));
+            break;
+        case json_type_int:
+            printf ("%s = %d\n", key, json_object_get_int (o));
+            break;
+        case json_type_string:
+            printf ("%s = %s\n", key, json_object_get_string (o));
+            break;
+        case json_type_array:
+        case json_type_object:
+        default:
+            printf ("%s = %s\n", key, Jtostr (o));
+            break;
+    }
+}
+
+void dump_kvs_dir (flux_t h, const char *path)
+{
+    kvsdir_t dir;
+    kvsitr_t itr;
+    const char *name;
+    char *key;
+
+    if (kvs_get_dir (h, &dir, "%s", path) < 0)
+        err_exit ("%s", path);
+
+    itr = kvsitr_create (dir);
+    while ((name = kvsitr_next (itr))) {
+        key = kvsdir_key_at (dir, name);
+        if (kvsdir_issymlink (dir, name)) {
+            char *link;
+            if (kvs_get_symlink (h, key, &link) < 0)
+                err_exit ("%s", key);
+            printf ("%s -> %s\n", key, link);
+            free (link);
+
+        } else if (kvsdir_isdir (dir, name)) {
+            dump_kvs_dir (h, key);
+        } else {
+            JSON o;
+            if (kvs_get (h, key, &o) < 0)
+                err_exit ("%s", key);
+            dump_kvs_val (key, o);
+            Jput (o);
+        }
+        free (key);
+    }
+    kvsitr_destroy (itr);
+    kvsdir_destroy (dir);
+}
