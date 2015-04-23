@@ -179,6 +179,7 @@ int send_rdl_update (flux_t h, struct rdl* rdl) {
 
     rdl_changed = false;
     Jput (o);
+    free (rdl_string);
     return 0;
 }
 
