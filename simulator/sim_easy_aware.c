@@ -156,17 +156,13 @@ static void end_schedule_loop () {
  ****************************************************************/
 
 int send_rdl_update (flux_t h, struct rdl* rdl) {
-    JSON o = Jnew();
-    char* rdl_string;
-
     if (!rdl_changed) {
         return 0;
     }
 
-    flux_log (h, LOG_DEBUG, "rdl changed, broadcast new rdl_string");
-    rdl_string = rdl_serialize(rdl);
+    JSON o = Jnew();
 
-    Jadd_str(o, "rdl_string", rdl_string);
+    Jadd_int64(o, "rdl_int", (int64_t) rdl);
 
 	if (flux_event_send (h, o, "%s", "rdl.update") < 0){
 		Jput(o);
@@ -175,7 +171,6 @@ int send_rdl_update (flux_t h, struct rdl* rdl) {
 
     rdl_changed = false;
     Jput (o);
-    free (rdl_string);
     return 0;
 }
 

@@ -302,7 +302,7 @@ static void save_sim_state (ctx_t *ctx)
 {
     static int line_num = 1;
     JSON output_json = sim_state_to_json(ctx->sim_state);
-    if (ctx->rdl_changed) {
+    if (ctx->rdl_changed && ctx->rdl_string) {
         Jadd_str(output_json, "rdl", ctx->rdl_string);
         ctx->rdl_changed = false;
     }
@@ -332,9 +332,6 @@ static int rdl_update_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
         free (ctx->rdl_string);
         ctx->rdl_string = strdup (rdl_string);
         ctx->rdl_changed = true;
-    } else {
-        Jput (o);
-        return -1;
     }
 
     Jput (o);
