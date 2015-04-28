@@ -62,6 +62,7 @@ typedef struct {
 	int errnum;
 } kvs_event_t;
 
+
 /****************************************************************
  *
  *                 STATIC DATA
@@ -1037,72 +1038,59 @@ static int64_t get_free_count (struct rdl *rdl, const char *uri, const char *typ
 }
 */
 
-static int schedule_job_without_update (struct rdl *rdl, const char *uri, flux_lwj_t *job, struct rdl_accumulator **a)
+static int schedule_job_without_update (struct rdl *rdl, struct rdl *free_rdl, const char *uri,
+                                        int64_t free_cores, flux_lwj_t *job, struct rdl_accumulator **a)
 {
     //int64_t nodes = -1;
     int rc = 0;
 
-    int64_t cores = -1;
-    struct rdl *frdl = NULL;            /* found rdl */
-    struct resource *fr = NULL;         /* found resource */
+    struct resource *free_root = NULL;         /* found resource */
 
     if (!job || !rdl || !uri) {
         flux_log (h, LOG_ERR, "schedule_job invalid arguments");
         goto ret;
     }
+    flux_log (h, LOG_DEBUG, "schedule_job_without_update called on job %ld", job->lwj_id);
 
-	flux_log (h, LOG_DEBUG, "schedule_job_without_update called on job %ld", job->lwj_id);
+    free_root = rdl_resource_get (free_rdl, uri);
 
-    frdl = get_free_subset (rdl, "core");
-    if (frdl) {
-        cores = get_free_count (frdl, uri, "core");
-        fr = rdl_resource_get (frdl, uri);
-    } else {
-        flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting cores = 0");
-        cores = 0;
-        fr = NULL;
-    }
+	if (free_rdl && free_root && free_cores >= job->req.ncores) {
+        zlist_t *ancestors = zlist_new ();
+        //TODO: revert this in the deallocation/rollback
+        int old_nnodes = job->req.nnodes;
+        int old_ncores = job->req.ncores;
+        int old_io_rate = job->req.io_rate;
+        int old_alloc_nnodes = job->alloc.nnodes;
+        int old_alloc_ncores = job->alloc.ncores;
 
-	if (frdl && fr && cores > 0) {
-		if (cores >= job->req.ncores) {
-            zlist_t *ancestors = zlist_new ();
-            //TODO: revert this in the deallocation/rollback
-            int old_nnodes = job->req.nnodes;
-            int old_ncores = job->req.ncores;
-            int old_io_rate = job->req.io_rate;
-            int old_alloc_nnodes = job->alloc.nnodes;
-            int old_alloc_ncores = job->alloc.ncores;
-
-			rdl_resource_iterator_reset (fr);
-			*a = rdl_accumulator_create (rdl);
-			if (allocate_resources (rdl, fr, *a, job, ancestors)) {
-				flux_log (h, LOG_INFO, "scheduled job %ld without update", job->lwj_id);
-                if (rc == 0)
-                    rc = 1;
-			} else {
-                if (rdl_accumulator_is_empty(*a)) {
-                    flux_log (h, LOG_DEBUG, "no resources found in accumulator");
-                } else {
-                    job->rdl = rdl_accumulator_copy (*a);
-                    release_resources (rdl, uri, job);
-                    rdl_destroy (job->rdl);
-                    rdl_accumulator_destroy (*a);
-                }
+        rdl_resource_iterator_reset (free_root);
+        *a = rdl_accumulator_create (rdl);
+        if (allocate_resources (rdl, free_root, *a, job, ancestors)) {
+            flux_log (h, LOG_INFO, "scheduled job %ld without update", job->lwj_id);
+            if (rc == 0)
+                rc = 1;
+        } else {
+            if (rdl_accumulator_is_empty(*a)) {
+                flux_log (h, LOG_DEBUG, "no resources found in accumulator");
+            } else {
+                job->rdl = rdl_accumulator_copy (*a);
+                release_resources (rdl, uri, job);
+                rdl_destroy (job->rdl);
+                rdl_accumulator_destroy (*a);
             }
-            job->req.io_rate = old_io_rate;
-            job->req.nnodes = old_nnodes;
-            job->req.ncores = old_ncores;
-            job->alloc.nnodes = old_alloc_nnodes;
-            job->alloc.ncores = old_alloc_ncores;
-
-            //TODO: clear the list and free each element (or set freefn)
-            zlist_destroy (&ancestors);
-		} else {
-            flux_log (h, LOG_DEBUG, "not enough available cores, skipping this job");
         }
-        //rdl_resource_destroy (fr);
-        rdl_destroy (frdl);
-	}
+        job->req.io_rate = old_io_rate;
+        job->req.nnodes = old_nnodes;
+        job->req.ncores = old_ncores;
+        job->alloc.nnodes = old_alloc_nnodes;
+        job->alloc.ncores = old_alloc_ncores;
+
+        //TODO: clear the list and free each element (or set freefn)
+        zlist_destroy (&ancestors);
+    } else {
+        flux_log (h, LOG_DEBUG, "not enough available cores, skipping this job");
+    }
+    rdl_resource_destroy (free_root);
 
 ret:
     return rc;
@@ -1116,78 +1104,64 @@ ret:
  * job was succesfully scheduled, 0 if it was not, -1 if there was an
  * error.
  */
-static int schedule_job (struct rdl *rdl, const char *uri, flux_lwj_t *job)
+static int schedule_job (struct rdl *rdl, struct rdl *free_rdl, const char *uri,
+                         int64_t free_cores, flux_lwj_t *job)
 {
     //int64_t nodes = -1;
     int rc = 0;
     struct rdl_accumulator *a = NULL;
 
-	//The "cache"
-    int64_t cores = -1;
-    struct rdl *frdl = NULL;            /* found rdl */
-    struct resource *fr = NULL;         /* found resource */
+    struct resource *free_root = NULL;         /* found resource */
 
     if (!job || !rdl || !uri) {
         flux_log (h, LOG_ERR, "schedule_job invalid arguments");
         goto ret;
     }
-
 	flux_log (h, LOG_DEBUG, "schedule_job called on job %ld", job->lwj_id);
 
-    frdl = get_free_subset (rdl, "core");
-    if (frdl) {
-        cores = get_free_count (frdl, uri, "core");
-        fr = rdl_resource_get (frdl, uri);
-    } else {
-        flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting cores = 0");
-        cores = 0;
-        fr = NULL;
-    }
+    free_root = rdl_resource_get (free_rdl, uri);
 
-	if (frdl && fr && cores > 0) {
-		if (cores >= job->req.ncores) {
-            zlist_t *ancestors = zlist_new ();
-            //TODO: revert this in the deallocation/rollback
-            int old_nnodes = job->req.nnodes;
-            int old_ncores = job->req.ncores;
-            int old_io_rate = job->req.io_rate;
-            int old_alloc_nnodes = job->alloc.nnodes;
-            int old_alloc_ncores = job->alloc.ncores;
-			rdl_resource_iterator_reset (fr);
-			a = rdl_accumulator_create (rdl);
-			if (allocate_resources (rdl, fr, a, job, ancestors)) {
-				flux_log (h, LOG_INFO, "scheduled job %ld", job->lwj_id);
-				job->rdl = rdl_accumulator_copy (a);
-				job->state = j_submitted;
-				rc = update_job (job);
-                if (rc == 0)
-                    rc = 1;
-			}
-			else {
-				flux_log (h, LOG_DEBUG, "not enough resources to allocate, rolling back");
-                job->req.io_rate = old_io_rate;
-                job->req.nnodes = old_nnodes;
-                job->req.ncores = old_ncores;
-                job->alloc.nnodes = old_alloc_nnodes;
-                job->alloc.ncores = old_alloc_ncores;
-
-                if (rdl_accumulator_is_empty(a)) {
-                  flux_log (h, LOG_DEBUG, "no resources found in accumulator");
-                } else {
-                  job->rdl = rdl_accumulator_copy (a);
-                  release_resources (rdl, uri, job);
-                  rdl_destroy (job->rdl);
-                }
-			}
-            //TODO: clear the list and free each element (or set freefn)
-            zlist_destroy (&ancestors);
-			rdl_accumulator_destroy (a);
-		} else {
-            flux_log (h, LOG_DEBUG, "not enough available cores, skipping this job");
+	if (free_rdl && free_root && free_cores >= job->req.ncores) {
+        zlist_t *ancestors = zlist_new ();
+        //TODO: revert this in the deallocation/rollback
+        int old_nnodes = job->req.nnodes;
+        int old_ncores = job->req.ncores;
+        int old_io_rate = job->req.io_rate;
+        int old_alloc_nnodes = job->alloc.nnodes;
+        int old_alloc_ncores = job->alloc.ncores;
+        rdl_resource_iterator_reset (free_root);
+        a = rdl_accumulator_create (rdl);
+        if (allocate_resources (rdl, free_root, a, job, ancestors)) {
+            flux_log (h, LOG_INFO, "scheduled job %ld", job->lwj_id);
+            job->rdl = rdl_accumulator_copy (a);
+            job->state = j_submitted;
+            rc = update_job (job);
+            if (rc == 0)
+                rc = 1;
         }
-        rdl_resource_destroy (fr);
-        rdl_destroy (frdl);
-	}
+        else {
+            flux_log (h, LOG_DEBUG, "not enough resources to allocate, rolling back");
+            job->req.io_rate = old_io_rate;
+            job->req.nnodes = old_nnodes;
+            job->req.ncores = old_ncores;
+            job->alloc.nnodes = old_alloc_nnodes;
+            job->alloc.ncores = old_alloc_ncores;
+
+            if (rdl_accumulator_is_empty(a)) {
+                flux_log (h, LOG_DEBUG, "no resources found in accumulator");
+            } else {
+                job->rdl = rdl_accumulator_copy (a);
+                release_resources (rdl, uri, job);
+                rdl_destroy (job->rdl);
+            }
+        }
+        //TODO: clear the list and free each element (or set freefn)
+        zlist_destroy (&ancestors);
+        rdl_accumulator_destroy (a);
+    } else {
+        flux_log (h, LOG_DEBUG, "not enough available cores, skipping this job");
+    }
+    rdl_resource_destroy (free_root);
 
 ret:
     return rc;
@@ -1216,77 +1190,96 @@ static bool job_compare_termination_fn (void *item1, void *item2)
 //are free, excluding the cores that will be used by the reserved job
 
 //The input rdl should be a copy that can be mutated to reflect the rdl's state @ shadow_time
-static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *shadow_rdl, const char *uri, zlist_t *running_jobs, double *shadow_time, int64_t *shadow_free_cores) {
-    job_t *curr_job_t;
-    flux_lwj_t *curr_lwj_job;
-    struct rdl *frdl = NULL;
+static void calculate_shadow_info (flux_lwj_t *reserved_job, struct rdl *rdl, const char *uri,
+                                   zlist_t *running_jobs,
+                                   //output
+                                   struct rdl **shadow_rdl, double *shadow_time)
+{
+    job_t *curr_job_t = NULL;
+    flux_lwj_t *curr_lwj_job = NULL;
+    struct rdl *shadow_free_rdl = NULL;
+    int64_t shadow_free_cores = -1;
 
     if (zlist_size (running_jobs) == 0) {
         flux_log (h, LOG_ERR, "No running jobs and reserved job still doesn't fit.");
+        *shadow_rdl = NULL;
+        *shadow_time = -1;
         return;
     } else {
         flux_log (h, LOG_DEBUG, "calculate_shadow_info found %zu jobs currently running", zlist_size (running_jobs));
     }
 
-    frdl = get_free_subset (shadow_rdl, "core");
-    if (frdl) {
-        *shadow_free_cores = get_free_count (frdl, uri, "core");
-        rdl_destroy (frdl);
+    *shadow_rdl = rdl_copy (rdl);
+    shadow_free_rdl = get_free_subset (*shadow_rdl, "core");
+    if (shadow_free_rdl) {
+        shadow_free_cores = get_free_count (shadow_free_rdl, uri, "core");
     } else {
         flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting shadow_free_cores = 0");
-        *shadow_free_cores = 0;
+        shadow_free_cores = 0;
     }
 
     zlist_sort(running_jobs, job_compare_termination_fn);
 
     curr_job_t = zlist_first (running_jobs);
-    while ((*shadow_free_cores < reserved_job->req.ncores)) {
+    while (shadow_free_cores < reserved_job->req.ncores) {
         if (curr_job_t == NULL) {
             flux_log (h, LOG_ERR, "Curr job is null");
             break;
         } else if (curr_job_t->ncpus < 1) {
             flux_log (h, LOG_ERR, "Curr job %d incorrectly requires < 1 cpu: %d", curr_job_t->id, curr_job_t->ncpus);
         }
-        //De-allocate curr_job_t's resources from the shadow_rdl
+
+        //De-allocate curr_job_t's resources from the *shadow_rdl
         curr_lwj_job = find_lwj(curr_job_t->id);
         if (curr_lwj_job->alloc.ncores != curr_job_t->ncpus) {
             flux_log (h, LOG_ERR, "Job %d's ncpus don't match: %d (lwj_job) and %d (job_t)", curr_job_t->id, curr_lwj_job->alloc.ncores, curr_job_t->ncpus);
         }
-        release_resources (shadow_rdl, uri, curr_lwj_job);
+        release_resources (*shadow_rdl, uri, curr_lwj_job);
 
-        *shadow_free_cores += curr_job_t->ncpus;
+        shadow_free_cores += curr_job_t->ncpus;
         *shadow_time = curr_job_t->start_time + curr_job_t->time_limit;
         curr_job_t = zlist_next (running_jobs);
     }
 
     flux_log (h, LOG_DEBUG, "Entering the exact shadow loop");
 
+    rdl_destroy (shadow_free_rdl);
+    shadow_free_rdl = get_free_subset (*shadow_rdl, "core");
+
     //Do a loop checking if the reserved job can be scheduled (considering IO)
     struct rdl_accumulator *accum = NULL;
-    while (!schedule_job_without_update (shadow_rdl, uri, reserved_job, &accum)) {
+    while (!schedule_job_without_update (*shadow_rdl, shadow_free_rdl, uri,
+                                         shadow_free_cores, reserved_job, &accum)) {
         if (curr_job_t == NULL) {
             flux_log (h, LOG_ERR, "Curr job is null");
             break;
         } else if (curr_job_t->ncpus < 1) {
             flux_log (h, LOG_ERR, "Curr job %d incorrectly requires < 1 cpu: %d", curr_job_t->id, curr_job_t->ncpus);
         }
-        //De-allocate curr_job_t's resources from the shadow_rdl
+        //De-allocate curr_job_t's resources from the *shadow_rdl
         curr_lwj_job = find_lwj(curr_job_t->id);
         if (curr_lwj_job->alloc.ncores != curr_job_t->ncpus) {
             flux_log (h, LOG_ERR, "Job %d's ncpus don't match: %d (lwj_job) and %d (job_t)", curr_job_t->id, curr_lwj_job->alloc.ncores, curr_job_t->ncpus);
         }
-        release_resources (shadow_rdl, uri, curr_lwj_job);
+        release_resources (*shadow_rdl, uri, curr_lwj_job);
 
-        *shadow_free_cores += curr_job_t->ncpus;
+        shadow_free_cores += curr_job_t->ncpus;
         *shadow_time = curr_job_t->start_time + curr_job_t->time_limit;
+
         curr_job_t = zlist_next (running_jobs);
+        rdl_destroy (shadow_free_rdl);
+        shadow_free_rdl = get_free_subset (*shadow_rdl, "core");
     }
-    *shadow_free_cores -= reserved_job->req.ncores;
+
+    rdl_destroy (shadow_free_rdl);
 }
 
 //Determines if a job is eligible for backfilling or not
 //If it is, attempts to schedule it
-static bool backfill_job (struct rdl *rdl, struct rdl *shadow_rdl, const char *uri, flux_lwj_t *job, int64_t *curr_free_cores, double shadow_time) {
+static bool backfill_job (struct rdl *rdl, struct rdl *shadow_rdl, struct rdl *free_rdl,
+                          struct rdl *shadow_free_rdl, const char *uri, flux_lwj_t *job,
+                          int64_t *curr_free_cores, int64_t *shadow_free_cores, double shadow_time)
+{
     bool terminates_before_shadow_time = ((sim_state->sim_time + job->req.walltime) < shadow_time);
 
     flux_log (h, LOG_DEBUG, "backfill info - term_before_shadow_time: %d, curr_free_cores: %ld, job_req_cores: %d", terminates_before_shadow_time, *curr_free_cores, job->req.ncores);
@@ -1295,7 +1288,7 @@ static bool backfill_job (struct rdl *rdl, struct rdl *shadow_rdl, const char *u
         return false;
     } else if (terminates_before_shadow_time) {
         //Job ends before reserved job starts, and we have enough cores currently to schedule it
-        if (schedule_job (rdl, uri, job)) {
+        if (schedule_job (rdl, free_rdl, uri, *curr_free_cores, job)) {
             *curr_free_cores -= job->req.ncores;
             return true;
         }
@@ -1304,8 +1297,11 @@ static bool backfill_job (struct rdl *rdl, struct rdl *shadow_rdl, const char *u
         //enough free resources (cores + IO) at shadow time to not
         //delay the reserved job
         struct rdl_accumulator *accum = NULL;
-        if (schedule_job_without_update(shadow_rdl, uri, job, &accum)){
-            if (schedule_job (rdl, uri, job)) {
+        if (schedule_job_without_update(shadow_rdl, shadow_free_rdl, uri,
+                                        *shadow_free_cores, job, &accum))
+        {
+            if (schedule_job (rdl, free_rdl, uri, *curr_free_cores, job)) {
+                *shadow_free_cores -= job->alloc.ncores;
                 *curr_free_cores -= job->alloc.ncores;
                 return true;
             } else {
@@ -1315,7 +1311,7 @@ static bool backfill_job (struct rdl *rdl, struct rdl *shadow_rdl, const char *u
                 rdl_accumulator_destroy (accum);
                 return false;
             }
-        }   
+        }
     }
 
     return false;
@@ -1339,17 +1335,26 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
     int rc = 0, job_scheduled = 1;
     double shadow_time = -1;
     int64_t curr_free_cores = -1, shadow_free_cores = -1;
-    struct rdl *frdl = NULL, *shadow_rdl = NULL;
+    struct rdl *free_rdl = NULL, *shadow_rdl = NULL, *shadow_free_rdl = NULL;
     zlist_t *queued_jobs = zlist_dup (jobs), *running_jobs = zlist_new ();
 
     zlist_sort(queued_jobs, job_compare_id_fn);
+
+    free_rdl = get_free_subset (rdl, "core");
+    if (free_rdl) {
+        curr_free_cores = get_free_count (free_rdl, uri, "core");
+    } else {
+        flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting curr_free_cores = 0");
+        curr_free_cores = 0;
+    }
 
     //Schedule all jobs at the front of the queue
     curr_job = zlist_first (queued_jobs);
     while (job_scheduled && curr_job) {
 		if (curr_job->state == j_unsched) {
-			job_scheduled = schedule_job (rdl, uri, curr_job);
+			job_scheduled = schedule_job (rdl, free_rdl, uri, curr_free_cores, curr_job);
             if (job_scheduled) {
+                curr_free_cores -= curr_job->alloc.ncores;
                 if (kvs_get_dir (h,  &curr_kvs_dir, "lwj.%ld", curr_job->lwj_id)) {
                     flux_log (h, LOG_ERR, "lwj.%ld kvsdir not found", curr_job->lwj_id);
                 } else {
@@ -1367,8 +1372,6 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
 
     //reserved job is now set, start backfilling
     if (reserved_job && curr_job) {
-        shadow_rdl = rdl_copy (rdl);
-
         curr_lwj_job = zlist_first (r_queue);
         while (curr_lwj_job != NULL) {
             if (kvs_get_dir (h,  &curr_kvs_dir, "lwj.%ld", curr_lwj_job->lwj_id)) {
@@ -1381,19 +1384,18 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
             }
             curr_lwj_job = zlist_next (r_queue);
         }
-        calculate_shadow_info (reserved_job, shadow_rdl, uri, running_jobs, &shadow_time, &shadow_free_cores);
+        calculate_shadow_info (reserved_job, rdl, uri, running_jobs, &shadow_rdl, &shadow_time);
+
+        shadow_free_rdl = get_free_subset (shadow_rdl, "core");
+        if (shadow_free_rdl) {
+            shadow_free_cores = get_free_count (shadow_free_rdl, uri, "core");
+        } else {
+            flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting shadow_free_cores = 0");
+            shadow_free_cores = 0;
+        }
 
         flux_log(h, LOG_DEBUG, "Job %ld has the reservation - shadow time: %f, shadow free cores: %ld", reserved_job->lwj_id, shadow_time, shadow_free_cores);
-        
-        frdl = get_free_subset (rdl, "core");
-        if (frdl) {
-            curr_free_cores = get_free_count (frdl, uri, "core");
-            rdl_destroy (frdl);
-        } else {
-            flux_log (h, LOG_DEBUG, "get_free_subset returned nothing, setting curr_free_cores = 0");
-            curr_free_cores = 0;
-        }
-        
+
         //NOTE: the shadow_rdl and the rdl will diverge due to
         //differences in the order that the jobs are scheduled.  In
         //the case of "rdl", all backfilled jobs are scheduled first,
@@ -1401,18 +1403,24 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
         //reserved job is scheduled first, then the backfilled jobs.
         while (curr_job && shadow_time >= 0 && curr_free_cores > 0) {
             if (curr_job->state == j_unsched) {
-                if (backfill_job(rdl, shadow_rdl, uri, curr_job, &curr_free_cores, shadow_time))
+                if (backfill_job(rdl, shadow_rdl, free_rdl, shadow_free_rdl, uri, curr_job,
+                                 &curr_free_cores, &shadow_free_cores, shadow_time))
+                {
                     flux_log(h, LOG_DEBUG, "Job %ld was backfilled.", curr_job->lwj_id);
-                else 
+                } else {
                     flux_log(h, LOG_DEBUG, "Job %ld was not backfillied", curr_job->lwj_id);
+                }
             }
             curr_job = zlist_next (queued_jobs);
         }
         rdl_destroy (shadow_rdl);
-    }   
+        rdl_destroy (shadow_free_rdl);
+    }
 
 	flux_log (h, LOG_DEBUG, "Finished iterating over the queued_jobs list");
     //Cleanup
+    if (free_rdl)
+        rdl_destroy (free_rdl);
     curr_job_t = zlist_pop (running_jobs);
     while (curr_job_t != NULL) {
         free_job (curr_job_t);
@@ -2004,7 +2012,8 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	diff = clock() - start;
 	seconds = ((double) diff) / CLOCKS_PER_SEC;
-	sim_state->sim_time += seconds;
+	//sim_state->sim_time += seconds;
+    sim_state->sim_time += 5;
     if (sched_loop) {
         flux_log (h, LOG_DEBUG, "scheduler timer: events + loop took %f seconds", seconds);
     } else {
