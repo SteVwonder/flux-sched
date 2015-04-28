@@ -75,7 +75,6 @@ static flux_t h = NULL;
 static struct rdllib *global_rdllib = NULL;
 static struct rdl *global_rdl = NULL;
 static char* global_rdl_resource = NULL;
-static const char* IDLETAG = "idle";
 static const char* CORETYPE = "core";
 
 static bool run_schedule_loop = false;
@@ -154,30 +153,6 @@ static void end_schedule_loop () {
  *         Resource Description Library Setup
  *
  ****************************************************************/
-
-int send_rdl_update (flux_t h, struct rdl* rdl) {
-    JSON o = Jnew();
-    char* rdl_string;
-
-    if (!rdl_changed) {
-        return 0;
-    }
-
-    flux_log (h, LOG_DEBUG, "rdl changed, broadcast new rdl_string");
-    rdl_string = rdl_serialize(rdl);
-
-    Jadd_str(o, "rdl_string", rdl_string);
-
-	if (flux_event_send (h, o, "%s", "rdl.update") < 0){
-		Jput(o);
-		return -1;
-	}
-
-    rdl_changed = false;
-    Jput (o);
-    free (rdl_string);
-    return 0;
-}
 
 //Reply back to the sim module with the updated sim state (in JSON form)
 int send_reply_request (flux_t h, sim_state_t *sim_state)
@@ -910,48 +885,6 @@ update_job (flux_lwj_t *job)
 
 	flux_log (h, LOG_DEBUG, "updated job %ld", job->lwj_id);
     return rc;
-}
-
-static struct rdl *get_free_subset (struct rdl *rdl, const char *type)
-{
-	JSON tags = Jnew();
-	Jadd_bool (tags, IDLETAG, true);
-	JSON args = Jnew ();
-	Jadd_obj (args, "tags", tags);
-	Jadd_str (args, "type", type);
-    struct rdl *frdl = rdl_find (rdl, args);
-	Jput (args);
-	Jput (tags);
-	return frdl;
-}
-
-static int64_t get_free_count (struct rdl *rdl, const char *uri, const char *type)
-{
-	JSON o;
-	int64_t count = -1;
-	int rc = -1;
-	struct resource *fr = NULL;
-
-	if ((fr = rdl_resource_get (rdl, uri)) == NULL) {
-		flux_log (h, LOG_ERR, "failed to get found resources: %s", uri);
-		return -1;
-	}
-
-	o = rdl_resource_aggregate_json (fr);
-	if (o) {
-		if (!Jget_int64(o, type, &count)) {
-			flux_log (h, LOG_ERR, "schedule_job failed to get %s: %d",
-					  type, rc);
-			return -1;
-		} else {
-			flux_log (h, LOG_DEBUG, "schedule_job found %ld idle %ss", count, type);
-		}
-		Jput (o);
-	}
-
-    rdl_resource_destroy (fr);
-
-	return count;
 }
 
 static int schedule_job_without_update (struct rdl *rdl, const char *uri, flux_lwj_t *job, struct rdl_accumulator **a)
