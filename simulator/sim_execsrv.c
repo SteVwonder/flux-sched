@@ -491,6 +491,7 @@ static int rdl_update_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	char *tag = NULL;
     const char *rdl_string = NULL;
 	ctx_t *ctx = (ctx_t *) arg;
+    int64_t rdl_int = 0;
 
 	if (flux_msg_decode (*zmsg, &tag, &o) < 0 || o == NULL){
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
@@ -498,8 +499,12 @@ static int rdl_update_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 		return -1;
 	}
 
+    Jget_int64(o, "rdl_int", &rdl_int);
     Jget_str(o, "rdl_string", &rdl_string);
-    if (rdl_string) {
+
+    if (rdl_int) {
+        ctx->rdl = (struct rdl*) rdl_int;
+    } else if (rdl_string) {
         flux_log (h, LOG_DEBUG, "resetting rdllib & rdl based on rdl.update string");
         rdllib_close(ctx->rdllib);
         ctx->rdllib = rdllib_open();
