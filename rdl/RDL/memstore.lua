@@ -655,7 +655,7 @@ function MemStore:copyto (s, dst, n, opts)
     dstparent.children [name] = new
     dstparent.children [name].parent = dstparent
 
-    hierarchy_validate (dstparent)
+    -- hierarchy_validate (dstparent)
 
     reset_resource_size (dst, uuid, n)
     return true
