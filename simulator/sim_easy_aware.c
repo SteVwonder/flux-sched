@@ -76,11 +76,9 @@ static flux_t h = NULL;
 static struct rdllib *global_rdllib = NULL;
 static struct rdl *global_rdl = NULL;
 static char* global_rdl_resource = NULL;
-static const char* IDLETAG = "idle";
 static const char* CORETYPE = "core";
 
 static bool run_schedule_loop = false;
-static bool rdl_changed = true;
 static bool in_sim = false;
 static sim_state_t *sim_state = NULL;
 static zlist_t *kvs_queue = NULL;
@@ -155,25 +153,6 @@ static void end_schedule_loop () {
  *         Resource Description Library Setup
  *
  ****************************************************************/
-
-int send_rdl_update (flux_t h, struct rdl* rdl) {
-    if (!rdl_changed) {
-        return 0;
-    }
-
-    JSON o = Jnew();
-
-    Jadd_int64(o, "rdl_int", (int64_t) rdl);
-
-	if (flux_event_send (h, o, "%s", "rdl.update") < 0){
-		Jput(o);
-		return -1;
-	}
-
-    rdl_changed = false;
-    Jput (o);
-    return 0;
-}
 
 //Reply back to the sim module with the updated sim state (in JSON form)
 int send_reply_request (flux_t h, sim_state_t *sim_state)
@@ -936,107 +915,6 @@ update_job (flux_lwj_t *job)
 	flux_log (h, LOG_DEBUG, "updated job %ld", job->lwj_id);
     return rc;
 }
-
-static struct rdl *get_free_subset (struct rdl *rdl, const char *type)
-{
-    double start, seconds;
-	JSON tags = Jnew();
-	Jadd_bool (tags, IDLETAG, true);
-	JSON args = Jnew ();
-	Jadd_obj (args, "tags", tags);
-	Jadd_str (args, "type", type);
-    start = clock();
-    struct rdl *frdl = rdl_find (rdl, args);
-	seconds = (clock() - start) / CLOCKS_PER_SEC;
-    flux_log (h, LOG_DEBUG, "rdl_find took %f seconds", seconds);
-	Jput (args);
-	Jput (tags);
-	return frdl;
-}
-
-int64_t count_free (struct resource *r, const char *type) {
-    int64_t curr_count = 0;
-    JSON o = NULL;
-	const char *curr_type = NULL;
-    struct resource *child = NULL;
-
-    if (r) {
-        rdl_resource_iterator_reset(r);
-        while ((child = rdl_resource_next_child (r))) {
-            curr_count += count_free (child, type);
-            rdl_resource_destroy (child);
-        }
-        rdl_resource_iterator_reset(r);
-
-        o = rdl_resource_json (r);
-        Jget_str (o, "type", &curr_type);
-        if (strcmp (type, curr_type)) {
-            curr_count++;
-        }
-        Jput (o);
-    } else {
-        printf ("count_free passed a null resource\n");
-    }
-
-    return curr_count;
-}
-
-
-static int64_t get_free_count (struct rdl *rdl, const char *uri, const char *type) {
-    double start, seconds;
-	struct resource *fr = NULL;
-    int64_t count = 0;
-
-    start = clock();
-
-	if ((fr = rdl_resource_get (rdl, uri)) == NULL) {
-		flux_log (h, LOG_ERR, "failed to get found resources: %s", uri);
-		return -1;
-	}
-    count = count_free (fr, type);
-    rdl_resource_destroy(fr);
-
-	seconds = (clock() - start) / CLOCKS_PER_SEC;
-    flux_log (h, LOG_DEBUG, "get_free_count took %f seconds", seconds);
-
-    return count;
-}
-
-/*
-static int64_t get_free_count (struct rdl *rdl, const char *uri, const char *type)
-{
-	JSON o;
-	int64_t count = -1;
-	int rc = -1;
-	struct resource *fr = NULL;
-    double start, seconds;
-
-    start = clock();
-	if ((fr = rdl_resource_get (rdl, uri)) == NULL) {
-		flux_log (h, LOG_ERR, "failed to get found resources: %s", uri);
-		return -1;
-	}
-
-	o = rdl_resource_aggregate_json (fr);
-	if (o) {
-		if (!Jget_int64(o, type, &count)) {
-			flux_log (h, LOG_ERR, "schedule_job failed to get %s: %d",
-					  type, rc);
-			return -1;
-		} else {
-			flux_log (h, LOG_DEBUG, "schedule_job found %ld idle %ss", count, type);
-		}
-		Jput (o);
-	}
-
-    rdl_resource_destroy (fr);
-
-	seconds = (clock() - start) / CLOCKS_PER_SEC;
-    flux_log (h, LOG_DEBUG, "get_free_count took %f seconds", seconds);
-
-	return count;
-}
-*/
 
 static int schedule_job_without_update (struct rdl *rdl, struct rdl *free_rdl, const char *uri,
                                         int64_t free_cores, flux_lwj_t *job, struct rdl_accumulator **a)
@@ -1996,9 +1874,6 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	sim_state = json_to_sim_state (o);
 
-    int old_r_size = zlist_size (r_queue);
-    int old_c_size = zlist_size (c_queue);
-
 	start = clock();
 
 	handle_kvs_queue();
@@ -2022,17 +1897,8 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	handle_timer_queue();
 
-    int new_r_size = zlist_size (r_queue);
-    int new_c_size = zlist_size (c_queue);
-
-    if (new_r_size != old_r_size ||
-        new_c_size != old_c_size)
-    {
-        rdl_changed = true;
-    }
-
     send_rdl_update (h, global_rdl);
-	send_reply_request (h, sim_state);
+    send_reply_request (h, sim_state);
 
     free_simstate (sim_state);
 	Jput (o);

@@ -13,7 +13,7 @@
 
 #include <stdint.h>
 #include <czmq.h>
-
+#include <flux/core.h>
 
 /**
  *  Enumerates lightweight-job and resource events
@@ -106,6 +106,12 @@ typedef struct {
     } ev;               /*!< event */
     flux_lwj_t *lwj;    /*!< if lwj event, a ref. Don't free */
 } flux_event_t;
+
+extern const char *IDLETAG;
+
+int send_rdl_update (flux_t h, struct rdl* rdl);
+struct rdl *get_free_subset (struct rdl *rdl, const char *type);
+int64_t get_free_count (struct rdl *rdl, const char *uri, const char *type);
 
 #endif /* SCHEDULER_H */
 
