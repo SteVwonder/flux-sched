@@ -1887,7 +1887,6 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	diff = clock() - start;
 	seconds = ((double) diff) / CLOCKS_PER_SEC;
-	//sim_state->sim_time += seconds;
     sim_state->sim_time += 5;
     if (sched_loop) {
         flux_log (h, LOG_DEBUG, "scheduler timer: events + loop took %f seconds", seconds);
