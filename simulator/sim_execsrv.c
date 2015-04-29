@@ -263,6 +263,7 @@ static void determine_all_min_bandwidth_helper (struct resource *r, double curr_
     } //else
 
     //Sum the bandwidths of the parent's children
+    total_requested_bandwidth = 0;
     child_list = zlist_new ();
     while (curr_child != NULL) {
         o = rdl_resource_json (curr_child);
