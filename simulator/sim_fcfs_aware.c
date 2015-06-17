@@ -75,7 +75,6 @@ static flux_t h = NULL;
 static struct rdllib *global_rdllib = NULL;
 static struct rdl *global_rdl = NULL;
 static char* global_rdl_resource = NULL;
-static const char* CORETYPE = "core";
 
 static bool run_schedule_loop = false;
 static bool in_sim = false;
@@ -618,7 +617,7 @@ static void allocate_resource_bandwidth (struct resource *r, int64_t amount)
     //Jput(o);
 }
 
-static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
+bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
 {
 	int64_t avail_bw;
 	struct resource *curr_r = NULL;
@@ -655,76 +654,6 @@ static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *an
 	}
 
 	return true;
-}
-
-/*
- * Walk the tree, find the required resources and tag with the lwj_id
- * to which it is allocated.
- */
-static bool
-allocate_resources (struct resource *fr, struct rdl_accumulator *a,
-                    flux_lwj_t *job, zlist_t *ancestors)
-{
-    char *lwjtag = NULL;
-    char *uri = NULL;
-    const char *type = NULL;
-    json_object *o = NULL;
-    json_object *o2 = NULL;
-    json_object *o3 = NULL;
-    struct resource *c;
-    struct resource *r;
-    bool found = false;
-
-    asprintf (&uri, "%s:%s", global_rdl_resource, rdl_resource_path (fr));
-    r = rdl_resource_get (global_rdl, uri);
-    free (uri);
-
-    o = rdl_resource_json (r);
-    Jget_str (o, "type", &type);
-    asprintf (&lwjtag, "lwj.%ld", job->lwj_id);
-    if (job->req.nnodes && (strcmp (type, "node") == 0)) {
-		/*
-        Jget_obj (o, "tags", &o2);
-        Jget_obj (o2, IDLETAG, &o3);
-        if (o3) {
-		*/
-			job->req.nnodes--;
-			job->alloc.nnodes++;
-			/*
-            rdl_resource_tag (r, lwjtag);
-            rdl_resource_delete_tag (r, IDLETAG);
-            rdl_accumulator_add (a, r);
-			}*/
-    } else if (job->req.ncores && (strcmp (type, CORETYPE) == 0) &&
-               (job->req.ncores > job->req.nnodes)) {
-        /* We put the (job->req.ncores > job->req.nnodes) requirement
-         * here to guarantee at least one core per node. */
-        Jget_obj (o, "tags", &o2);
-        Jget_obj (o2, IDLETAG, &o3);
-        if (o3) {
-			if (allocate_bandwidth (job, r, ancestors)) {
-              job->req.ncores--;
-              job->alloc.ncores++;
-              rdl_resource_tag (r, lwjtag);
-              rdl_resource_delete_tag (r, IDLETAG);
-              rdl_accumulator_add (a, r);
-              //flux_log (h, LOG_DEBUG, "allocated core: %s", json_object_to_json_string (0));
-            }
-        }
-    }
-    free (lwjtag);
-    json_object_put (o);
-
-    found = !(job->req.nnodes || job->req.ncores);
-
-	zlist_push (ancestors, r);
-    while (!found && (c = rdl_resource_next_child (fr))) {
-        found = allocate_resources (c, a, job, ancestors);
-        rdl_resource_destroy (c);
-    }
-	zlist_pop (ancestors);
-
-    return found;
 }
 
 static int
@@ -945,7 +874,7 @@ static int schedule_job (struct rdl *rdl, struct rdl *free_rdl, const char *uri,
             int old_alloc_ncores = job->alloc.ncores;
             rdl_resource_iterator_reset (free_root);
 			a = rdl_accumulator_create (rdl);
-            if (allocate_resources (free_root, a, job, ancestors)) {
+            if (allocate_resources (rdl, uri, free_root, a, job, ancestors)) {
 				flux_log (h, LOG_INFO, "scheduled job %ld", job->lwj_id);
 				job->rdl = rdl_accumulator_copy (a);
 				job->state = j_submitted;

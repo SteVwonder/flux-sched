@@ -108,10 +108,16 @@ typedef struct {
 } flux_event_t;
 
 extern const char *IDLETAG;
+extern const char* CORETYPE;
 
 int send_rdl_update (flux_t h, struct rdl* rdl);
 struct rdl *get_free_subset (struct rdl *rdl, const char *type);
 int64_t get_free_count (struct rdl *rdl, const char *uri, const char *type);
+bool allocate_resources (struct rdl *rdl, const char *hierarchy,
+                         struct resource *fr, struct rdl_accumulator *accum,
+                         flux_lwj_t *job, zlist_t *ancestors);
+bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors);
+void remove_job_resources_from_rdl (struct rdl *rdl, const char *uri, flux_lwj_t *job);
 
 #endif /* SCHEDULER_H */
 

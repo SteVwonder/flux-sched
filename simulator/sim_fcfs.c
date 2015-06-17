@@ -75,7 +75,6 @@ static flux_t h = NULL;
 static struct rdllib *global_rdllib = NULL;
 static struct rdl *global_rdl = NULL;
 static char* global_rdl_resource = NULL;
-static const char* CORETYPE = "core";
 
 static bool run_schedule_loop = false;
 static bool in_sim = false;
@@ -604,7 +603,7 @@ static void allocate_resource_bandwidth (struct resource *r, int64_t amount)
 	rdl_resource_set_int (r, "alloc_bw", new_alloc_bw);
 }
 
-static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
+bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
 {
 	struct resource *curr_r = NULL;
 
@@ -616,76 +615,6 @@ static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *an
 	}
 
 	return true;
-}
-
-/*
- * Walk the tree, find the required resources and tag with the lwj_id
- * to which it is allocated.
- */
-static bool
-allocate_resources (struct resource *fr, struct rdl_accumulator *a,
-                    flux_lwj_t *job, zlist_t *ancestors)
-{
-    char *lwjtag = NULL;
-    char *uri = NULL;
-    const char *type = NULL;
-    json_object *o = NULL;
-    json_object *o2 = NULL;
-    json_object *o3 = NULL;
-    struct resource *c;
-    struct resource *r;
-    bool found = false;
-
-    asprintf (&uri, "%s:%s", global_rdl_resource, rdl_resource_path (fr));
-    r = rdl_resource_get (global_rdl, uri);
-    free (uri);
-
-    o = rdl_resource_json (r);
-    Jget_str (o, "type", &type);
-    asprintf (&lwjtag, "lwj.%ld", job->lwj_id);
-    if (job->req.nnodes && (strcmp (type, "node") == 0)) {
-		/*
-        Jget_obj (o, "tags", &o2);
-        Jget_obj (o2, IDLETAG, &o3);
-        if (o3) {
-		*/
-			job->req.nnodes--;
-			job->alloc.nnodes++;
-			/*
-            rdl_resource_tag (r, lwjtag);
-            rdl_resource_delete_tag (r, IDLETAG);
-            rdl_accumulator_add (a, r);
-			}*/
-    } else if (job->req.ncores && (strcmp (type, CORETYPE) == 0) &&
-               (job->req.ncores > job->req.nnodes)) {
-        /* We put the (job->req.ncores > job->req.nnodes) requirement
-         * here to guarantee at least one core per node. */
-        Jget_obj (o, "tags", &o2);
-        Jget_obj (o2, IDLETAG, &o3);
-        if (o3) {
-			if (allocate_bandwidth (job, r, ancestors)) {
-              job->req.ncores--;
-              job->alloc.ncores++;
-              rdl_resource_tag (r, lwjtag);
-              rdl_resource_delete_tag (r, IDLETAG);
-              rdl_accumulator_add (a, r);
-              //flux_log (h, LOG_DEBUG, "allocated core: %s", json_object_to_json_string (0));
-            }
-        }
-    }
-    free (lwjtag);
-    json_object_put (o);
-
-    found = !(job->req.nnodes || job->req.ncores);
-
-	zlist_push (ancestors, r);
-    while (!found && (c = rdl_resource_next_child (fr))) {
-        found = allocate_resources (c, a, job, ancestors);
-        rdl_resource_destroy (c);
-    }
-	zlist_pop (ancestors);
-
-    return found;
 }
 
 static int
@@ -735,6 +664,8 @@ int release_resources (struct rdl *rdl, const char *uri, flux_lwj_t *job)
     char *lwjtag = NULL;
 
     asprintf (&lwjtag, "lwj.%ld", job->lwj_id);
+
+    flux_log (h, LOG_DEBUG, "releasing job %ld w/ %d cores", job->lwj_id, job->alloc.ncores);
 
     if (jr) {
         rc = release_lwj_resource (rdl, jr, lwjtag);
@@ -875,8 +806,7 @@ update_job (flux_lwj_t *job)
  * right now) to satisfy a job's requirements.  If enough resources
  * are found, it proceeds to allocate those resources and update the
  * kvs's lwj entry in preparation for job execution. Returns 1 if the
- * job was succesfully scheduled, 0 if it was not, -1 if there was an
- * error.
+ * job was succesfully scheduled, 0 if it was not.
  */
 static int schedule_job (struct rdl *rdl, struct rdl *free_rdl, const char *uri,
                          int64_t free_cores, flux_lwj_t *job)
@@ -892,53 +822,54 @@ static int schedule_job (struct rdl *rdl, struct rdl *free_rdl, const char *uri,
         goto ret;
     }
 
-	flux_log (h, LOG_DEBUG, "schedule_job called on job %ld", job->lwj_id);
+	flux_log (h, LOG_DEBUG, "schedule_job called on job %ld, request cores: %d, free cores: %ld", job->lwj_id, job->req.ncores, free_cores);
 
     free_root = rdl_resource_get (free_rdl, uri);
 
 	if (free_rdl && free_root && free_cores >= job->req.ncores) {
-            zlist_t *ancestors = zlist_new ();
-          //TODO: revert this in the deallocation/rollback
-          int old_nnodes = job->req.nnodes;
-          int old_ncores = job->req.ncores;
-          int old_io_rate = job->req.io_rate;
-            int old_alloc_nnodes = job->alloc.nnodes;
-            int old_alloc_ncores = job->alloc.ncores;
-            rdl_resource_iterator_reset (free_root);
-			a = rdl_accumulator_create (rdl);
-            if (allocate_resources (free_root, a, job, ancestors)) {
-				flux_log (h, LOG_INFO, "scheduled job %ld", job->lwj_id);
-				job->rdl = rdl_accumulator_copy (a);
-				job->state = j_submitted;
-				rc = update_job (job);
-                if (rc == 0)
-                    rc = 1;
-			}
-			else {
-				flux_log (h, LOG_DEBUG, "not enough resources to allocate, rolling back");
-                job->req.io_rate = old_io_rate;
-                job->req.nnodes = old_nnodes;
-                job->req.ncores = old_ncores;
-                job->alloc.nnodes = old_alloc_nnodes;
-                job->alloc.ncores = old_alloc_ncores;
-
-                if (rdl_accumulator_is_empty(a)) {
-                  flux_log (h, LOG_DEBUG, "no resources found in accumulator");
-                } else {
-                  job->rdl = rdl_accumulator_copy (a);
-                  //deallocate_bandwidth (rdl, resource, job);
-                  release_resources (rdl, global_rdl_resource, job);
-                  rdl_destroy (job->rdl);
-                }
-			}
-            zlist_destroy (&ancestors);
-			rdl_accumulator_destroy (a);
-		} else {
-            flux_log (h, LOG_DEBUG, "not enough available cores, skipping this job");
+        zlist_t *ancestors = zlist_new ();
+        //TODO: revert this in the deallocation/rollback
+        int old_nnodes = job->req.nnodes;
+        int old_ncores = job->req.ncores;
+        int old_io_rate = job->req.io_rate;
+        int old_alloc_nnodes = job->alloc.nnodes;
+        int old_alloc_ncores = job->alloc.ncores;
+        struct resource *job_root = NULL;
+        rdl_resource_iterator_reset (free_root);
+        a = rdl_accumulator_create (rdl);
+        if (allocate_resources (rdl, uri, free_root, a, job, ancestors)) {
+            flux_log (h, LOG_INFO, "scheduled job %ld", job->lwj_id);
+            job->rdl = rdl_accumulator_copy (a);
+            job_root = rdl_resource_get (job->rdl, uri);
+            job->state = j_submitted;
+            rc = update_job (job);
+            if (rc == 0)
+                rc = 1;
         }
-        rdl_resource_destroy (free_root);
+        else {
+            flux_log (h, LOG_DEBUG, "not enough resources to allocate, rolling back");
+            job->req.io_rate = old_io_rate;
+            job->req.nnodes = old_nnodes;
+            job->req.ncores = old_ncores;
+            job->alloc.nnodes = old_alloc_nnodes;
+            job->alloc.ncores = old_alloc_ncores;
 
-ret:
+            if (rdl_accumulator_is_empty(a)) {
+                flux_log (h, LOG_DEBUG, "no resources found in accumulator");
+            } else {
+                job->rdl = rdl_accumulator_copy (a);
+                release_resources (rdl, global_rdl_resource, job);
+                rdl_destroy (job->rdl);
+            }
+        }
+        zlist_destroy (&ancestors);
+        rdl_accumulator_destroy (a);
+    } else {
+        flux_log (h, LOG_DEBUG, "not enough available cores, skipping this job");
+    }
+    rdl_resource_destroy (free_root);
+
+ ret:
     return rc;
 }
 
@@ -971,7 +902,10 @@ int schedule_jobs (struct rdl *rdl, const char *uri, zlist_t *jobs)
     while (job_scheduled && job) {
 		if (job->state == j_unsched) {
 			job_scheduled = schedule_job (rdl, free_rdl, uri, curr_free_cores, job);
-            curr_free_cores -= job->alloc.ncores;
+            if (job_scheduled) {
+                remove_job_resources_from_rdl(free_rdl, uri, job);
+                curr_free_cores -= job->alloc.ncores;
+            }
 		}
         job = zlist_next (jobs);
     }

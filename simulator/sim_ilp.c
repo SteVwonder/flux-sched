@@ -78,7 +78,6 @@ static struct rdllib *global_rdllib = NULL;
 static struct rdl *global_rdl = NULL;
 static char* global_rdl_resource = NULL;
 static const char* IDLETAG = "idle";
-static const char* CORETYPE = "core";
 static const char* NODETYPE = "node";
 static const char* SWITCHTYPE = "switch";
 
@@ -647,7 +646,7 @@ static void allocate_resource_bandwidth (struct resource *r, int64_t amount)
 	rdl_resource_set_int (r, "alloc_bw", new_alloc_bw);
 }
 
-static bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
+bool allocate_bandwidth (flux_lwj_t *job, struct resource *r, zlist_t *ancestors)
 {
 	struct resource *curr_r = NULL;
 
