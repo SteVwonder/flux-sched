@@ -28,7 +28,7 @@
 #include <errno.h>
 #include <libgen.h>
 #include <czmq.h>
-#include <json/json.h>
+#include <json.h>
 #include <dlfcn.h>
 #include <time.h>
 #include <inttypes.h>
@@ -44,7 +44,7 @@
 #define MAX_STR_LEN 128
 #define SCHED_INTERVAL 30
 
-static const char const *module_name = "sim_sched";
+static const char *module_name = "sim_sched";
 
 /****************************************************************
  *
@@ -157,8 +157,8 @@ int send_reply_request (flux_t h, sim_state_t *sim_state)
 {
 	JSON o = sim_state_to_json (sim_state);
 	Jadd_bool (o, "event_finished", true);
-    Jadd_str (o, "mod_name", module_name);
-	if (flux_request_send (h, o, "%s", "sim.reply") < 0){
+    if (flux_json_request (h, FLUX_NODEID_ANY,
+                              FLUX_MATCHTAG_NONE, "sim.reply", o) < 0) {
 		Jput (o);
 		return -1;
 	}
@@ -171,18 +171,20 @@ static int
 signal_event ( )
 {
     int rc = 0;
-	if (in_sim && sim_state != NULL){
-		queue_timer_change (module_name);
-		//send_reply_request (h, sim_state);
-		goto ret;
-	}
-    else if (flux_event_send (h, NULL, "sim_sched.event") < 0) {
-        flux_log (h, LOG_ERR,
-                 "flux_event_send: %s", strerror (errno));
-        rc = -1;
+    zmsg_t *zmsg = NULL;
+
+    if (in_sim && sim_state != NULL) {
+        queue_timer_change (module_name);
+        //send_reply_request (h, sim_state);
         goto ret;
+    } else if (!(zmsg = flux_event_encode ("sim_sched.event", NULL))
+             || flux_sendmsg (h, &zmsg) < 0) {
+        flux_log (h, LOG_ERR,
+                  "flux_sendmsg: %s", strerror (errno));
+        rc = -1;
     }
 
+    zmsg_destroy (&zmsg);
 ret:
     return rc;
 }
@@ -318,6 +320,7 @@ int update_job_state (flux_lwj_t *job, lwj_event_e e)
     return rc;
 }
 
+#if 0
 static inline void
 set_event (flux_event_t *e,
            event_class_e c, int ei, flux_lwj_t *j)
@@ -337,6 +340,7 @@ set_event (flux_event_t *e,
     }
     return;
 }
+#endif
 
 
 static int
@@ -925,23 +929,42 @@ static int
 request_run (flux_lwj_t *job)
 {
     int rc = -1;
+    char *topic = NULL;
+    zmsg_t *zmsg = NULL;
 
     if (update_job_state (job, j_runrequest) < 0) {
         flux_log (h, LOG_ERR, "request_run failed to update job %ld to %s",
                   job->lwj_id, stab_rlookup (jobstate_tab, j_runrequest));
-    } else if (kvs_commit (h) < 0) {
-        flux_log (h, LOG_ERR, "kvs_commit error!");
-    } else if (!in_sim && flux_event_send (h, NULL, "rexec.run.%ld", job->lwj_id) < 0) {
-        flux_log (h, LOG_ERR, "request_run event send failed: %s",
-                  strerror (errno));
-    } else if (in_sim && flux_request_send (h, NULL, "sim_exec.run.%ld", job->lwj_id) < 0) {
-        flux_log (h, LOG_ERR, "request_run request send failed: %s",
-                  strerror (errno));
-    } else {
-        flux_log (h, LOG_DEBUG, "job %ld runrequest", job->lwj_id);
-        rc = 0;
+        goto done;
     }
+    if (kvs_commit (h) < 0) {
+        flux_log (h, LOG_ERR, "kvs_commit error!");
+        goto done;
+    }
+    if (!in_sim) {
+        topic = xasprintf ("rexec.run.%ld", job->lwj_id);
+        if (!(zmsg = flux_event_encode (topic, NULL))
+            || flux_sendmsg (h, &zmsg) < 0) {
+            flux_log (h, LOG_ERR, "request_run event send failed: %s",
+                      strerror (errno));
+            goto done;
+        }
+    } else {
+        topic = xasprintf ("sim_exec.run.%ld", job->lwj_id);
+        if (flux_json_request (h, FLUX_NODEID_ANY,
+                               FLUX_MATCHTAG_NONE, topic, NULL) < 0) {
+            flux_log (h, LOG_ERR, "request_run request send failed: %s",
+                      strerror (errno));
+            goto done;
+        }
+    }
+    flux_log (h, LOG_DEBUG, "job %ld runrequest", job->lwj_id);
+    rc = 0;
+done:
+    if (topic)
+        free (topic);
 
+    zmsg_destroy (&zmsg);
     return rc;
 }
 
@@ -1390,12 +1413,10 @@ static int newlwj_rpc (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	JSON o;
 	JSON o_resp;
 	const char *key;
-	char* tag;
 	int64_t id;
 	int rc = 0;
 
-	if (flux_msg_decode (*zmsg, &tag, &o) < 0
-		    || o == NULL
+    if (flux_json_request_decode (*zmsg, &o) < 0
 		    || !Jget_str (o, "key", &key)
 		    || !Jget_int64 (o, "val", &id)) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
@@ -1409,7 +1430,7 @@ static int newlwj_rpc (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	o_resp = Jnew ();
 	Jadd_int (o_resp, "rc", rc);
-	flux_respond (h, zmsg, o_resp);
+    flux_json_respond (h, o_resp, zmsg);
 	Jput (o_resp);
 
 	if (o)
@@ -1463,13 +1484,12 @@ static void handle_event_queue ()
 
 static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
-	JSON o;
-	char *tag;
+	JSON o = NULL;
 	clock_t start, diff;
 	double seconds;
     bool sched_loop;
 
-	if (flux_msg_decode (*zmsg, &tag, &o) < 0 || o == NULL){
+    if (flux_json_request_decode (*zmsg, &o) < 0) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
 		Jput (o);
 		return -1;
@@ -1516,7 +1536,8 @@ static int send_join_request(flux_t h)
 	Jadd_str (o, "mod_name", module_name);
 	Jadd_int (o, "rank", flux_rank (h));
 	Jadd_double (o, "next_event", -1);
-	if (flux_request_send (h, o, "%s", "sim.join") < 0){
+    if (flux_json_request (h, FLUX_NODEID_ANY,
+                              FLUX_MATCHTAG_NONE, "sim.join", o) < 0) {
 		Jput (o);
 		return -1;
 	}

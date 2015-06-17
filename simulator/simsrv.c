@@ -89,12 +89,15 @@ static ctx_t *getctx (flux_t h, char* save_path)
 static int send_trigger (flux_t h, char *mod_name, sim_state_t *sim_state)
 {
 	JSON o = sim_state_to_json (sim_state);
-	if (flux_request_send (h, o, "%s.trigger", mod_name) < 0){
+	char *topic = xasprintf ("%s.trigger", mod_name);
+	if (flux_json_request (h, FLUX_NODEID_ANY,
+                                  FLUX_MATCHTAG_NONE, topic, o) < 0) {
 		flux_log (h, LOG_ERR, "failed to send trigger to %s", mod_name);
 		return -1;
 	}
 	//flux_log (h, LOG_DEBUG, "sent a trigger to %s", mod_name);
 	Jput(o);
+	free (topic);
 	return 0;
 }
 
@@ -103,14 +106,18 @@ static int send_trigger (flux_t h, char *mod_name, sim_state_t *sim_state)
 int send_start_event(flux_t h)
 {
 	JSON o = Jnew();
+	zmsg_t *zmsg = NULL;
 	Jadd_str (o, "mod_name", "sim");
 	Jadd_int (o, "rank", flux_rank(h));
 	Jadd_int (o, "sim_time", 0);
-	if (flux_event_send (h, o, "%s", "sim.start") < 0){
+	if (!(zmsg = flux_event_encode ("sim.start", Jtostr (o)))
+            || flux_sendmsg (h, &zmsg) < 0){
 		Jput(o);
+		zmsg_destroy (&zmsg);
 		return -1;
 	}
 	Jput(o);
+	zmsg_destroy (&zmsg);
 	return 0;
 }
 
@@ -190,7 +197,7 @@ static int join_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	ctx_t *ctx = arg;
 	sim_state_t *sim_state = ctx->sim_state;
 
-	if (flux_msg_decode (*zmsg, NULL, &request) < 0 || request == NULL
+	if (flux_json_request_decode (*zmsg, &request) < 0
 		|| !Jget_str (request, "mod_name", &mod_name)
 		|| !Jget_int (request, "rank", &mod_rank)
 		|| !Jget_double (request, "next_event", next_event)) {
@@ -336,17 +343,15 @@ static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	JSON request = NULL;
 	bool event_finished;
 	//const char *json_string;
-    const char *mod_name = NULL;
 	ctx_t *ctx = arg;
 	sim_state_t *curr_sim_state = ctx->sim_state;
 	sim_state_t *reply_sim_state;
 
-	if (flux_msg_decode (*zmsg, NULL, &request) < 0 || request == NULL
-		|| !Jget_bool (request, "event_finished", &event_finished)
-        || !Jget_str (request, "mod_name", &mod_name)) {
-        flux_log (h, LOG_ERR, "%s: bad reply message", __FUNCTION__);
-        Jput(request);
-        return 0;
+	if (flux_json_request_decode (*zmsg, &request) < 0
+		|| !Jget_bool (request, "event_finished", &event_finished)) {
+		flux_log (h, LOG_ERR, "%s: bad reply message", __FUNCTION__);
+		Jput(request);
+		return 0;
 	}
 
 	//Logging
@@ -362,7 +367,6 @@ static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
     }
 
     //Save out the sim_state to disk while the next module is working
-    //if (!strcmp (mod_name, "sim_sched"))
     save_sim_state (ctx);
 
 	free_simstate (reply_sim_state);
@@ -376,7 +380,7 @@ static int alive_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	JSON request = NULL;
 	const char *json_string;
 
-	if (flux_msg_decode (*zmsg, NULL, &request) < 0 || request == NULL) {
+	if (flux_json_request_decode (*zmsg, &request) < 0) {
 		flux_log (h, LOG_ERR, "%s: bad reply message", __FUNCTION__);
 		Jput(request);
 		return 0;
