@@ -54,8 +54,9 @@ typedef struct {
 static double determine_io_penalty (double job_bandwidth, double min_bandwidth);
 static double* get_job_min_from_hash (zhash_t *job_hash, int job_id);
 
-static void freectx (ctx_t *ctx)
+static void freectx (void *arg)
 {
+    ctx_t *ctx = arg;
 	free_simstate (ctx->sim_state);
 
 	while (zlist_size (ctx->queued_events) > 0)

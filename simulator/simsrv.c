@@ -50,8 +50,9 @@ typedef struct {
     char* rdl_string;
 } ctx_t;
 
-static void freectx (ctx_t *ctx)
+static void freectx (void *arg)
 {
+    ctx_t *ctx = arg;
 	free_simstate (ctx->sim_state);
     fclose (ctx->output_file);
     free (ctx->rdl_string);
@@ -78,7 +79,7 @@ static ctx_t *getctx (flux_t h, char* save_path)
         ctx->output_file = fopen (filename, "w");
         ctx->rdl_string = NULL;
         ctx->rdl_changed = false;
-        flux_aux_set (h, "simsrv", ctx, (FluxFreeFn)freectx);
+        flux_aux_set (h, "simsrv", ctx, freectx);
     }
 
     return ctx;
