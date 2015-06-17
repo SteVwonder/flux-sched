@@ -13,18 +13,19 @@ LP_OBJS = flux_ilp.o
 
 SCHEDULERS_C = $(wildcard sim_fcfs*.c) $(wildcard sim_easy*.c) $(wildcard sim_ilp*.c)
 SCHEDULERS_SO = $(SCHEDULERS_C:sim_%.c=sim_sched_%.so)
+SCHEDULER_OBJS = scheduler.o
 
 BUILD = sim.so submit.so sim_exec.so $(SCHEDULERS_SO)
 
 all:  $(BUILD)
 
-sim_sched_ilp.so: sim_ilp.c $(COMMON_OBJS) $(LP_OBJS)
+sim_sched_ilp.so: sim_ilp.c $(COMMON_OBJS) $(SCHEDULER_OBJS) $(LP_OBJS)
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS) $(GLPK_LIBS)
 
-sim_sched_ilp%.so: sim_ilp%.c $(COMMON_OBJS) $(LP_OBJS)
+sim_sched_ilp%.so: sim_ilp%.c $(COMMON_OBJS) $(SCHEDULER_OBJS) $(LP_OBJS)
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS) $(GLPK_LIBS)
 
-sim_sched_%.so: sim_%.c $(COMMON_OBJS)
+sim_sched_%.so: sim_%.c $(COMMON_OBJS) $(SCHEDULER_OBJS)
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
 
 %.so : %srv.o $(COMMON_OBJS)

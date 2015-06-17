@@ -37,6 +37,7 @@
 #include "scheduler.h"
 
 const char* IDLETAG = "idle";
+const char* CORETYPE = "core";
 
 int send_rdl_update (flux_t h, struct rdl* rdl)
 {
@@ -60,7 +61,12 @@ struct rdl *get_free_subset (struct rdl *rdl, const char *type)
 	JSON args = Jnew ();
 	Jadd_obj (args, "tags", tags);
 	Jadd_str (args, "type", type);
+    double start, diff, seconds;
+    start = clock();
     struct rdl *frdl = rdl_find (rdl, args);
+	diff = clock() - start;
+	seconds = ((double) diff) / CLOCKS_PER_SEC;
+    printf("rdl_find took %f seconds\n", seconds);
 	Jput (args);
 	Jput (tags);
 	return frdl;
@@ -104,4 +110,104 @@ int64_t get_free_count (struct rdl *rdl, const char *uri, const char *type)
     rdl_resource_destroy(fr);
 
     return count;
+}
+
+/*
+ * Walk the tree, find the required resources and tag with the lwj_id
+ * to which it is allocated.
+ */
+bool allocate_resources (struct rdl *rdl, const char *hierarchy,
+                         struct resource *fr, struct rdl_accumulator *accum,
+                         flux_lwj_t *job, zlist_t *ancestors)
+{
+    char *lwjtag = NULL;
+    char *uri = NULL;
+    const char *type = NULL;
+    JSON o = NULL, o2 = NULL, o3 = NULL;
+    struct resource *child, *curr;
+    bool found = false;
+
+    asprintf (&uri, "%s:%s", hierarchy, rdl_resource_path (fr));
+    curr = rdl_resource_get (rdl, uri);
+    free (uri);
+
+    o = rdl_resource_json (curr);
+    Jget_str (o, "type", &type);
+    asprintf (&lwjtag, "lwj.%ld", job->lwj_id);
+    if (job->req.nnodes && (strcmp (type, "node") == 0)) {
+        job->req.nnodes--;
+        job->alloc.nnodes++;
+    } else if (job->req.ncores && (strcmp (type, CORETYPE) == 0) &&
+               (job->req.ncores > job->req.nnodes)) {
+        /* We put the (job->req.ncores > job->req.nnodes) requirement
+         * here to guarantee at least one core per node. */
+        Jget_obj (o, "tags", &o2);
+        Jget_obj (o2, IDLETAG, &o3);
+        if (o3) {
+			if (allocate_bandwidth (job, curr, ancestors)) {
+              job->req.ncores--;
+              job->alloc.ncores++;
+              rdl_resource_tag (curr, lwjtag);
+              rdl_resource_set_int (curr, "lwj", job->lwj_id);
+              rdl_resource_delete_tag (curr, IDLETAG);
+              if (rdl_accumulator_add (accum, curr) < 0) {
+                  //TODO: re-enable this error printing
+                  //flux_log (h, LOG_ERR, "failed to allocate core: %s", Jtostr (o));
+              }
+            }
+        }
+    }
+    free (lwjtag);
+    Jput (o);
+
+    found = !(job->req.nnodes || job->req.ncores);
+
+	zlist_push (ancestors, curr);
+    rdl_resource_iterator_reset (fr);
+    while (!found && (child = rdl_resource_next_child (fr))) {
+        found = allocate_resources (rdl, hierarchy, child, accum, job, ancestors);
+        rdl_resource_destroy (child);
+    }
+    rdl_resource_iterator_reset (fr);
+	zlist_pop (ancestors);
+    rdl_resource_destroy (curr);
+
+    return found;
+}
+
+static void remove_job_resources_helper (struct rdl *rdl, const char *uri,
+                                         struct resource *curr_res)
+{
+    struct resource *rdl_res = NULL, *child_res = NULL;
+    char *res_path = NULL;
+    const char *type = NULL, *child_name = NULL;
+    JSON o = NULL;
+
+    rdl_resource_iterator_reset (curr_res);
+    while ((child_res = rdl_resource_next_child (curr_res))) {
+        o = rdl_resource_json (child_res);
+        Jget_str (o, "type", &type);
+        //Check if child matches, if so, unlink from hierarchy
+        if (strcmp (type, CORETYPE) == 0) {
+            asprintf (&res_path, "%s:%s", uri, rdl_resource_path (curr_res));
+            rdl_res = rdl_resource_get (rdl, res_path);
+            child_name = rdl_resource_name (child_res);
+            rdl_resource_unlink_child (rdl_res, child_name);
+            free (res_path);
+        } else { //Else, recursive call on child
+            remove_job_resources_helper (rdl, uri, child_res);
+        }
+        Jput (o);
+        rdl_resource_destroy (child_res);
+    }
+    rdl_resource_iterator_reset (curr_res);
+}
+
+void remove_job_resources_from_rdl (struct rdl *rdl, const char *uri, flux_lwj_t *job)
+{
+    struct resource *job_rdl_root = NULL;
+
+    job_rdl_root = rdl_resource_get (job->rdl, uri);
+    remove_job_resources_helper (rdl, uri, job_rdl_root);
+    rdl_resource_destroy (job_rdl_root);
 }
