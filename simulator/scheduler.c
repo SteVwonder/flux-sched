@@ -270,8 +270,8 @@ void newlwj_rpc (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *a
 	int64_t id;
 	int rc = 0;
 
-	if (flux_request_decode (msg, NULL, &json_str) < 0
-            || !(Jfromstr (json_str))
+    if (flux_request_decode (msg, NULL, &json_str) < 0
+            || !(o = Jfromstr (json_str))
 		    || !Jget_str (o, "key", &key)
 		    || !Jget_int64 (o, "val", &id)) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
