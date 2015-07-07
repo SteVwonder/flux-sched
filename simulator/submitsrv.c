@@ -196,21 +196,6 @@ int send_join_request (flux_t h)
 	return 0;
 }
 
-//Reply back to the sim module with the updated sim state (in JSON form)
-int send_reply_request (flux_t h, sim_state_t *sim_state)
-{
-	JSON o = sim_state_to_json (sim_state);
-	Jadd_bool (o, "event_finished", true);
-	if (flux_json_request (h, FLUX_NODEID_ANY,
-                                  FLUX_MATCHTAG_NONE, "sim.reply", o) < 0) {
-		Jput (o);
-		return -1;
-	}
-   flux_log(h, LOG_DEBUG, "sent a reply request");
-   Jput (o);
-   return 0;
-}
-
 //Based on the sim_time, schedule any jobs that need to be scheduled
 //Next, add an event timer for the scheduler to the sim_state
 //Finally, updated the submit event timer with the next submit time
@@ -294,6 +279,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
 	JSON o;
 	sim_state_t *sim_state;
+    const char *json_string;
 
 	if (flux_json_request_decode (*zmsg, &o) < 0) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
@@ -308,7 +294,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 //Handle the trigger
 	sim_state = json_to_sim_state (o);
 	schedule_next_job (h, sim_state);
-	send_reply_request (h, sim_state);
+	send_reply_request (h, sim_state, module_name);
 
 //Cleanup
 	free_simstate (sim_state);

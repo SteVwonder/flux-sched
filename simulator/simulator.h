@@ -40,4 +40,6 @@ int send_alive_request (flux_t h, const char* module_name);
 
 void dump_kvs_dir (flux_t h, const char *path);
 
+int send_reply_request (flux_t h, sim_state_t *sim_state, const char *module_name);
+
 #endif /* SIMULATOR_H */
