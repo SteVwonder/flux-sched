@@ -109,20 +109,22 @@ static int send_trigger (flux_t h, char *mod_name, sim_state_t *sim_state)
 //and that they should join
 int send_start_event(flux_t h)
 {
+    int rc = 0;
+	flux_msg_t *msg = NULL;
+
 	JSON o = Jnew();
-	zmsg_t *zmsg = NULL;
 	Jadd_str (o, "mod_name", "sim");
 	Jadd_int (o, "rank", flux_rank(h));
 	Jadd_int (o, "sim_time", 0);
-	if (!(zmsg = flux_event_encode ("sim.start", Jtostr (o)))
-            || flux_sendmsg (h, &zmsg) < 0){
-		Jput(o);
-		zmsg_destroy (&zmsg);
-		return -1;
+
+	if (!(msg = flux_event_encode ("sim.start", Jtostr (o)))
+        || flux_send (h, msg, 0) < 0){
+		rc = -1;
 	}
+
 	Jput(o);
-	zmsg_destroy (&zmsg);
-	return 0;
+	flux_msg_destroy (msg);
+	return rc;
 }
 
 // Send an event to all modules that the simulation has completed
