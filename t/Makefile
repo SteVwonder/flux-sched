@@ -10,10 +10,13 @@ LIBS = $(FLUX_LIBS) $(RDL_LIBS)
 export FLUX_BUILD_DIR=$(FLUX_BUILDDIR)
 export FLUX_SOURCE_DIR=$(FLUX_SRCDIR)
 
-BUILD = 
+BUILD =
 TESTS = \
 	t0000-sharness.t \
 	t0001-basic.t \
+	t2000-fcfs.t \
+	t2001-fcfs-aware.t \
+	t2002-easy.t \
 	lua/t0001-rdl-basic.t \
 	lua/t0002-multilevel.t \
 	lua/t0003-default-tags.t \
