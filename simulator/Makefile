@@ -4,8 +4,6 @@ include ../Makefile.inc
 SUBDIRS = test
 CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS)
 GLPK_LIBS = -lglpk -lgmp -lm
-KVS_LIBS = -Wl,-rpath,$(FLUX_BUILDDIR)/src/modules/kvs/.libs \
-         -L$(FLUX_BUILDDIR)/src/modules/kvs/.libs -lkvs
 LIBS = $(FLUX_LIBS) $(RDL_LIBS) $(KVS_LIBS)
 
 CONF=../conf/cab-io.lua
