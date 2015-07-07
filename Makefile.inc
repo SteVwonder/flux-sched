@@ -48,3 +48,4 @@ RESRC_LIBS = -Wl,-rpath,$(abs_topdir)/resrc -L$(topdir)/resrc -lresrc
 #
 FLUX = flux -C$(RDL_LUA_CPATH) -L$(RDL_LUA_PATH) -M$(SCHED_MODULE_PATH) -x$(SUBMIT_EXEC_PATH)
 COMMON_CFLAGS = -g -Wall -Werror -fPIC -D_GNU_SOURCE=1
+
