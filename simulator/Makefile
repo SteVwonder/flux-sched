@@ -1,8 +1,11 @@
+
 include ../Makefile.inc
 
 CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS)
 GLPK_LIBS = -lglpk -lgmp -lm
-LIBS = $(FLUX_LIBS) $(RDL_LIBS)
+KVS_LIBS = -Wl,-rpath,$(FLUX_BUILDDIR)/src/modules/kvs/.libs \
+         -L$(FLUX_BUILDDIR)/src/modules/kvs/.libs -lkvs
+LIBS = $(FLUX_LIBS) $(RDL_LIBS) $(KVS_LIBS)
 
 CONF=../conf/cab-io.lua
 JOBDATA=job_data/cab.ilp.csv
@@ -11,7 +14,7 @@ SAVEPATH=/nfs/tmp2/herbein1
 COMMON_OBJS = simulator.o xzmalloc.o log.o jsonutil.o
 LP_OBJS = flux_ilp.o
 
-SCHEDULERS_C = $(wildcard sim_fcfs*.c) $(wildcard sim_easy*.c) $(wildcard sim_ilp*.c)
+SCHEDULERS_C = $(wildcard sim_fcfs*.c) $(wildcard sim_easy*.c) $(wildcard sim_ilp.c)
 SCHEDULERS_SO = $(SCHEDULERS_C:sim_%.c=sim_sched_%.so)
 SCHEDULER_OBJS = scheduler.o
 
@@ -31,15 +34,8 @@ sim_sched_%.so: sim_%.c $(COMMON_OBJS) $(SCHEDULER_OBJS)
 %.so : %srv.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS)
 
-# N.B. "race fix" in job module is conditionally disabled
-# turn it on there if needed until there is a proper fix for the race
-
 start:
-	$(FLUX) start
-callgrind:
-	valgrind --tool=callgrind --trace-children=yes $(FLUX) start
-valgrind:
-	valgrind --log-file="%p.valgrind.out" --tool=memcheck --leak-check=full --show-leak-kinds=all --trace-children=yes $(FLUX) start
+	$(FLUX) -B ../.build/src/broker/flux-broker start
 load:
 	$(FLUX) module load ./sim.so save-path=$(SAVEPATH)
 	$(FLUX) module load ./submit.so job-csv=$(JOBDATA)
@@ -57,5 +53,29 @@ check:
 
 clean:
 	rm -f *.a *.o *.so
+	#for subdir in $(SUBDIRS); do make -C $$subdir $@; done
+
+## Debugging conveinences
+SCHED=sim_sched_fcfs_aware.so
+EXEC_MOD=--module ./sim_exec.so
+SIM_MOD=--module ./sim.so --modopt sim:save-path=${SAVEPATH}
+SUBMIT_MOD=--module ./submit.so --modopt submit:job-csv=${JOBDATA}
+SCHED_MOD=--module ./${SCHED} --modopt sim_sched:rdl-conf=${CONF}
+BROKER_OPTS=-Lstderr ${EXEC_MOD} ${SIM_MOD} ${SUBMIT_MOD} ${SCHED_MOD}
+BROKER=$(FLUX_BUILDDIR)/src/broker/.libs/flux-broker
+
+VALGRIND=$(shell which valgrind)
+TOTALVIEW=$(shell which totalview)
+GDB=$(shell which gdb)
+
+callgrind:
+	$(FLUX) $(VALGRIND) --tool=callgrind --trace-children=yes $(BROKER) $(BROKER_OPTS)
+valgrind:
+	$(FLUX)	$(VALGRIND) --log-file="%p.valgrind.out" --tool=memcheck --leak-check=full --show-leak-kinds=all --trace-children=yes $(BROKER) $(BROKER_OPTS)
+gdb:
+	$(FLUX) $(GDB) --args $(BROKER) $(BROKER_OPTS)
+totalview:
+	$(FLUX) $(TOTALVIEW) --args $(BROKER) $(BROKER_OPTS)
+
 
 .PHONY: all clean load unload start
