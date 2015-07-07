@@ -36,49 +36,51 @@
 #include "src/common/libutil/xzmalloc.h"
 #include "simulator.h"
 
-//ctx is used in several other modules and I liked the idea
-//Its main use is to pass around the global state between functions
-//without using a global variables, it also makes serializing the global
-//state much easier
 typedef struct {
 	sim_state_t *sim_state;
     flux_t h;
-    bool master;
-    int rank;
     FILE *output_file;
     bool rdl_changed;
     char* rdl_string;
+    bool exit_on_complete;
 } ctx_t;
 
 static void freectx (void *arg)
 {
     ctx_t *ctx = arg;
 	free_simstate (ctx->sim_state);
-    fclose (ctx->output_file);
+    if (ctx->output_file)
+        fclose (ctx->output_file);
     free (ctx->rdl_string);
     free (ctx);
 }
 
-static ctx_t *getctx (flux_t h, char* save_path)
+static ctx_t *getctx (flux_t h, char* save_path, bool exit_on_complete)
 {
     ctx_t *ctx = (ctx_t *)flux_aux_get (h, "simsrv");
     int max_fname_len = 100, i = 0;
     char filename[max_fname_len];
 
-    snprintf (filename, max_fname_len, "%s/sim_state_save.json", save_path);
-    for (i = 0; access( filename, F_OK ) != -1; i++) { //file already exists
-        snprintf (filename, max_fname_len, "%s/sim_state_save.%d.json", save_path, i);
-    }
-
     if (!ctx) {
+        if (save_path) {
+            snprintf (filename, max_fname_len, "%s/sim_state_save.json", save_path);
+            for (i = 0; access( filename, F_OK ) != -1; i++) { //file already exists
+                snprintf (filename, max_fname_len, "%s/sim_state_save.%d.json", save_path, i);
+            }
+        } else {
+            snprintf (filename, max_fname_len, "/tmp/sim_state_save.json");
+            flux_log (h, LOG_ERR, "save_path not provided. using %s", filename);
+        }
+
         ctx = xzmalloc (sizeof (*ctx));
         ctx->h = h;
-        ctx->master = flux_treeroot (h);
-        ctx->rank = flux_rank (h);
 		ctx->sim_state = new_simstate ();
-        ctx->output_file = fopen (filename, "w");
+        if ((ctx->output_file = fopen (filename, "w")) == NULL) {
+            flux_log (h, LOG_ERR, "failed to open output_file: %s", strerror (errno));
+        }
         ctx->rdl_string = NULL;
         ctx->rdl_changed = false;
+        ctx->exit_on_complete = exit_on_complete;
         flux_aux_set (h, "simsrv", ctx, freectx);
     }
 
@@ -94,6 +96,7 @@ static int send_trigger (flux_t h, char *mod_name, sim_state_t *sim_state)
 	if (flux_json_request (h, FLUX_NODEID_ANY,
                                   FLUX_MATCHTAG_NONE, topic, o) < 0) {
 		flux_log (h, LOG_ERR, "failed to send trigger to %s", mod_name);
+        Jput(o);
 		return -1;
 	}
 	//flux_log (h, LOG_DEBUG, "sent a trigger to %s", mod_name);
@@ -150,8 +153,6 @@ static int handle_next_event (ctx_t *ctx){
 		}
 	}
 	if (min_event_time == NULL){
-		flux_log (ctx->h, LOG_INFO, "No events remaining");
-        dump_kvs_dir(ctx->h, ".");
 		return -1;
 	}
 	while (zlist_size (keys) > 0){
@@ -217,7 +218,8 @@ static int join_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	zhash_t *timers = sim_state->timers;
 	if (zhash_insert (timers, mod_name, next_event) < 0){ //key already exists
 		flux_log (h, LOG_ERR, "duplicate join request from %s, module already exists in sim_state", mod_name);
-		return -1;
+		fprintf (stderr, "duplicate join request from %s, module already exists in sim_state\n", mod_name);
+		return 0;
 	}
 
 	//TODO: this is horribly hackish, improve the handshake to avoid
@@ -241,7 +243,7 @@ static int join_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 //try and determine what the new timer value should be.  There are ~12 possible cases
 //captured by the ~7 if/else statements below.
 //The general idea is leave the timer alone if the reply = previous (echo'd back)
-//and to use the reply time if the reply if > sim time but < prev
+//and to use the reply time if the reply is > sim time but < prev
 //There are many permutations of the three paramters which result in an invalid state
 //hopefully all of those cases are checked for and logged.
 
@@ -317,16 +319,18 @@ static void save_sim_state (ctx_t *ctx)
 static int rdl_update_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
 	JSON o = NULL;
-	char *tag = NULL;
+	const char *tag = NULL;
+    const char *json_string = NULL;
     const char *rdl_string = NULL;
 	ctx_t *ctx = (ctx_t *) arg;
 
-	if (flux_msg_decode (*zmsg, &tag, &o) < 0 || o == NULL){
+	if (flux_event_decode (*zmsg, &tag, &json_string) < 0 || json_string == NULL){
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
 		Jput (o);
 		return -1;
 	}
 
+    o = Jfromstr(json_string);
     Jget_str(o, "rdl_string", &rdl_string);
     if (rdl_string) {
         free (ctx->rdl_string);
@@ -342,29 +346,29 @@ static int rdl_update_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
 	JSON request = NULL;
-	bool event_finished;
-	//const char *json_string;
 	ctx_t *ctx = arg;
 	sim_state_t *curr_sim_state = ctx->sim_state;
 	sim_state_t *reply_sim_state;
 
-	if (flux_json_request_decode (*zmsg, &request) < 0
-		|| !Jget_bool (request, "event_finished", &event_finished)) {
-		flux_log (h, LOG_ERR, "%s: bad reply message", __FUNCTION__);
+	if (flux_json_request_decode (*zmsg, &request) < 0) {
+		flux_log (h, LOG_ERR, "%s: bad reply message: %s", __FUNCTION__, Jtostr(request));
 		Jput(request);
 		return 0;
 	}
-
-	//Logging
-	//json_string = Jtostr (request);
-	//flux_log (h, LOG_DEBUG, "received reply - %s", json_string);
 
 	//De-serialize and get new info
 	reply_sim_state = json_to_sim_state (request);
 	copy_new_state_data (ctx, curr_sim_state, reply_sim_state);
 
 	if (handle_next_event (ctx) < 0) {
-        exit(-1);
+        if (ctx->exit_on_complete) {
+            msg_exit ("No events remaining");
+        } else {
+            flux_log (h, LOG_INFO, "No events remaining");
+#if 0
+            dump_kvs_dir(ctx->h, ".");
+#endif
+        }
     }
 
 	free_simstate (reply_sim_state);
@@ -409,31 +413,38 @@ const int htablen = sizeof (htab) / sizeof (htab[0]);
 int mod_main(flux_t h, zhash_t *args)
 {
 	ctx_t *ctx;
-    char* sim_state_save_path;
+    char *sim_state_save_path, *eoc_str;
+    bool exit_on_complete;
 
 	if (flux_rank (h) != 0) {
 		flux_log(h, LOG_ERR, "sim module must only run on rank 0");
 		return -1;
 	}
+
 	flux_log (h, LOG_INFO, "sim comms module starting");
 
     if (!(sim_state_save_path = zhash_lookup (args, "save-path"))) {
         flux_log (h, LOG_ERR, "save-path argument is not set, defaulting to ./");
         sim_state_save_path = "./";
     }
-    ctx = getctx(h, sim_state_save_path);
+    if (!(eoc_str = zhash_lookup (args, "exit-on-complete"))) {
+        flux_log (h, LOG_ERR, "exit-on-complete argument is not set, defaulting to false");
+        exit_on_complete = false;
+    } else {
+        exit_on_complete = (!strcmp (eoc_str, "true") || !strcmp (eoc_str, "True"));
+    }
+    ctx = getctx(h, sim_state_save_path, exit_on_complete);
 
 	if (flux_event_subscribe (h, "rdl.update") < 0){
         flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
 		return -1;
 	}
+
 	if (flux_msghandler_addvec (h, htab, htablen, ctx) < 0) {
 		flux_log (h, LOG_ERR, "flux_msghandler_add: %s", strerror (errno));
 		return -1;
 	}
 
-	sleep(1);
-	flux_log (h, LOG_DEBUG, "sim left sleep");
 	if (send_start_event (h) < 0){
 		flux_log (h, LOG_ERR, "sim failed to send start event");
 		return -1;

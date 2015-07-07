@@ -242,7 +242,7 @@ static void determine_all_min_bandwidth_helper (struct resource *r, double curr_
         total_used_bandwidth, this_max_bandwidth, num_children, this_alloc_bandwidth;
     JSON o;
     zlist_t *child_list;
-    const char *type;
+    const char *type = NULL;
 
     //Check if leaf node in hierarchy (base case)
     rdl_resource_iterator_reset (r);
@@ -450,21 +450,6 @@ static int send_join_request(flux_t h)
 	return 0;
 }
 
-//Reply back to the sim module with the updated sim state (in JSON form)
-static int send_reply_request(flux_t h, sim_state_t *sim_state)
-{
-	JSON o = sim_state_to_json (sim_state);
-	Jadd_bool (o, "event_finished", true);
-	if (flux_json_request (h, FLUX_NODEID_ANY,
-                                  FLUX_MATCHTAG_NONE, "sim.reply", o) < 0) {
-		Jput (o);
-		return -1;
-	}
-	flux_log(h, LOG_DEBUG, "sent a reply request");
-   Jput (o);
-   return 0;
-}
-
 //Received an event that a simulation is starting
 static int start_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
@@ -491,17 +476,16 @@ static int start_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 static int rdl_update_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
 	JSON o = NULL;
-	char *tag = NULL;
-    const char *rdl_string = NULL;
+    const char *rdl_string = NULL, *json_str = NULL;
 	ctx_t *ctx = (ctx_t *) arg;
     int64_t rdl_int = 0;
 
-	if (flux_msg_decode (*zmsg, &tag, &o) < 0 || o == NULL){
+	if (flux_event_decode (*zmsg, NULL, &json_str) < 0) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
-		Jput (o);
 		return -1;
 	}
 
+    o = Jfromstr(json_str);
     Jget_int64(o, "rdl_int", &rdl_int);
     Jget_str(o, "rdl_string", &rdl_string);
 
@@ -547,7 +531,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	handle_completed_jobs (ctx);
 	next_termination = determine_next_termination (ctx, ctx->sim_state->sim_time, job_hash);
 	set_event_timer (ctx, "sim_exec", next_termination);
-	send_reply_request (h, ctx->sim_state);
+	send_reply_request (h, ctx->sim_state, module_name);
 
 //Cleanup
 	free_simstate (ctx->sim_state);
@@ -559,15 +543,12 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 static int run_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 {
-	JSON o = NULL;
 	const char *tag;
 	ctx_t *ctx = (ctx_t *) arg;
 	int *jobid = (int *) malloc (sizeof (int));
 
-	if (flux_msg_get_topic (*zmsg, &tag) < 0
-			|| flux_json_request_decode (*zmsg, &o) < 0) {
+	if (flux_msg_get_topic (*zmsg, &tag) < 0) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
-		Jput (o);
 		return -1;
 	}
 
@@ -580,7 +561,6 @@ static int run_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	flux_log(h, LOG_DEBUG, "queued the running of jobid %d", *jobid);
 
 //Cleanup
-	Jput (o);
 	zmsg_destroy (zmsg);
 	return 0;
 }

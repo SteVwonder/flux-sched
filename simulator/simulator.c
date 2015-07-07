@@ -35,8 +35,8 @@
 #include "src/common/libutil/jsonutil.h"
 #include "src/common/libutil/log.h"
 #include "src/common/libutil/shortjson.h"
+//#include "scheduler.h"
 #include "simulator.h"
-#include "rdl.h"
 
 sim_state_t *new_simstate ()
 {
@@ -225,6 +225,7 @@ job_t *pull_job_from_kvs (kvsdir_t kvsdir)
 int send_alive_request (flux_t h, const char* module_name)
 {
 	JSON o = Jnew ();
+
 	Jadd_str (o, "mod_name", module_name);
 	Jadd_int (o, "rank", flux_rank (h));
 	if (flux_json_request (h, FLUX_NODEID_ANY,
@@ -236,6 +237,7 @@ int send_alive_request (flux_t h, const char* module_name)
 	return 0;
 }
 
+#if 0
 static void dump_kvs_val (const char *key, JSON o)
 {
     switch (json_object_get_type (o)) {
@@ -296,4 +298,20 @@ void dump_kvs_dir (flux_t h, const char *path)
     }
     kvsitr_destroy (itr);
     kvsdir_destroy (dir);
+}
+#endif
+
+//Reply back to the sim module with the updated sim state (in JSON form)
+int send_reply_request (flux_t h, sim_state_t *sim_state, const char *module_name)
+{
+	JSON o = sim_state_to_json (sim_state);
+    Jadd_str (o, "mod_name", module_name);
+    if (flux_json_request (h, FLUX_NODEID_ANY,
+                           FLUX_MATCHTAG_NONE, "sim.reply", o) < 0) {
+		Jput (o);
+		return -1;
+	}
+	flux_log(h, LOG_DEBUG, "sent a reply request");
+    Jput (o);
+    return 0;
 }
