@@ -167,19 +167,21 @@ void remove_job_resources_from_rdl (struct rdl *rdl, const char *uri, flux_lwj_t
     rdl_resource_destroy (job_rdl_root);
 }
 
-int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+void trigger_cb (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *arg)
 {
 	clock_t start, diff;
 	double seconds;
     bool sched_loop;
+    const char * json_str = NULL;
 	JSON o = NULL;
     sim_state_t *sim_state = NULL;
     ctx_t *ctx = getctx (h);
 
-	if (flux_json_request_decode (*zmsg, &o) < 0 || o == NULL){
+	if (flux_request_decode (msg, NULL, &json_str) < 0 ||
+        json_str == NULL || !(o = Jfromstr (json_str))) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
 		Jput (o);
-		return -1;
+		return;
 	}
 
 	flux_log (h, LOG_DEBUG, "Setting sim_state to new values");
@@ -215,8 +217,6 @@ int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
     free_simstate (sim_state);
 	Jput (o);
-	zmsg_destroy (zmsg);
-	return 0;
 }
 
 void handle_kvs_queue (ctx_t *ctx)
@@ -263,16 +263,15 @@ void queue_kvs_cb (const char *key, const char *val, void *arg, int errnum)
 }
 
 
-int newlwj_rpc (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+void newlwj_rpc (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *arg)
 {
-	JSON o;
-	JSON o_resp;
-	const char *key;
+	JSON o = NULL, o_resp = NULL;
+	const char *key = NULL, *json_str = NULL;
 	int64_t id;
 	int rc = 0;
 
-	if (flux_json_request_decode (*zmsg, &o) < 0
-		    || o == NULL
+	if (flux_request_decode (msg, NULL, &json_str) < 0
+            || !(Jfromstr (json_str))
 		    || !Jget_str (o, "key", &key)
 		    || !Jget_int64 (o, "val", &id)) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
@@ -286,14 +285,11 @@ int newlwj_rpc (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 
 	o_resp = Jnew ();
 	Jadd_int (o_resp, "rc", rc);
-	flux_json_respond (h, o_resp, zmsg);
+	flux_respond (h, msg, 0, Jtostr(o_resp));
 	Jput (o_resp);
 
 	if (o)
 		Jput (o);
-	zmsg_destroy (zmsg);
-
-	return 0;
 }
 
 /* The val argument is for the *next* job id.  Hence, the job id of
@@ -701,11 +697,12 @@ void handle_timer_queue (ctx_t *ctx, sim_state_t *sim_state)
     //Set scheduler loop to run in next occuring scheduler block
     double *this_timer = zhash_lookup(sim_state->timers, module_name);
     double next_schedule_block = sim_state->sim_time +
-      (SCHED_INTERVAL - ((int)sim_state->sim_time % SCHED_INTERVAL));
+        (SCHED_INTERVAL - ((int)sim_state->sim_time % SCHED_INTERVAL));
     if (ctx->run_schedule_loop &&
         (next_schedule_block < *this_timer || *this_timer < 0)) {
         *this_timer = next_schedule_block;
     }
+    flux_log (ctx->h, LOG_DEBUG, "run_sched_loop: %d, next_schedule_block: %f, this_timer: %f", ctx->run_schedule_loop, next_schedule_block, *this_timer);
 }
 
 //Set the timer for "module" to happen relatively soon
@@ -727,6 +724,7 @@ void handle_event_queue (ctx_t *ctx)
     flux_event_t *e = NULL;
     bool resources_released = false;
 
+    flux_log (ctx->h, LOG_DEBUG, "handling %d queued events", (int)zlist_size (ctx->ev_queue));
     for (e = (flux_event_t *) zlist_pop (ctx->ev_queue);
          e != NULL;
          e = (flux_event_t *) zlist_pop (ctx->ev_queue))
@@ -1492,6 +1490,7 @@ void queue_schedule_loop (ctx_t *ctx) {
 }
 
 bool should_run_schedule_loop (ctx_t *ctx, int time) {
+    flux_log (ctx->h, LOG_DEBUG, "run_schedule_loop: %d, time 'mod' 30: %d", ctx->run_schedule_loop, time % 30);
     return ctx->run_schedule_loop && !(time % 30);
 }
 
@@ -1515,14 +1514,14 @@ int send_join_request(flux_t h)
 }
 
 //Received an event that a simulation is starting
-int start_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+void start_cb (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *arg)
 {
     ctx_t *ctx = getctx (h);
 
 	flux_log(h, LOG_DEBUG, "received a start event");
 	if (send_join_request (h) < 0){
 		flux_log (h, LOG_ERR, "submit module failed to register with sim module");
-		return -1;
+		return;
 	}
 
 	flux_log (h, LOG_DEBUG, "sent a join request");
@@ -1531,24 +1530,21 @@ int start_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	ctx->in_sim = true;
 	if (flux_event_unsubscribe (h, "sim.start") < 0){
 		flux_log (h, LOG_ERR, "failed to unsubscribe from \"sim.start\"");
-		return -1;
+		return;
 	} else {
 		flux_log (h, LOG_DEBUG, "unsubscribed from \"sim.start\"");
 	}
 	if (flux_event_unsubscribe (h, "sim_sched.event") < 0){
 		flux_log (h, LOG_ERR, "failed to unsubscribe from \"sim_sched.event\"");
-		return -1;
+		return;
 	} else {
 		flux_log (h, LOG_DEBUG, "unsubscribed from \"sim_sched.event\"");
 	}
 
-	//Cleanup
-	zmsg_destroy (zmsg);
-
-	return 0;
+	return;
 }
 
-int init_and_start_scheduler (flux_t h, ctx_t *ctx, zhash_t *args, msghandler_t *htab, int htablen)
+int init_and_start_scheduler (flux_t h, ctx_t *ctx, zhash_t *args, struct flux_msghandler *tab)
 {
     int rc = 0;
     char *path;
@@ -1607,8 +1603,8 @@ int init_and_start_scheduler (flux_t h, ctx_t *ctx, zhash_t *args, msghandler_t 
         rc = -1;
         goto ret;
     }
-	if (flux_msghandler_addvec (h, htab, htablen, NULL) < 0) {
-		flux_log (h, LOG_ERR, "flux_msghandler_add: %s", strerror (errno));
+	if (flux_msg_watcher_addvec (h, tab, NULL) < 0) {
+		flux_log (h, LOG_ERR, "flux_msg_watcher_addvec: %s", strerror (errno));
 		return -1;
 	}
 
@@ -1645,6 +1641,7 @@ skip_for_sim:
     rdllib_close(rdllib);
 
 ret:
+    flux_msg_watcher_delvec (h, tab);
     return rc;
 }
 

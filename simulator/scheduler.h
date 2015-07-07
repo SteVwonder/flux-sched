@@ -146,11 +146,11 @@ struct rdl *get_free_subset (struct rdl *rdl, const char *type);
 int64_t get_free_count (struct rdl *rdl, const char *uri, const char *type);
 void remove_job_resources_from_rdl (struct rdl *rdl, const char *uri, flux_lwj_t *job);
 
-int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg);
+void trigger_cb (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *arg);
 void handle_kvs_queue (ctx_t *ctx);
 
 void queue_kvs_cb (const char *key, const char *val, void *arg, int errnum);
-int newlwj_rpc (flux_t h, int typemask, zmsg_t **zmsg, void *arg);
+void newlwj_rpc (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *arg);
 void newlwj_cb (const char *key, int64_t val, void *arg, int errnum);
 int reg_lwj_state_hdlr (flux_t h, const char *path, KVSSetStringF *func);
 int reg_newlwj_hdlr (flux_t h, KVSSetInt64F *func);
@@ -210,9 +210,9 @@ bool should_run_schedule_loop (ctx_t *ctx, int time);
 void end_schedule_loop (ctx_t *ctx);
 
 int send_join_request(flux_t h);
-int start_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg);
+void start_cb (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *arg);
 
-int init_and_start_scheduler (flux_t h, ctx_t *ctx, zhash_t *args, msghandler_t *htab, int htablen);
+int init_and_start_scheduler (flux_t h, ctx_t *ctx, zhash_t *args, struct flux_msghandler *tab);
 
 int schedule_job (ctx_t *ctx, struct rdl *rdl, struct rdl *free_rdl,
                   const char *uri, int64_t free_cores, flux_lwj_t *job);

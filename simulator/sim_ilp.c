@@ -851,20 +851,20 @@ int schedule_jobs (ctx_t *ctx, double sim_time)
 }
 
 
-static msghandler_t htab[] = {
+static struct flux_msghandler htab[] = {
     { FLUX_MSGTYPE_EVENT,   "sim.start",     start_cb },
     { FLUX_MSGTYPE_REQUEST, "sim_sched.trigger", trigger_cb },
     //{ FLUX_MSGTYPE_EVENT,   "sim_sched.event",   event_cb },
     { FLUX_MSGTYPE_REQUEST, "sim_sched.lwj-watch",  newlwj_rpc },
+    FLUX_MSGHANDLER_TABLE_END,
 };
 
 int mod_main (flux_t p, zhash_t *args)
 {
-    int htablen = sizeof (htab) / sizeof (htab[0]);
     h = p;
     ctx = getctx (h);
 
-    return init_and_start_scheduler(h, ctx, args, htab, htablen);
+    return init_and_start_scheduler(h, ctx, args, htab);
 }
 
 MOD_NAME ("sim_sched");
