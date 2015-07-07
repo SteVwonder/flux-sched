@@ -1,6 +1,7 @@
 
 include ../Makefile.inc
 
+SUBDIRS = test
 CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS)
 GLPK_LIBS = -lglpk -lgmp -lm
 KVS_LIBS = -Wl,-rpath,$(FLUX_BUILDDIR)/src/modules/kvs/.libs \
@@ -8,7 +9,7 @@ KVS_LIBS = -Wl,-rpath,$(FLUX_BUILDDIR)/src/modules/kvs/.libs \
 LIBS = $(FLUX_LIBS) $(RDL_LIBS) $(KVS_LIBS)
 
 CONF=../conf/cab-io.lua
-JOBDATA=job_data/cab.ilp.csv
+JOBDATA=./job_data/cab-large.sorted.csv
 SAVEPATH=/nfs/tmp2/herbein1
 
 COMMON_OBJS = simulator.o xzmalloc.o log.o jsonutil.o
@@ -21,6 +22,7 @@ SCHEDULER_OBJS = scheduler.o
 BUILD = sim.so submit.so sim_exec.so $(SCHEDULERS_SO)
 
 all:  $(BUILD)
+	for subdir in $(SUBDIRS); do make -C $$subdir $@; done
 
 sim_sched_ilp.so: sim_ilp.c $(COMMON_OBJS) $(SCHEDULER_OBJS) $(LP_OBJS)
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(LIBS) $(GLPK_LIBS)
@@ -48,12 +50,12 @@ unload:
 sim_sched_%: sim_sched_%.so load
 	$(FLUX) module load ./$@.so rdl-conf=$(CONF)
 
-check:
-	echo "This is an empty depenendency"
+check: all
+	for subdir in $(SUBDIRS); do make -C $$subdir $@; done
 
 clean:
 	rm -f *.a *.o *.so
-	#for subdir in $(SUBDIRS); do make -C $$subdir $@; done
+	for subdir in $(SUBDIRS); do make -C $$subdir $@; done
 
 ## Debugging conveinences
 SCHED=sim_sched_fcfs_aware.so
