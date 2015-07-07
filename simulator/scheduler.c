@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <errno.h>
-#include <json/json.h>
+#include <json.h>
 #include <time.h>
 #include <inttypes.h>
 
