@@ -125,6 +125,21 @@ int send_start_event(flux_t h)
 	return 0;
 }
 
+// Send an event to all modules that the simulation has completed
+int send_complete_event (flux_t h)
+{
+    int rc = 0;
+	flux_msg_t *msg = NULL;
+
+	if (!(msg = flux_event_encode ("sim.complete", NULL))
+        || flux_send (h, msg, 0) < 0) {
+        rc = -1;
+    }
+
+	flux_msg_destroy (msg);
+	return rc;
+}
+
 //Looks at the current state and launches the next trigger
 static int handle_next_event (ctx_t *ctx){
 	zhash_t *timers;
@@ -344,13 +359,11 @@ static int reply_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	copy_new_state_data (ctx, curr_sim_state, reply_sim_state);
 
 	if (handle_next_event (ctx) < 0) {
+        flux_log (h, LOG_DEBUG, "No events remaining");
         if (ctx->exit_on_complete) {
-            msg_exit ("No events remaining");
+            msg_exit ("exit_on_complete is set. Exiting now.");
         } else {
-            flux_log (h, LOG_INFO, "No events remaining");
-#if 0
-            dump_kvs_dir(ctx->h, ".");
-#endif
+            send_complete_event(h);
         }
     }
 
