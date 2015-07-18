@@ -220,7 +220,7 @@ int schedule_next_job (flux_t h, sim_state_t *sim_state)
 	}
 	Jadd_int (o, "nnodes", job->nnodes);
 	Jadd_int (o, "ntasks", job->ncpus);
-
+    Jadd_bool (o, "race_workaround", true);
 	flux_json_rpc (h, FLUX_NODEID_ANY, "job.create", o, &response);
 	Jget_int64 (response, "jobid", &new_jobid);
 
