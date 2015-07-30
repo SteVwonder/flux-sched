@@ -341,7 +341,7 @@ static double determine_io_penalty (double job_bandwidth, double min_bandwidth)
 {
     double io_penalty;
 
-    if (job_bandwidth < min_bandwidth) {
+    if (job_bandwidth < min_bandwidth || min_bandwidth == 0) {
         return 0;
     }
 
