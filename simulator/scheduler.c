@@ -1490,8 +1490,12 @@ void queue_schedule_loop (ctx_t *ctx) {
 }
 
 bool should_run_schedule_loop (ctx_t *ctx, int time) {
+#ifdef SCHED_NOWAIT
+    return ctx->run_schedule_loop;
+#else
     flux_log (ctx->h, LOG_DEBUG, "run_schedule_loop: %d, time 'mod' 30: %d", ctx->run_schedule_loop, time % 30);
     return ctx->run_schedule_loop && !(time % 30);
+#endif
 }
 
 void end_schedule_loop (ctx_t *ctx) {

@@ -2,12 +2,12 @@
 include ../Makefile.inc
 
 SUBDIRS = test
-CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS)
+CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS) -DSCHED_NOWAIT
 GLPK_LIBS = -lglpk -lgmp -lm
 LIBS = $(FLUX_LIBS) $(RDL_LIBS) $(KVS_LIBS)
 
-CONF=../conf/cab-io.lua
-JOBDATA=./job_data/cab-large.sorted.csv
+CONF=../conf/hype-io.lua
+JOBDATA=./job_data/hype-small.sorted.csv
 SAVEPATH=/nfs/tmp2/herbein1
 
 COMMON_OBJS = simulator.o xzmalloc.o log.o jsonutil.o
@@ -20,6 +20,7 @@ SCHEDULER_OBJS = scheduler.o
 BUILD = sim.so submit.so sim_exec.so $(SCHEDULERS_SO)
 
 all:  $(BUILD)
+	echo -e "\n\n\n======WARNING======\nUSING -DSCHED_NOWAIT\n\n\n"
 	for subdir in $(SUBDIRS); do make -C $$subdir $@; done
 
 sim_sched_ilp.so: sim_ilp.c $(COMMON_OBJS) $(SCHEDULER_OBJS) $(LP_OBJS)
