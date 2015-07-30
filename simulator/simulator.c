@@ -311,7 +311,7 @@ int send_reply_request (flux_t h, sim_state_t *sim_state, const char *module_nam
 		Jput (o);
 		return -1;
 	}
-	flux_log(h, LOG_DEBUG, "sent a reply request");
+	flux_log(h, LOG_DEBUG, "sent a reply request: %s", Jtostr(o));
     Jput (o);
     return 0;
 }
