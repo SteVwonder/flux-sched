@@ -25,7 +25,6 @@ BUILD = tsched_lib
 all: $(BUILD)
 
 tsched_lib: tsched_lib.c $(COMMON_OBJS) $(SCHEDULER_OBJS)
-	echo $(LIBS)
 	$(CC)  $(CFLAGS) $(test_cppflags) -o $@ $^ $(LIBS) $(LDADD_CLI)
 
 check: tsched_lib
