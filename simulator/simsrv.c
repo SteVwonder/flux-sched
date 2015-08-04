@@ -408,8 +408,9 @@ static msghandler_t htab[] = {
 };
 const int htablen = sizeof (htab) / sizeof (htab[0]);
 
-int mod_main(flux_t h, zhash_t *args)
+int mod_main (flux_t h, int argc, char **argv)
 {
+    zhash_t *args = zhash_fromargv (argc, argv);
 	ctx_t *ctx;
     char *sim_state_save_path, *eoc_str;
     bool exit_on_complete;

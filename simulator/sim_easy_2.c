@@ -360,8 +360,10 @@ static struct flux_msghandler htab[] = {
     FLUX_MSGHANDLER_TABLE_END,
 };
 
-int mod_main (flux_t p, zhash_t *args)
+int mod_main (flux_t p, int argc, char **argv)
 {
+    zhash_t *args = zhash_fromargv (argc, argv);
+
     h = p;
     ctx = getctx (h);
 

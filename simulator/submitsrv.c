@@ -309,8 +309,9 @@ static msghandler_t htab[] = {
 };
 const int htablen = sizeof (htab) / sizeof (htab[0]);
 
-int mod_main(flux_t h, zhash_t *args)
+int mod_main (flux_t h, int argc, char **argv)
 {
+    zhash_t *args = zhash_fromargv (argc, argv);
 	char *csv_filename;
 	if (flux_rank (h) != 0) {
 		flux_log (h, LOG_ERR, "submit module must only run on rank 0");
