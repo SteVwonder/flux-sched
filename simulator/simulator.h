@@ -42,4 +42,6 @@ void dump_kvs_dir (flux_t h, const char *path);
 
 int send_reply_request (flux_t h, sim_state_t *sim_state, const char *module_name);
 
+zhash_t *zhash_fromargv (int argc, char **argv);
+
 #endif /* SIMULATOR_H */

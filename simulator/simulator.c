@@ -315,3 +315,23 @@ int send_reply_request (flux_t h, sim_state_t *sim_state, const char *module_nam
     Jput (o);
     return 0;
 }
+
+zhash_t *zhash_fromargv (int argc, char **argv)
+{
+    zhash_t *args = zhash_new ();
+    int i;
+
+    if (args) {
+        for (i = 0; i < argc; i++) {
+            char *key = strdup (argv[i]);
+            char *val = strchr (key, '=');
+            if (val) {
+                *val++ = '\0';
+                zhash_update (args, key, strdup (val));
+                zhash_freefn (args, key, free);
+            }
+            free (key);
+        }
+    }
+    return args;
+}
