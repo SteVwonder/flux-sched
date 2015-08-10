@@ -167,10 +167,35 @@ void remove_job_resources_from_rdl (struct rdl *rdl, const char *uri, flux_lwj_t
     rdl_resource_destroy (job_rdl_root);
 }
 
+static void save_sched_stats_in_kvs (flux_t h, double secs, int queue_len)
+{
+    static kvsdir_t statsdir = NULL;
+    static int curr_iter_count = 0;
+    kvsdir_t currdir = NULL;
+    char key[15];
+
+    if (statsdir == NULL || curr_iter_count == 0) {
+        kvs_mkdir (h, "sched_stats");
+        kvs_commit (h);
+        kvs_get_dir (h, &statsdir, "sched_stats");
+    }
+
+    snprintf (key, 15, "%d", curr_iter_count);
+    kvsdir_mkdir (statsdir, key);
+    kvs_commit (h);
+    kvsdir_get_dir (statsdir, &currdir, key);
+    kvsdir_put_double (currdir, "runtime", secs);
+    kvsdir_put_int (currdir, "queue_len", queue_len);
+    kvs_commit (h);
+
+    curr_iter_count++;
+}
+
 void trigger_cb (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *arg)
 {
 	clock_t start, diff;
-	double seconds;
+    int queue_len = -1;
+	double seconds = -1;
     bool sched_loop;
     const char * json_str = NULL;
 	JSON o = NULL;
@@ -194,6 +219,7 @@ void trigger_cb (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *a
     handle_event_queue (ctx);
 
     if ((sched_loop = should_run_schedule_loop(ctx, (int)sim_state->sim_time))) {
+      queue_len = zlist_size (ctx->p_queue);
       flux_log (h, LOG_DEBUG, "Running the schedule loop");
       if (schedule_jobs (ctx, sim_state->sim_time) > 0) {
           queue_timer_change(ctx, module_name);
@@ -205,7 +231,8 @@ void trigger_cb (flux_t h, flux_msg_watcher_t *w, const flux_msg_t *msg, void *a
 	seconds = ((double) diff) / CLOCKS_PER_SEC;
 	sim_state->sim_time += seconds;
     if (sched_loop) {
-        flux_log (h, LOG_DEBUG, "scheduler timer: events + loop took %f seconds", seconds);
+        flux_log (h, LOG_DEBUG, "scheduler timer: events + loop took %f seconds on a queue of length %d", seconds, queue_len);
+        save_sched_stats_in_kvs (h, seconds, queue_len);
     } else {
         flux_log (h, LOG_DEBUG, "scheduler timer: events took %f seconds", seconds);
     }
@@ -1494,7 +1521,7 @@ bool should_run_schedule_loop (ctx_t *ctx, int time) {
     return ctx->run_schedule_loop;
 #else
     flux_log (ctx->h, LOG_DEBUG, "run_schedule_loop: %d, time 'mod' 30: %d", ctx->run_schedule_loop, time % 30);
-    return ctx->run_schedule_loop && !(time % 30);
+    return ctx->run_schedule_loop && !(time % 30) && time > 0;
 #endif
 }
 
