@@ -51,8 +51,8 @@ typedef struct {
 } ctx_t;
 
 //static double get_io_penalty (ctx_t *ctx, job_t *job);
-static double determine_io_penalty (double job_bandwidth, double min_bandwidth);
-static double* get_job_min_from_hash (zhash_t *job_hash, int job_id);
+//static double determine_io_penalty (double job_bandwidth, double min_bandwidth);
+//static double* get_job_min_from_hash (zhash_t *job_hash, int job_id);
 
 static void freectx (void *arg)
 {
@@ -117,19 +117,19 @@ static double calc_curr_progress (job_t *job, double sim_time)
 static double determine_next_termination (ctx_t *ctx, double curr_time, zhash_t *job_hash)
 {
 	double next_termination = -1, curr_termination = -1;
-    double projected_future_io_time, job_io_penalty, computation_time_remaining;
-    double *job_min_bandwidth;
+    //double projected_future_io_time, job_io_penalty, computation_time_remaining;
+    //double *job_min_bandwidth;
 	zlist_t *running_jobs = ctx->running_jobs;
 	job_t *job = zlist_first (running_jobs);
 
 	while (job != NULL){
         if (job->start_time <= curr_time) {
             curr_termination = job->start_time + job->execution_time + job->io_time;
-            computation_time_remaining = job->execution_time - ((curr_time - job->start_time) - job->io_time);
-            job_min_bandwidth = get_job_min_from_hash (job_hash, job->id);
-            job_io_penalty = determine_io_penalty (job->io_rate, *job_min_bandwidth);
-            projected_future_io_time = (computation_time_remaining) * job_io_penalty;
-            curr_termination += projected_future_io_time;
+            //computation_time_remaining = job->execution_time - ((curr_time - job->start_time) - job->io_time);
+            //job_min_bandwidth = get_job_min_from_hash (job_hash, job->id);
+            //job_io_penalty = determine_io_penalty (job->io_rate, *job_min_bandwidth);
+            //projected_future_io_time = (computation_time_remaining) * job_io_penalty;
+            //curr_termination += projected_future_io_time;
             if (curr_termination < next_termination || next_termination < 0){
                 next_termination = curr_termination;
             }
@@ -211,12 +211,14 @@ static int64_t get_alloc_bandwidth (struct resource *r)
     }
 }
 
+#if 0
 static int64_t get_max_bandwidth (struct resource *r)
 {
 	int64_t max_bw;
 	rdl_resource_get_int (r, "max_bw", &max_bw);
 	return max_bw;
 }
+#endif
 
 //Compare two resources based on their alloc bandwidth
 //Return true if they should be swapped
@@ -228,6 +230,7 @@ bool compare_resource_alloc_bw (void *item1, void *item2)
   return get_alloc_bandwidth(r1) > get_alloc_bandwidth(r2);
 }
 
+#if 0
 static double* get_job_min_from_hash (zhash_t *job_hash, int job_id) {
     char job_id_str[100];
     sprintf (job_id_str, "%d", job_id);
@@ -350,6 +353,7 @@ static double determine_io_penalty (double job_bandwidth, double min_bandwidth)
 
     return io_penalty;
 }
+#endif
 
 //Model io contention that occurred between previous event and the curr sim time
 //Remove completed jobs from the list of running jobs
@@ -360,9 +364,9 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
 
 	job_t *job = NULL;
 	int num_jobs = -1;
-	double next_event = -1, next_termination = -1, curr_progress = -1,
-        io_penalty = 0, io_percentage = 0;
-    double *job_min_bandwidth = NULL;
+	double next_event = -1, next_termination = -1, curr_progress = -1;
+        //io_penalty = 0, io_percentage = 0;
+    //double *job_min_bandwidth = NULL;
 
 	zlist_t *running_jobs = ctx->running_jobs;
 	double sim_time = ctx->sim_state->sim_time;
@@ -379,10 +383,10 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
 			job = zlist_pop (running_jobs);
             if (job->start_time <= curr_time) {
                 //Get the minimum bandwidth between a resource in the job and the pfs
-                job_min_bandwidth = get_job_min_from_hash (job_hash, job->id);
-                io_penalty = determine_io_penalty (job->io_rate, *job_min_bandwidth);
-                io_percentage = (io_penalty / (io_penalty + 1));
-                job->io_time += (next_event - curr_time) * io_percentage;
+                //job_min_bandwidth = get_job_min_from_hash (job_hash, job->id);
+                //io_penalty = determine_io_penalty (job->io_rate, *job_min_bandwidth);
+                //io_percentage = (io_penalty / (io_penalty + 1));
+                //job->io_time += (next_event - curr_time) * io_percentage;
                 curr_progress = calc_curr_progress (job, next_event);
                 if (curr_progress < 1)
                     zlist_append (running_jobs, job);
@@ -512,7 +516,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 	const char *json_string;
 	double next_termination;
 	ctx_t *ctx = (ctx_t *) arg;
-    zhash_t *job_hash;
+    zhash_t *job_hash = NULL;
 
 	if (flux_json_request_decode (*zmsg, &o) < 0) {
 		flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
@@ -526,7 +530,7 @@ static int trigger_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
 //Handle the trigger
 	ctx->sim_state = json_to_sim_state (o);
 	handle_queued_events (ctx);
-    job_hash = determine_all_min_bandwidth (ctx->rdl, ctx->running_jobs);
+    //job_hash = determine_all_min_bandwidth (ctx->rdl, ctx->running_jobs);
 	advance_time (ctx, job_hash);
 	handle_completed_jobs (ctx);
 	next_termination = determine_next_termination (ctx, ctx->sim_state->sim_time, job_hash);
