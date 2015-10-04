@@ -278,6 +278,13 @@ resrc_tree_t *resrc_tree_list_first (resrc_tree_list_t *rtl)
     return NULL;
 }
 
+resrc_tree_t *resrc_tree_list_last (resrc_tree_list_t *rtl)
+{
+    if (rtl && rtl->list)
+        return zlist_last (rtl->list);
+    return NULL;
+}
+
 resrc_tree_t *resrc_tree_list_next (resrc_tree_list_t *rtl)
 {
     if (rtl && rtl->list)

@@ -103,6 +103,11 @@ int resrc_tree_list_append (resrc_tree_list_t *rtl, resrc_tree_t *rt);
 resrc_tree_t *resrc_tree_list_first (resrc_tree_list_t *rtl);
 
 /*
+ * Get the last element in the resource tree list
+ */
+resrc_tree_t *resrc_tree_list_last (resrc_tree_list_t *rtl);
+
+/*
  * Get the next element in the resource tree list
  */
 resrc_tree_t *resrc_tree_list_next (resrc_tree_list_t *rtl);
