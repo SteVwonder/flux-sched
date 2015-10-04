@@ -48,14 +48,9 @@ function Socket:initialize (arg)
 	   num_cores = num_cores + 1
 	end
 
-	local bw_per_core = 0
-	if arg.tags ~=nil and arg.tags['max_bw'] ~= nil then
-	   bw_per_core = arg.tags.max_bw / num_cores
-	end
-
     for core in cset:setbits() do
         self:add_child (
-            Resource{ "core", id = core, properties = { localid = id }, tags = { ["max_bw"] = bw_per_core, ["alloc_bw"] = 0 }}
+           Resource{ "core", id = core, properties = { localid = id }}
         )
         id = id + 1
     end

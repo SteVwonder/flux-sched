@@ -45,7 +45,7 @@ end
 function Resource:initialize (args)
     self.children = {}
     if args.children then
-        for _,r in pairs (args.children) do
+       for _,r in pairs (args.children) do
             self:add_child (r)
         end
         args.children = nil
@@ -53,6 +53,13 @@ function Resource:initialize (args)
 
     if not args.tags then
         args.tags = {}
+    end
+
+    -- TODO: make this cleaner
+    -- Not sure how to combine ListOf with singleton children
+    -- So this is the workaround
+    if args.io then
+       self:add_child (Resource{"io", size=args.io})
     end
 
     --
