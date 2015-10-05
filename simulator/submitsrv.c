@@ -93,18 +93,12 @@ int insert_into_job (job_t *job, char *column_name, char *value)
 {
     if (!strcmp (column_name, "JobID")) {
         job->id = atoi (value);
-    } else if (!strcmp (column_name, "User")) {
-        asprintf (&job->user, "%s", value);
-    } else if (!strcmp (column_name, "JobName")) {
-        asprintf (&job->jobname, "%s", value);
-    } else if (!strcmp (column_name, "Account")) {
-        asprintf (&job->account, "%s", value);
     } else if (!strcmp (column_name, "NNodes")) {
         job->nnodes = atoi (value);
     } else if (!strcmp (column_name, "NCPUS")) {
         job->ncpus = atoi (value);
     } else if (!strcmp (column_name, "Timelimit")) {
-        job->time_limit = convert_time_to_sec (value);
+        job->walltime = convert_time_to_sec (value);
     } else if (!strcmp (column_name, "Submit")) {
         job->submit_time = atof (value);
     } else if (!strcmp (column_name, "Elapsed")) {
@@ -220,7 +214,7 @@ int schedule_next_job (flux_t h, sim_state_t *sim_state)
     req_json = Jnew ();
     Jadd_int (req_json, "nnodes", job->nnodes);
     Jadd_int (req_json, "ntasks", job->ncpus);
-    Jadd_int64 (req_json, "walltime", job->time_limit);
+    Jadd_int64 (req_json, "walltime", job->walltime);
 
     rpc = flux_rpc (h, "job.create", Jtostr (req_json), FLUX_NODEID_ANY, 0);
     Jput (req_json);

@@ -28,6 +28,7 @@
 #include <czmq.h>
 #include <flux/core.h>
 #include "src/common/libutil/shortjson.h"
+#include "resrc_tree.h"
 
 typedef struct {
     double sim_time;
@@ -36,17 +37,15 @@ typedef struct {
 
 typedef struct {
     int id;
-    char *user;
-    char *jobname;
-    char *account;
     double submit_time;
     double start_time;
     double execution_time;
     double io_time;
-    double time_limit;
-    int nnodes;
-    int ncpus;
+    double walltime;
+    int64_t nnodes;
+    int64_t ncpus;
     int64_t io_rate;
+    resrc_tree_list_t *resrc_trees;
     kvsdir_t *kvs_dir;
 } job_t;
 
@@ -57,7 +56,7 @@ sim_state_t *json_to_sim_state (JSON o);
 int print_values (const char *key, void *item, void *argument);
 
 int put_job_in_kvs (job_t *job);
-job_t *pull_job_from_kvs (kvsdir_t *kvs_dir);
+job_t *pull_job_from_kvs (flux_t h, kvsdir_t *kvs_dir);
 void free_job (job_t *job);
 job_t *blank_job ();
 int send_alive_request (flux_t h, const char *module_name);

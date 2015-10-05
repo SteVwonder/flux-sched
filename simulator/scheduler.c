@@ -1633,8 +1633,8 @@ int job_compare_termination_fn (void *item1, void *item2)
 {
     job_t *job1 = (job_t *)item1;
     job_t *job2 = (job_t *)item2;
-    double t1 = job1->start_time + job1->time_limit;
-    double t2 = job2->start_time + job2->time_limit;
+    double t1 = job1->start_time + job1->walltime;
+    double t2 = job2->start_time + job2->walltime;
     double delta = t1 - t2;
     if (fabs (delta) < DBL_EPSILON)
         return 0;

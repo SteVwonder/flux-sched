@@ -51,6 +51,11 @@ int64_t resrc_id (resrc_t *resrc);
 size_t resrc_size (resrc_t *resrc);
 
 /*
+ * Get a list of jobs with an allocation on this resource at time
+ */
+zlist_t *resrc_curr_job_ids (resrc_t *resrc, int64_t time);
+
+/*
  * Return the amount of the resource available at the given time
  */
 size_t resrc_available_at_time (resrc_t *resrc, int64_t time);

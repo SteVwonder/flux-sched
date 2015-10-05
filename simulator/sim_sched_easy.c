@@ -105,13 +105,13 @@ void calculate_shadow_info (flux_lwj_t *reserved_job,
         flux_log (h,
                   LOG_DEBUG,
                   "reserved_job_req_cores: %d, free cores: %ld, curr_job: %d, "
-                  "curr_job_ncores: %d",
+                  "curr_job_ncores: %"PRId64"",
                   reserved_job->req.ncores,
                   *shadow_free_cores,
                   curr_job_t->id,
                   curr_job_t->ncpus);
         *shadow_free_cores += curr_job_t->ncpus;
-        *shadow_time = curr_job_t->start_time + curr_job_t->time_limit;
+        *shadow_time = curr_job_t->start_time + curr_job_t->walltime;
         curr_job_t = zlist_next (running_jobs);
     }
 
@@ -205,7 +205,7 @@ int schedule_jobs (ctx_t *ctx, double sim_time)
                               "lwj.%ld kvsdir not found",
                               curr_queued_job->lwj_id);
                 } else {
-                    curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+                    curr_job_t = pull_job_from_kvs (h, curr_kvs_dir);
                     if (curr_job_t->start_time == 0)
                         curr_job_t->start_time = sim_time;
                     zlist_append (running_jobs, curr_job_t);
@@ -228,7 +228,7 @@ int schedule_jobs (ctx_t *ctx, double sim_time)
                           "lwj.%ld kvsdir not found",
                           curr_running_job->lwj_id);
             } else {
-                curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+                curr_job_t = pull_job_from_kvs (h, curr_kvs_dir);
                 if (curr_job_t->start_time == 0)
                     curr_job_t->start_time = sim_time;
                 zlist_append (running_jobs, curr_job_t);

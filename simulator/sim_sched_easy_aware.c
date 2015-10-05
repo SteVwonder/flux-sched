@@ -207,7 +207,7 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job,
         } else if (curr_job_t->ncpus < 1) {
             flux_log (h,
                       LOG_ERR,
-                      "Curr job %d incorrectly requires < 1 cpu: %d",
+                      "Curr job %d incorrectly requires < 1 cpu: %"PRId64"",
                       curr_job_t->id,
                       curr_job_t->ncpus);
         }
@@ -217,7 +217,7 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job,
         if (curr_lwj_job->alloc.ncores != curr_job_t->ncpus) {
             flux_log (h,
                       LOG_ERR,
-                      "Job %d's ncpus don't match: %d (lwj_job) and %d (job_t)",
+                      "Job %d's ncpus don't match: %d (lwj_job) and %"PRId64" (job_t)",
                       curr_job_t->id,
                       curr_lwj_job->alloc.ncores,
                       curr_job_t->ncpus);
@@ -225,7 +225,7 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job,
         release_resources (ctx, *shadow_rdl, uri, curr_lwj_job);
 
         shadow_free_cores += curr_job_t->ncpus;
-        *shadow_time = curr_job_t->start_time + curr_job_t->time_limit;
+        *shadow_time = curr_job_t->start_time + curr_job_t->walltime;
         curr_job_t = zlist_next (running_jobs);
     }
 
@@ -248,7 +248,7 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job,
         } else if (curr_job_t->ncpus < 1) {
             flux_log (h,
                       LOG_ERR,
-                      "Curr job %d incorrectly requires < 1 cpu: %d",
+                      "Curr job %d incorrectly requires < 1 cpu: %"PRId64"",
                       curr_job_t->id,
                       curr_job_t->ncpus);
         }
@@ -257,7 +257,7 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job,
         if (curr_lwj_job->alloc.ncores != curr_job_t->ncpus) {
             flux_log (h,
                       LOG_ERR,
-                      "Job %d's ncpus don't match: %d (lwj_job) and %d (job_t)",
+                      "Job %d's ncpus don't match: %d (lwj_job) and %"PRId64" (job_t)",
                       curr_job_t->id,
                       curr_lwj_job->alloc.ncores,
                       curr_job_t->ncpus);
@@ -265,7 +265,7 @@ static void calculate_shadow_info (flux_lwj_t *reserved_job,
         release_resources (ctx, *shadow_rdl, uri, curr_lwj_job);
 
         shadow_free_cores += curr_job_t->ncpus;
-        *shadow_time = curr_job_t->start_time + curr_job_t->time_limit;
+        *shadow_time = curr_job_t->start_time + curr_job_t->walltime;
 
         curr_job_t = zlist_next (running_jobs);
         rdl_destroy (shadow_free_rdl);
@@ -379,7 +379,7 @@ int schedule_jobs (ctx_t *ctx, double sim_time)
                               "lwj.%ld kvsdir not found",
                               curr_job->lwj_id);
                 } else {
-                    curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+                    curr_job_t = pull_job_from_kvs (h, curr_kvs_dir);
                     if (curr_job_t->start_time == 0)
                         curr_job_t->start_time = sim_time;
                     zlist_append (running_jobs, curr_job_t);
@@ -402,7 +402,7 @@ int schedule_jobs (ctx_t *ctx, double sim_time)
                           "lwj.%ld kvsdir not found",
                           curr_lwj_job->lwj_id);
             } else {
-                curr_job_t = pull_job_from_kvs (curr_kvs_dir);
+                curr_job_t = pull_job_from_kvs (h, curr_kvs_dir);
                 if (curr_job_t->start_time == 0)
                     curr_job_t->start_time = sim_time;
                 zlist_append (running_jobs, curr_job_t);

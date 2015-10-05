@@ -136,9 +136,6 @@ sim_state_t *json_to_sim_state (JSON o)
 
 void free_job (job_t *job)
 {
-    free (job->user);
-    free (job->jobname);
-    free (job->account);
     kvsdir_destroy (job->kvs_dir);
     free (job);
 }
@@ -147,14 +144,11 @@ job_t *blank_job ()
 {
     job_t *job = malloc (sizeof (job_t));
     job->id = -1;
-    job->user = NULL;
-    job->jobname = NULL;
-    job->account = NULL;
     job->submit_time = 0;
     job->start_time = 0;
     job->execution_time = 0;
     job->io_time = 0;
-    job->time_limit = 0;
+    job->walltime = 0;
     job->nnodes = 0;
     job->ncpus = 0;
     job->kvs_dir = NULL;
@@ -166,22 +160,10 @@ int put_job_in_kvs (job_t *job)
     if (job->kvs_dir == NULL)
         return -1;
 
-    if (!kvsdir_exists (job->kvs_dir, "user"))
-        kvsdir_put_string (job->kvs_dir, "user", job->user);
-    if (!kvsdir_exists (job->kvs_dir, "jobname"))
-        kvsdir_put_string (job->kvs_dir, "jobname", job->jobname);
-    if (!kvsdir_exists (job->kvs_dir, "account"))
-        kvsdir_put_string (job->kvs_dir, "account", job->account);
     if (!kvsdir_exists (job->kvs_dir, "submit_time"))
         kvsdir_put_double (job->kvs_dir, "submit_time", job->submit_time);
     if (!kvsdir_exists (job->kvs_dir, "execution_time"))
         kvsdir_put_double (job->kvs_dir, "execution_time", job->execution_time);
-    if (!kvsdir_exists (job->kvs_dir, "time_limit"))
-        kvsdir_put_double (job->kvs_dir, "time_limit", job->time_limit);
-    if (!kvsdir_exists (job->kvs_dir, "nnodes"))
-        kvsdir_put_int (job->kvs_dir, "nnodes", job->nnodes);
-    if (!kvsdir_exists (job->kvs_dir, "ncpus"))
-        kvsdir_put_int (job->kvs_dir, "ncpus", job->ncpus);
     if (!kvsdir_exists (job->kvs_dir, "io_rate"))
         kvsdir_put_int64 (job->kvs_dir, "io_rate", job->io_rate);
 
@@ -199,29 +181,59 @@ int put_job_in_kvs (job_t *job)
     return 0;
 }
 
-job_t *pull_job_from_kvs (kvsdir_t *kvsdir)
+job_t *pull_job_from_kvs (flux_t h, kvsdir_t *kvsdir)
 {
     if (kvsdir == NULL)
         return NULL;
 
+    int64_t nn = 0, nc = 0, walltime = 0;
+    JSON o = NULL, jcb = NULL;
     job_t *job = blank_job ();
+    const char* resrc_str = NULL;
 
     job->kvs_dir = kvsdir;
 
     sscanf (kvsdir_key (job->kvs_dir), "lwj.%d", &job->id);
-    kvsdir_get_string (job->kvs_dir, "user", &job->user);
-    kvsdir_get_string (job->kvs_dir, "jobname", &job->jobname);
-    kvsdir_get_string (job->kvs_dir, "account", &job->account);
     kvsdir_get_double (job->kvs_dir, "submit_time", &job->submit_time);
     kvsdir_get_double (job->kvs_dir, "starting_time", &job->start_time);
     kvsdir_get_double (job->kvs_dir, "execution_time", &job->execution_time);
     kvsdir_get_double (job->kvs_dir, "io_time", &job->io_time);
-    kvsdir_get_double (job->kvs_dir, "time_limit", &job->time_limit);
-    kvsdir_get_int (job->kvs_dir, "nnodes", &job->nnodes);
-    kvsdir_get_int (job->kvs_dir, "ncpus", &job->ncpus);
     kvsdir_get_int64 (job->kvs_dir, "io_rate", &job->io_rate);
 
+    if (jsc_query_jcb_obj (h, job->id, JSC_RDESC, &jcb) != 0) {
+        goto error;
+    }
+    if (!Jget_obj (jcb, JSC_RDESC, &o)) {
+        goto error;
+    }
+    Jget_int64 (o, JSC_RDESC_NNODES, &nn);
+    Jget_int64 (o, JSC_RDESC_NTASKS, &nc);
+    job->nnodes = (uint64_t) nn;
+    job->ncpus = (uint64_t) nc;
+    if (!Jget_int64 (o, JSC_RDESC_WALLTIME, &walltime)) {
+        job->walltime = (double) 3600;
+    } else {
+        job->walltime = (double) walltime;
+    }
+
+    if (jsc_query_jcb_obj (h, job->id, JSC_RDL, &jcb) != 0) {
+        goto error;
+    }
+    if (!Jget_str (jcb, JSC_RDL, &resrc_str)) {
+        goto error;
+    }
+    o = Jfromstr (resrc_str);
+    if (!o) {
+        goto error;
+    }
+    job->resrc_trees = resrc_tree_list_deserialize (o);
+    Jput (o);
+
     return job;
+
+ error:
+    free_job (job);
+    return NULL;
 }
 
 int send_alive_request (flux_t h, const char *module_name)

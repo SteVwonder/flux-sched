@@ -48,7 +48,7 @@ struct resrc {
     zlist_t *graphs;
     zhash_t *properties;
     zhash_t *tags;
-    zhash_t *allocs; // TODO: merge with twindow
+    zhash_t *allocs;
     zhash_t *reservtns;
     zhash_t *twindow;
 };
@@ -93,15 +93,56 @@ size_t resrc_size (resrc_t *resrc)
     return 0;
 }
 
+// TODO: don't expose zlist_t in API
+zlist_t *resrc_curr_job_ids (resrc_t *resrc, int64_t time)
+{
+    zlist_t *matching_jobs = zlist_new ();
+    zlist_autofree (matching_jobs);
+
+    // Iterate over all allocation windows in curr_resrc.  We iterate using
+    // keys since we need the key to lookup the size in curr_resrc->allocs.
+    JSON window_json = NULL;
+    const char* window_json_str = NULL;
+    int64_t start_time = 0, end_time = 0;
+    zlist_t *window_keys = zhash_keys (resrc->twindow);
+    char *window_key = NULL;
+    for (window_key = zlist_next (window_keys);
+         window_key;
+         window_key = zlist_next (window_keys)) {
+
+        if (!strncmp ("0", window_key, 2)) {
+            // Skip the lifetime window
+            continue;
+        }
+        window_json_str = (const char*) zhash_lookup (resrc->twindow, window_key);
+        window_json = Jfromstr (window_json_str);
+        if (window_json == NULL) {
+            continue;
+        }
+        Jget_int64 (window_json, "starttime", &start_time);
+        Jget_int64 (window_json, "endtime", &end_time);
+
+        // Does time intersect with window?
+        if (time >= start_time && time <= end_time) {
+            zlist_append (matching_jobs, strdup (window_key));
+        }
+
+        Jput (window_json);
+    }
+
+    zlist_destroy (&window_keys);
+
+    return matching_jobs;
+}
+
 size_t resrc_available_at_time (resrc_t *resrc, int64_t time)
 {
     int64_t start_time;
     int64_t end_time;
 
-    const char *window_key = NULL;
+    const char *curr_job_id = NULL;
     const char *window_json_str = NULL;
     JSON window_json = NULL;
-    zlist_t *window_keys = NULL;
     size_t *size_ptr = NULL;
 
     size_t available = resrc->size;
@@ -126,35 +167,22 @@ size_t resrc_available_at_time (resrc_t *resrc, int64_t time)
 
     // Iterate over all allocation windows in resrc.  We iterate using
     // keys since we need the key to lookup the size in resrc->allocs.
-    window_keys = zhash_keys (resrc->twindow);
-    window_key = zlist_next (window_keys);
-    while (window_key) {
-        window_json_str = (const char*) zhash_lookup (resrc->twindow, window_key);
-        window_json = Jfromstr (window_json_str);
-        if (window_json == NULL) {
-            return -1;
+    zlist_t *curr_job_ids = resrc_curr_job_ids (resrc, time);
+    for (curr_job_id = zlist_first (curr_job_ids);
+         curr_job_id;
+         curr_job_id = zlist_next (curr_job_ids)) {
+        // Decrement available by allocation and/or reservation size
+        size_ptr = (size_t*)zhash_lookup (resrc->allocs, curr_job_id);
+        if (size_ptr) {
+            available -= *size_ptr;
         }
-        Jget_int64 (window_json, "starttime", &start_time);
-        Jget_int64 (window_json, "endtime", &end_time);
-
-        // Does time intersect with window?
-        if (time >= start_time && time <= end_time) {
-            // Decrement available by allocation and/or reservation size
-            size_ptr = (size_t*)zhash_lookup (resrc->allocs, window_key);
-            if (size_ptr) {
-                available -= *size_ptr;
-            }
-            size_ptr = (size_t*)zhash_lookup (resrc->reservtns, window_key);
-            if (size_ptr) {
-                available -= *size_ptr;
-            }
+        size_ptr = (size_t*)zhash_lookup (resrc->reservtns, curr_job_id);
+        if (size_ptr) {
+            available -= *size_ptr;
         }
-
-        Jput (window_json);
-        window_key = zlist_next (window_keys);
     }
 
-    zlist_destroy (&window_keys);
+    zlist_destroy (&curr_job_ids);
 
     return available;
 }

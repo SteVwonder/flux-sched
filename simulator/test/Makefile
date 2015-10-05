@@ -1,7 +1,7 @@
 include ../../Makefile.inc
 
-CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS)
-LIBS = $(FLUX_LIBS) $(RDL_LIBS) $(KVS_LIBS)
+CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS) $(RESRC_CFLAGS)
+LIBS = $(FLUX_LIBS) $(RDL_LIBS) $(KVS_LIBS) $(RESRC_LIBS)
 
 TESTSIM_INPUT_FILE := $(abs_topdir)/conf/hype-io.lua
 
