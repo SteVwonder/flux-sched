@@ -13,6 +13,7 @@
 
 typedef struct resrc resrc_t;
 typedef struct resrc_tree resrc_tree_t;
+typedef struct resources resources_t;
 
 typedef enum {
     RESOURCE_INVALID,
@@ -148,6 +149,11 @@ int resrc_reserve_resource (resrc_t *resrc, int64_t job_id,
 int resrc_release_resource (resrc_t *resrc, int64_t rel_job);
 
 /*
+ * De-allocate the resources handle
+ */
+void resrc_destroy_resources (resources_t *resrcs);
+
+/*
  * Get epoch time
  */
 static inline int64_t epochtime ()
@@ -155,5 +161,19 @@ static inline int64_t epochtime ()
     return (int64_t) time (NULL);
 }
 
+/*
+ * Find a resrc in a resource_t via the resrc's path
+ */
+
+resources_t *resrc_new_resources ();
+
+void resrc_populate_resources_from_tree (resrc_tree_t *resrc_tree,
+                                         resources_t *resrcs);
+
+resources_t *resrc_new_resources_from_tree (resrc_tree_t *resrc_tree);
+
+resrc_t *resrc_lookup (resources_t *resrcs, const char *resrc_path);
+
+void resrc_destroy_resources (resources_t *resrcs);
 
 #endif /* !FLUX_RESRC_H */

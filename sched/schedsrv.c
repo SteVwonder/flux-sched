@@ -61,6 +61,9 @@ static void res_event_cb (flux_t h, flux_msg_handler_t *w,
                           const flux_msg_t *msg, void *arg);
 static int job_status_cb (JSON jcb, void *arg, int errnum);
 
+static char *sim_kvs_path = "sim";
+static char *rdl_kvs_path;
+
 /******************************************************************************
  *                                                                            *
  *              Scheduler Framework Service Module Context                    *
@@ -633,6 +636,28 @@ static void trigger_cb (flux_t h,
 }
 
 /*
+static void sim_rdl_cb (flux_t h, flux_msg_handler_t *w,
+                              const flux_msg_t *msg, void *arg)
+{
+    ssrvctx_t *ctx = (ssrvctx_t *) arg;
+    JSON o = Jnew ();
+
+    Jadd_str (o, "rdl_kvs_path", rdl_kvs_path);
+
+    msg = flux_msg_create (FLUX_MSGTYPE_REQUEST);
+    flux_msg_set_topic (msg, "sched.rdl.reply");
+    flux_msg_set_payload_json (msg, Jtostr (o));
+    if (flux_send (h, msg, 0) < 0) {
+        rc = -1;
+    }
+
+    flux_log (h, LOG_DEBUG, "%s: sent a reply request", __FUNCTION__);
+    Jput (o);
+    return rc;
+}
+*/
+
+/*
  * Simulator Initialization Functions
  */
 
@@ -691,6 +716,14 @@ static int setup_sim (ssrvctx_t *ctx, char *sim_arg)
     ctx->sctx.res_queue = zlist_new ();
     ctx->sctx.jsc_queue = zlist_new ();
     ctx->sctx.timer_queue = zlist_new ();
+
+    // Put the rdl in the KVS
+    JSON o = Jnew_ar ();
+    resrc_tree_serialize (o, resrc_phys_tree (ctx->rctx.root_resrc));
+    kvs_mkdir (ctx->h, sim_kvs_path);
+    rdl_kvs_path = xasprintf ("%s.rdl", sim_kvs_path);
+    kvs_put (ctx->h, rdl_kvs_path, Jtostr (o));
+    Jput (o);
 
     rc = 0;
  done:

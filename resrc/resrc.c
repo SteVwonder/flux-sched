@@ -53,6 +53,9 @@ struct resrc {
     zhash_t *twindow;
 };
 
+struct resources {
+    zhash_t *hash;
+};
 
 /***************************************************************************
  *  API
@@ -91,6 +94,14 @@ size_t resrc_size (resrc_t *resrc)
     if (resrc)
         return resrc->size;
     return 0;
+}
+
+// TODO: don't expose zhash_t in API
+zhash_t *resrc_twindow (resrc_t *resrc)
+{
+    if (resrc)
+        return resrc->twindow;
+    return NULL;
 }
 
 // TODO: don't expose zlist_t in API
@@ -933,6 +944,65 @@ int resrc_release_resource (resrc_t *resrc, int64_t rel_job)
     free (id_ptr);
 ret:
     return rc;
+}
+
+
+/******
+ * Resources
+ ******/
+
+resources_t *resrc_new_resources ()
+{
+    resources_t *resrcs = NULL;
+
+    resrcs = (resources_t *) xzmalloc (sizeof (resources_t));
+    if (resrcs) {
+        resrcs->hash = zhash_new();
+    }
+
+    return resrcs;
+}
+
+void resrc_populate_resources_from_tree (resrc_tree_t *resrc_tree,
+                                              resources_t *resrcs)
+{
+    resrc_t *resrc = resrc_tree_resrc (resrc_tree);
+    char* resrc_path_str = resrc_path (resrc);
+    zhash_insert (resrcs->hash, resrc_path_str, resrc);
+
+    resrc_tree_list_t *child_list = resrc_tree_children (resrc_tree);
+    resrc_tree_t *curr_child;
+    for (curr_child = resrc_tree_list_first (child_list);
+         curr_child;
+         curr_child = resrc_tree_list_next (child_list)) {
+        resrc_populate_resources_from_tree (curr_child, resrcs);
+    }
+}
+
+resources_t *resrc_new_resources_from_tree (resrc_tree_t *resrc_tree)
+{
+    resources_t *output = resrc_new_resources ();
+
+    resrc_t *resrc = resrc_tree_resrc (resrc_tree);
+    zhash_insert (output->hash, "head", resrc);
+    resrc_populate_resources_from_tree (resrc_tree, output);
+
+    return output;
+}
+
+resrc_t *resrc_lookup (resources_t *resrcs, const char *resrc_path)
+{
+    if (resrcs && resrcs->hash)
+        return (zhash_lookup (resrcs->hash, resrc_path));
+    return NULL;
+}
+
+void resrc_destroy_resources (resources_t *resrcs)
+{
+    if (resrcs && resrcs->hash) {
+        zhash_destroy (&(resrcs->hash));
+        free (resrcs);
+    }
 }
 
 /*

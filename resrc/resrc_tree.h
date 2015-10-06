@@ -8,6 +8,7 @@
 #include "resrc.h"
 
 typedef struct resrc_tree_list resrc_tree_list_t;
+typedef struct resources resources_t;
 
 /***********************************************************************
  * Resource tree API
@@ -159,6 +160,7 @@ int resrc_tree_list_reserve (resrc_tree_list_t *rtl, int64_t job_id,
  * Release all the resources in a list of resource trees
  */
 int resrc_tree_list_release (resrc_tree_list_t *rtl, int64_t job_id);
+
 
 
 #endif /* !FLUX_RESRC_TREE_H */

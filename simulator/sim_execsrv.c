@@ -47,7 +47,8 @@ typedef struct {
     zlist_t *running_jobs;  // holds job_t *
     flux_t h;
     double prev_sim_time;
-    resrc_t *root_resrc;
+    resrc_tree_t *resrc_tree;
+    resources_t *resrcs;
 } ctx_t;
 
 static double determine_io_penalty (size_t job_bandwidth, size_t min_bandwidth);
@@ -66,7 +67,8 @@ static void freectx (void *arg)
         free_job (zlist_pop (ctx->running_jobs));
     zlist_destroy (&ctx->running_jobs);
 
-    resrc_tree_destroy (resrc_phys_tree (ctx->root_resrc), true);
+    resrc_tree_destroy (ctx->resrc_tree, true);
+    resrc_destroy_resources (ctx->resrcs);
 
     free (ctx);
 }
@@ -82,7 +84,7 @@ static ctx_t *getctx (flux_t h)
         ctx->queued_events = zlist_new ();
         ctx->running_jobs = zlist_new ();
         ctx->prev_sim_time = 0;
-        ctx->root_resrc = NULL;
+        ctx->resrc_tree = NULL;
         flux_aux_set (h, "simsrv", ctx, freectx);
     }
 
@@ -187,6 +189,34 @@ static int set_event_timer (ctx_t *ctx, char *mod_name, double timer_value)
     return 0;
 }
 
+static void release_job_tree_from_resrcs (resources_t *resrcs,
+                                          resrc_tree_t *job_tree,
+                                          job_t *job)
+{
+    resrc_t *job_resrc = resrc_tree_resrc (job_tree);
+    char* job_resrc_path = resrc_path (job_resrc);
+    resrc_t *resrc = resrc_lookup(resrcs, job_resrc_path);
+    resrc_release_resource (resrc, job->id);
+
+    resrc_tree_t *curr_child = NULL;
+    resrc_tree_list_t *child_list = resrc_tree_children (job_tree);
+    for (curr_child = resrc_tree_list_first (child_list);
+         curr_child;
+         curr_child = resrc_tree_list_next (child_list)) {
+        release_job_tree_from_resrcs (resrcs, curr_child, job);
+    }
+}
+
+static void release_job_from_resrcs (resources_t *resrcs, job_t *job)
+{
+    resrc_tree_t *curr_tree = NULL;
+    for (curr_tree = resrc_tree_list_first (job->resrc_trees);
+         curr_tree;
+         curr_tree = resrc_tree_list_next (job->resrc_trees)) {
+        release_job_tree_from_resrcs (resrcs, curr_tree, job);
+    }
+}
+
 // Update sched timer as necessary (to trigger an event in sched)
 // Also change the state of the job in the KVS
 static int complete_job (ctx_t *ctx, job_t *job, double completion_time)
@@ -199,6 +229,7 @@ static int complete_job (ctx_t *ctx, job_t *job, double completion_time)
     set_event_timer (ctx, "sched", ctx->sim_state->sim_time + .00001);
     kvsdir_put_double (job->kvs_dir, "complete_time", completion_time);
     kvsdir_put_double (job->kvs_dir, "io_time", job->io_time);
+    release_job_from_resrcs(ctx->resrcs, job);
 
     kvs_commit (h);
     free_job (job);
@@ -512,9 +543,60 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
     return 0;
 }
 
-static void add_job_to_resrc (resrc_t *root_resrc, job_t *job)
+// Walks over all resources in the job_tree and allocates them in
+// sim_execsrv's copy of the resources.  Returns 0 on success, -1 on
+// failure.
+static int add_job_tree_to_resrcs (ctx_t *ctx,
+                                    resrc_tree_t *job_tree,
+                                    job_t *job)
 {
-    
+    resrc_t *job_resrc = resrc_tree_resrc (job_tree);
+    char* job_resrc_path = resrc_path (job_resrc);
+    resrc_t *resrc = resrc_lookup(ctx->resrcs, job_resrc_path);
+    if (!resrc) {
+        flux_log (ctx->h, LOG_ERR, "%s: Failed to find resrc",
+                  __FUNCTION__);
+        return -1;
+    }
+    size_t alloc_size = resrc_size (job_resrc);
+    resrc_stage_resrc(resrc, alloc_size);
+    if (resrc_allocate_resource(resrc, job->id,
+                                ctx->sim_state->sim_time,
+                                job->walltime)) {
+        flux_log (ctx->h, LOG_ERR, "%s: Failed to alloc resrc",
+                  __FUNCTION__);
+        return -1;
+    }
+
+    // Recurse on all children
+    resrc_tree_t *curr_child = NULL;
+    resrc_tree_list_t *child_list = resrc_tree_children (job_tree);
+    for (curr_child = resrc_tree_list_first (child_list);
+         curr_child;
+         curr_child = resrc_tree_list_next (child_list)) {
+        if (add_job_tree_to_resrcs (ctx, curr_child, job) < 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+// Walks over all resources allocated to job and allocates them in
+// sim_execsrv's copy of the resources.  Returns 0 on success, -1 on
+// failure.
+static int add_job_to_resrcs (ctx_t *ctx, job_t *job)
+{
+    resrc_tree_t *curr_tree = NULL;
+    for (curr_tree = resrc_tree_list_first (job->resrc_trees);
+         curr_tree;
+         curr_tree = resrc_tree_list_next (job->resrc_trees)) {
+        if (add_job_tree_to_resrcs (ctx, curr_tree, job) < 0) {
+            return -1;
+        }
+    }
+
+    return 0;
 }
 
 // Take all of the scheduled job events that were queued up while we
@@ -536,25 +618,30 @@ static int handle_queued_events (ctx_t *ctx)
         if (kvs_get_dir (h, &kvs_dir, "lwj.%d", *jobid) < 0)
             err_exit ("kvs_get_dir (id=%d)", *jobid);
         job = pull_job_from_kvs (h, kvs_dir);
-        add_job_to_resrc (ctx->root_resrc, job);
+        if (add_job_to_resrcs (ctx, job) < 0) {
+            flux_log (h, LOG_ERR,
+                      "%s: failed to add job %d to sim_exec's resources",
+                      __FUNCTION__, *jobid);
+            return -1;
+        }
         if (update_job_state (ctx, *jobid, kvs_dir, J_STARTING, sim_time) < 0) {
             flux_log (h,
                       LOG_ERR,
-                      "failed to set job %d's state to starting",
-                      *jobid);
+                      "%s: failed to set job %d's state to starting",
+                      __FUNCTION__, *jobid);
             return -1;
         }
         if (update_job_state (ctx, *jobid, kvs_dir, J_RUNNING, sim_time) < 0) {
             flux_log (h,
                       LOG_ERR,
-                      "failed to set job %d's state to running",
-                      *jobid);
+                      "%s: failed to set job %d's state to running",
+                      __FUNCTION__, *jobid);
             return -1;
         }
         flux_log (h,
                   LOG_INFO,
-                  "job %d's state to starting then running",
-                  *jobid);
+                  "%s: job %d's state to starting then running",
+                  __FUNCTION__, *jobid);
         job->start_time = ctx->sim_state->sim_time;
         zlist_append (running_jobs, job);
     }
@@ -582,6 +669,33 @@ static void start_cb (flux_t h,
     }
 }
 
+// TODO: make this cleaner
+static const char *get_rdl_kvs_path (flux_t h)
+{
+    return "sim.rdl";
+}
+
+static void populate_rdl_from_kvs (ctx_t *ctx, const char *rdl_kvs_path)
+{
+    char *kvs_entry = NULL;
+    JSON rdl_json = NULL;
+
+    kvs_get (ctx->h, rdl_kvs_path, &kvs_entry);
+    rdl_json = Jfromstr (kvs_entry);
+
+    resrc_tree_list_t *tree_list = resrc_tree_list_deserialize (rdl_json);
+    if (resrc_tree_list_size (tree_list) > 1) {
+        flux_log (ctx->h, LOG_ERR,
+                  "%s: Found more than one tree in serialized kvs rdl",
+                  __FUNCTION__);
+    }
+    ctx->resrc_tree = resrc_tree_list_first (tree_list);
+    ctx->resrcs = resrc_new_resources_from_tree (ctx->resrc_tree);
+
+    resrc_tree_list_free (tree_list);
+    Jput (rdl_json);
+}
+
 // Handle trigger requests from the sim module ("sim_exec.trigger")
 static void trigger_cb (flux_t h,
                         flux_msg_handler_t *w,
@@ -606,10 +720,16 @@ static void trigger_cb (flux_t h,
               "received a trigger (sim_exec.trigger: %s",
               json_str);
 
+    // Check that we have a copy of the RDL
+    if (!ctx->resrc_tree || !ctx->resrcs) {
+        const char *rdl_kvs_path = get_rdl_kvs_path (h);
+        populate_rdl_from_kvs (ctx, rdl_kvs_path);
+    }
+
     // Handle the trigger
     ctx->sim_state = json_to_sim_state (o);
     handle_queued_events (ctx);
-    job_hash = determine_all_min_bandwidth (resrc_phys_tree (ctx->root_resrc),
+    job_hash = determine_all_min_bandwidth (ctx->resrc_tree,
                                             ctx->running_jobs,
                                             ctx->sim_state->sim_time);
     advance_time (ctx, job_hash);
@@ -647,6 +767,31 @@ static void run_cb (flux_t h,
     zlist_append (ctx->queued_events, jobid);
     flux_log (h, LOG_DEBUG, "queued the running of jobid %d", *jobid);
 }
+
+/*
+static void rdl_cb (flux_t h,
+                    flux_msg_handler_t *w,
+                    const flux_msg_t *msg,
+                    void *arg)
+{
+    const char *json_str = NULL;
+    JSON reply = NULL;
+    ctx_t *ctx = arg;
+
+    if (flux_msg_get_payload_json (msg, &json_str) < 0 || json_str == NULL
+        || !(reply = Jfromstr (json_str))) {
+        flux_log (h, LOG_ERR, "%s: bad reply message", __FUNCTION__);
+        Jput (reply);
+        return;
+    }
+
+    // De-serialize and get new info
+    ctx->resrc_tree = resrc_tree_deserialize (reply, NULL);
+    ctx->resrcs = resrc_tree_generate_resources_from_tree (ctx->resrc_tree);
+
+    Jput (reply);
+}
+*/
 
 static struct flux_msg_handler_spec htab[] = {
     {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
