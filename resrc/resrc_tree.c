@@ -55,6 +55,13 @@ resrc_t *resrc_tree_resrc (resrc_tree_t *resrc_tree)
     return NULL;
 }
 
+resrc_tree_t *resrc_tree_parent (resrc_tree_t *resrc_tree)
+{
+    if (resrc_tree)
+        return resrc_tree->parent;
+    return NULL;
+}
+
 size_t resrc_tree_num_children (resrc_tree_t *resrc_tree)
 {
     if (resrc_tree)
@@ -419,6 +426,34 @@ int resrc_tree_list_release (resrc_tree_list_t *rtl, int64_t job_id)
     }
 
     return rc;
+}
+
+void resrc_tree_list_print (resrc_tree_list_t *resrc_tree_list)
+{
+        resrc_tree_t *curr_tree;
+        for (curr_tree = resrc_tree_list_first (resrc_tree_list);
+             curr_tree;
+             curr_tree = resrc_tree_list_next (resrc_tree_list)) {
+            resrc_tree_print (curr_tree);
+        }
+}
+
+void resrc_populate_resources_from_tree_list (resrc_tree_list_t *resrc_tree_list,
+                                              resources_t *resrcs)
+{
+    resrc_tree_t *curr_tree;
+    for (curr_tree = resrc_tree_list_first (resrc_tree_list);
+         curr_tree;
+         curr_tree = resrc_tree_list_next (resrc_tree_list)) {
+        resrc_populate_resources_from_tree (curr_tree, resrcs);
+    }
+}
+
+resources_t *resrc_new_resources_from_tree_list (resrc_tree_list_t *resrc_tree_list)
+{
+    resources_t *output = resrc_new_resources ();
+    resrc_populate_resources_from_tree_list (resrc_tree_list, output);
+    return output;
 }
 
 /*

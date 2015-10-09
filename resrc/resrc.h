@@ -131,6 +131,8 @@ bool resrc_match_resource (resrc_t *resrc, resrc_t *sample, bool available);
  */
 void resrc_stage_resrc(resrc_t *resrc, size_t size);
 
+void resrc_unstage_resrc (resrc_t *resrc);
+
 /*
  * Allocate a resource to a job
  */

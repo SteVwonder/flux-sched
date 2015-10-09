@@ -828,6 +828,12 @@ void resrc_stage_resrc (resrc_t *resrc, size_t size)
         resrc->staged = size;
 }
 
+void resrc_unstage_resrc (resrc_t *resrc)
+{
+    if (resrc)
+        resrc->staged = 0;
+}
+
 /*
  * Allocate the staged size of a resource to the specified job_id and
  * change its state to allocated.
@@ -964,7 +970,7 @@ resources_t *resrc_new_resources ()
 }
 
 void resrc_populate_resources_from_tree (resrc_tree_t *resrc_tree,
-                                              resources_t *resrcs)
+                                         resources_t *resrcs)
 {
     resrc_t *resrc = resrc_tree_resrc (resrc_tree);
     char* resrc_path_str = resrc_path (resrc);

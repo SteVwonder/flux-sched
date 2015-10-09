@@ -19,6 +19,11 @@ typedef struct resources resources_t;
 resrc_t *resrc_tree_resrc (resrc_tree_t *resrc_tree);
 
 /*
+ * Return the parent of this tree
+ */
+resrc_tree_t *resrc_tree_parent (resrc_tree_t *resrc_tree);
+
+/*
  * Return the number of children in the resource tree
  */
 size_t resrc_tree_num_children (resrc_tree_t *resrc_tree);
@@ -161,6 +166,12 @@ int resrc_tree_list_reserve (resrc_tree_list_t *rtl, int64_t job_id,
  */
 int resrc_tree_list_release (resrc_tree_list_t *rtl, int64_t job_id);
 
+void resrc_tree_list_print (resrc_tree_list_t *resrc_tree_list);
+
+resources_t *resrc_new_resources_from_tree_list (resrc_tree_list_t *resrc_tree_list);
+
+void resrc_populate_resources_from_tree_list (resrc_tree_list_t *resrc_tree_list,
+                                              resources_t *resrcs);
 
 
 #endif /* !FLUX_RESRC_TREE_H */
