@@ -8,7 +8,7 @@
 #include "resrc.h"
 
 typedef struct resrc_tree_list resrc_tree_list_t;
-typedef struct resources resources_t;
+//typedef struct resources resources_t;
 
 /***********************************************************************
  * Resource tree API

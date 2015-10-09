@@ -1619,8 +1619,8 @@ bool job_compare_termination_fn (void *item1, void *item2)
     job1 = (job_t *)item1;
     job2 = (job_t *)item2;
 
-    term1 = job1->start_time + job1->time_limit;
-    term2 = job2->start_time + job2->time_limit;
+    term1 = job1->start_time + job1->walltime;
+    term2 = job2->start_time + job2->walltime;
 
     return (term1 > term2);
 }

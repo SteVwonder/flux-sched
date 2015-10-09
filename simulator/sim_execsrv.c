@@ -352,6 +352,17 @@ static int64_t get_max_bandwidth (resrc_tree_t *resrc_tree, int64_t time)
         return 0;
 }
 
+#if CZMQ_VERSION < CZMQ_MAKE_VERSION(3, 0, 1)
+// Compare two resources based on their alloc bandwidth
+bool compare_resrc_tree_alloc_bw (void *item1, void *item2)
+{
+    resrc_tree_t *r1 = (resrc_tree_t *)item1;
+    resrc_tree_t *r2 = (resrc_tree_t *)item2;
+    size_t bw1 = get_alloc_bandwidth (r1, global_curr_time);
+    size_t bw2 = get_alloc_bandwidth (r2, global_curr_time);
+    return bw1 > bw2;
+}
+#else
 // Compare two resources based on their alloc bandwidth
 // Return > 0 if res1 has more alloc bandwidth than res2
 //        < 0 if res1 has less alloc bandwidth than res2
@@ -364,6 +375,7 @@ int compare_resrc_tree_alloc_bw (void *item1, void *item2)
     size_t bw2 = get_alloc_bandwidth (r2, global_curr_time);
     return bw1 - bw2;
 }
+#endif
 
 static void sort_on_alloc_bw (zlist_t *self, int64_t time)
 {
