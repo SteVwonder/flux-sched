@@ -51,6 +51,8 @@ int64_t resrc_id (resrc_t *resrc);
  */
 size_t resrc_size (resrc_t *resrc);
 
+zhash_t *resrc_twindow (resrc_t *resrc);
+
 /*
  * Get a list of jobs with an allocation on this resource at time
  */
@@ -139,6 +141,8 @@ void resrc_unstage_resrc (resrc_t *resrc);
 int resrc_allocate_resource (resrc_t *resrc, int64_t job_id,
                              int64_t time_now, int64_t walltime);
 
+int resrc_allocate_resource_unchecked (resrc_t *resrc, int64_t job_id,
+                                       int64_t time_now, int64_t walltime);
 /*
  * Reserve a resource for a job
  */
@@ -149,6 +153,8 @@ int resrc_reserve_resource (resrc_t *resrc, int64_t job_id,
  * Remove a job allocation from a resource
  */
 int resrc_release_resource (resrc_t *resrc, int64_t rel_job);
+
+int resrc_deallocate_resource (resrc_t *resrc, int64_t job_id, int64_t size);
 
 /*
  * De-allocate the resources handle

@@ -48,6 +48,7 @@ typedef struct flux_resources {
     uint64_t ncores; /*!< num of cores requested by a job */
     uint64_t corespernode; /*!< num of cores per node requested by a job */
     uint64_t walltime; /*!< walltime requested by a job */
+    uint64_t io_rate;
 } flux_res_t;
 
 

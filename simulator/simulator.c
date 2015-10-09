@@ -216,12 +216,15 @@ job_t *pull_job_from_kvs (flux_t h, kvsdir_t *kvsdir)
         job->walltime = (double) walltime;
     }
 
+    job->execution_time = (job->walltime < job->execution_time) ? job->walltime : job->execution_time;
+
     if (jsc_query_jcb_obj (h, job->id, JSC_RDL, &jcb) != 0) {
         goto error;
     }
     if (!Jget_str (jcb, JSC_RDL, &resrc_str)) {
         goto error;
     }
+
     o = Jfromstr (resrc_str);
     if (!o) {
         goto error;

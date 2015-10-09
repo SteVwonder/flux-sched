@@ -131,7 +131,8 @@ static int update_job_state (ctx_t *ctx,
 static double calc_curr_progress (job_t *job, double sim_time)
 {
     double time_passed = sim_time - job->start_time + .000001;
-    double time_necessary = job->execution_time + job->io_time;
+    //double time_necessary = job->execution_time + job->io_time;
+    double time_necessary = job->execution_time;
     return time_passed / time_necessary;
 }
 
@@ -142,13 +143,16 @@ static double determine_next_termination (ctx_t *ctx,
                                           zhash_t *job_hash)
 {
     double next_termination = -1, curr_termination = -1;
+#if IO_TME
     double projected_future_io_time, job_io_penalty, computation_time_remaining;
     size_t *job_min_bandwidth;
+#endif
     zlist_t *running_jobs = ctx->running_jobs;
     job_t *job = zlist_first (running_jobs);
 
     while (job != NULL) {
         if (job->start_time <= curr_time) {
+#if IO_TIME
             curr_termination =
                 job->start_time + job->execution_time + job->io_time;
             computation_time_remaining =
@@ -161,9 +165,13 @@ static double determine_next_termination (ctx_t *ctx,
                 (computation_time_remaining)*job_io_penalty;
             curr_termination += projected_future_io_time;
             flux_log (ctx->h, LOG_DEBUG,
-                      "Job: %d, min_bw: %zu, io_penalty: %f, future_io_time: %f",
-                      job->id, *job_min_bandwidth, job_io_penalty,
+                      "Job: %d, req_bw: %"PRId64", min_bw: %zu, io_penalty: %f, future_io_time: %f",
+                      job->id, job->io_rate, *job_min_bandwidth, job_io_penalty,
                       projected_future_io_time);
+#else
+            curr_termination =
+                job->start_time + job->execution_time;
+#endif
             if (curr_termination < next_termination || next_termination < 0) {
                 next_termination = curr_termination;
             }
@@ -275,8 +283,24 @@ static int handle_completed_jobs (ctx_t *ctx)
     return 0;
 }
 
+static bool inline is_node (const char *t)
+{
+    return (strncmp (t, "node", 5) == 0)? true: false;
+}
+
+static bool inline is_core (const char *t)
+{
+    return (strncmp (t, "core", 5) == 0)? true: false;
+}
+
+static bool inline is_io (const char *t)
+{
+    return (strncmp (t, "io", 3) == 0)? true: false;
+}
+
 static resrc_t* get_io_resrc (resrc_tree_t *resrc_tree)
 {
+    resrc_tree_list_t *children;
     resrc_tree_t *child;
     resrc_t *child_resrc;
 
@@ -284,19 +308,18 @@ static resrc_t* get_io_resrc (resrc_tree_t *resrc_tree)
         return NULL;
     }
 
-    child = resrc_tree_list_last (resrc_tree_children (resrc_tree));
-    child_resrc = resrc_tree_resrc (child);
-    if (!strncmp ("io", resrc_type (child_resrc), 3)) {
-        return child_resrc;
-    }
-    for (child = resrc_tree_list_first (resrc_tree_children (resrc_tree));
+    children = resrc_tree_children (resrc_tree);
+    for (child = resrc_tree_list_first (children);
          child;
-         child = resrc_tree_list_next (resrc_tree_children (resrc_tree))) {
-        if (!strncmp ("io", resrc_type (child_resrc), 3)) {
+         child = resrc_tree_list_next (children)) {
+        child_resrc = resrc_tree_resrc (child);
+        if (is_io (resrc_type (child_resrc))) {
             return child_resrc;
         }
     }
 
+    printf ("%s: Failed for %s\n", __FUNCTION__,
+            resrc_path (resrc_tree_resrc (resrc_tree)));
     return NULL;
 }
 
@@ -370,9 +393,13 @@ static void determine_all_min_bandwidth_helper (resrc_tree_t *in_tree,
     // hash
     //
     // TODO: make this more general
+    size_t this_max_bandwidth = get_max_bandwidth (in_tree, time);
     const char *type = resrc_type (resrc_tree_resrc (in_tree));
-    if (!strncmp ("node", type, 5)) {
+    if (is_node (type)) {
         size_t this_alloc_bandwidth = get_alloc_bandwidth (in_tree, time);
+        if (this_alloc_bandwidth > this_max_bandwidth) {
+            this_alloc_bandwidth = this_max_bandwidth;
+        }
         zlist_t *job_id_list = resrc_curr_job_ids (resrc_tree_resrc (in_tree), time);
         char *job_id_str = NULL;
         for (job_id_str = zlist_first (job_id_list);
@@ -400,10 +427,12 @@ static void determine_all_min_bandwidth_helper (resrc_tree_t *in_tree,
          curr_child = resrc_tree_list_next (resrc_tree_children (in_tree))) {
 
         type = resrc_type (resrc_tree_resrc (curr_child));
-        child_alloc_bandwidth = get_alloc_bandwidth (curr_child, time);
-        if (child_alloc_bandwidth > 0) {
-            total_requested_bandwidth += child_alloc_bandwidth;
-            zlist_append (child_list, curr_child);
+        if (!is_io (type)) {
+            child_alloc_bandwidth = get_alloc_bandwidth (curr_child, time);
+            if (child_alloc_bandwidth > 0) {
+                total_requested_bandwidth += child_alloc_bandwidth;
+                zlist_append (child_list, curr_child);
+            }
         }
     }
 
@@ -411,7 +440,6 @@ static void determine_all_min_bandwidth_helper (resrc_tree_t *in_tree,
     sort_on_alloc_bw (child_list, time);
 
     size_t curr_average_bandwidth;
-    size_t this_max_bandwidth = get_max_bandwidth (in_tree, time);
     size_t total_used_bandwidth = (total_requested_bandwidth > this_max_bandwidth)
                                ? this_max_bandwidth
                                : total_requested_bandwidth;
@@ -543,6 +571,26 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
     return 0;
 }
 
+static int allocate_io (ctx_t *ctx, resrc_tree_t *resrc_tree, job_t *job)
+{
+    int rc = 0;
+    size_t size = job->io_rate;
+    int64_t starttime = ctx->sim_state->sim_time;
+    resrc_tree_t *curr_resrc_tree = NULL;
+    resrc_t *io_resrc = NULL;
+
+    for (curr_resrc_tree = resrc_tree;
+         curr_resrc_tree && !rc;
+         curr_resrc_tree = resrc_tree_parent (curr_resrc_tree)) {
+        io_resrc = get_io_resrc (curr_resrc_tree);
+        resrc_stage_resrc (io_resrc, size);
+        rc = resrc_allocate_resource_unchecked (io_resrc, job->id,
+                                                starttime, -1);
+    }
+
+    return rc;
+}
+
 // Walks over all resources in the job_tree and allocates them in
 // sim_execsrv's copy of the resources.  Returns 0 on success, -1 on
 // failure.
@@ -551,21 +599,31 @@ static int add_job_tree_to_resrcs (ctx_t *ctx,
                                     job_t *job)
 {
     resrc_t *job_resrc = resrc_tree_resrc (job_tree);
-    char* job_resrc_path = resrc_path (job_resrc);
-    resrc_t *resrc = resrc_lookup(ctx->resrcs, job_resrc_path);
+    char *job_resrc_path = resrc_path (job_resrc);
+    resrc_t *resrc = resrc_lookup (ctx->resrcs, job_resrc_path);
     if (!resrc) {
         flux_log (ctx->h, LOG_ERR, "%s: Failed to find resrc",
                   __FUNCTION__);
         return -1;
     }
-    size_t alloc_size = resrc_size (job_resrc);
-    resrc_stage_resrc(resrc, alloc_size);
-    if (resrc_allocate_resource(resrc, job->id,
-                                ctx->sim_state->sim_time,
-                                job->walltime)) {
-        flux_log (ctx->h, LOG_ERR, "%s: Failed to alloc resrc",
-                  __FUNCTION__);
-        return -1;
+    char *type = resrc_type (resrc);
+    if (is_io (type)) {
+        resrc_tree_t *phys_tree = resrc_phys_tree (resrc);
+        resrc_tree_t *parent = resrc_tree_parent (phys_tree);
+        if (parent)
+            allocate_io (ctx, parent, job);
+    } else if (is_node (type) || is_core (type)) {
+        // TODO: fix this to read in from job resrc's size
+        size_t alloc_size = 1;
+
+        resrc_stage_resrc (resrc, alloc_size);
+        if (resrc_allocate_resource (resrc, job->id,
+                                     ctx->sim_state->sim_time,
+                                     -1)) {
+            flux_log (ctx->h, LOG_ERR, "%s: Failed to alloc resrc",
+                      __FUNCTION__);
+            return -1;
+        }
     }
 
     // Recurse on all children

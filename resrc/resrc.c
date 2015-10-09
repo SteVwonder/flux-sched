@@ -844,12 +844,18 @@ int resrc_allocate_resource (resrc_t *resrc, int64_t job_id, int64_t time_now, i
     char *json_str = NULL;
     size_t *size_ptr;
     size_t available;
-    int64_t end_time = time_now + walltime;
+    int64_t end_time;
     int rc = -1;
     JSON j;
 
     if (time_now < 0) {
         time_now = epochtime ();
+    }
+
+    if (walltime < 0) {
+        end_time = TIME_MAX;
+    } else {
+        end_time = time_now + walltime;
     }
 
     if (resrc && job_id) {
@@ -859,19 +865,24 @@ int resrc_allocate_resource (resrc_t *resrc, int64_t job_id, int64_t time_now, i
         }
 
         id_ptr = xasprintf("%"PRId64"", job_id);
-        size_ptr = xzmalloc (sizeof (size_t));
-        *size_ptr = resrc->staged;
-        zhash_insert (resrc->allocs, id_ptr, size_ptr);
-        zhash_freefn (resrc->allocs, id_ptr, free);
-        resrc->staged = 0;
+        size_ptr = (size_t *) zhash_lookup (resrc->allocs, id_ptr);
+        if (size_ptr) {
+            *size_ptr += resrc->staged;
+        } else {
+            size_ptr = xzmalloc (sizeof (size_t));
+            *size_ptr = resrc->staged;
+            zhash_insert (resrc->allocs, id_ptr, size_ptr);
+            zhash_freefn (resrc->allocs, id_ptr, free);
 
-        /* add walltime */
-        j = Jnew ();
-        Jadd_int64 (j, "starttime", time_now);
-        Jadd_int64 (j, "endtime", end_time);
-        json_str = strdup (Jtostr (j));
-        zhash_insert (resrc->twindow, id_ptr, (void *)json_str);
-        Jput (j);
+            /* add walltime */
+            j = Jnew ();
+            Jadd_int64 (j, "starttime", time_now);
+            Jadd_int64 (j, "endtime", end_time);
+            json_str = strdup (Jtostr (j));
+            zhash_insert (resrc->twindow, id_ptr, (void *)json_str);
+            Jput (j);
+        }
+        resrc->staged = 0;
 
         rc = 0;
         free (id_ptr);
@@ -879,6 +890,77 @@ int resrc_allocate_resource (resrc_t *resrc, int64_t job_id, int64_t time_now, i
 ret:
     return rc;
 }
+
+// TODO: flag instead?
+int resrc_allocate_resource_unchecked (resrc_t *resrc, int64_t job_id,
+                                       int64_t time_now, int64_t walltime)
+{
+    char *id_ptr = NULL;
+    char *json_str = NULL;
+    size_t *size_ptr;
+    int64_t end_time;
+    int rc = -1;
+    JSON j;
+
+    if (time_now < 0) {
+        time_now = epochtime ();
+    }
+
+    if (walltime < 0) {
+        end_time = TIME_MAX;
+    } else {
+        end_time = time_now + walltime;
+    }
+
+    if (resrc && job_id) {
+        id_ptr = xasprintf("%"PRId64"", job_id);
+        size_ptr = (size_t *) zhash_lookup (resrc->allocs, id_ptr);
+        if (size_ptr) {
+            *size_ptr += resrc->staged;
+        } else {
+            size_ptr = xzmalloc (sizeof (size_t));
+            *size_ptr = resrc->staged;
+            zhash_insert (resrc->allocs, id_ptr, size_ptr);
+            zhash_freefn (resrc->allocs, id_ptr, free);
+
+            /* add walltime */
+            j = Jnew ();
+            Jadd_int64 (j, "starttime", time_now);
+            Jadd_int64 (j, "endtime", end_time);
+            json_str = strdup (Jtostr (j));
+            zhash_insert (resrc->twindow, id_ptr, (void *)json_str);
+            Jput (j);
+        }
+        resrc->staged = 0;
+
+        rc = 0;
+        free (id_ptr);
+    }
+
+    return rc;
+}
+
+// TODO: use release_resource & stage instead?
+int resrc_deallocate_resource (resrc_t *resrc, int64_t job_id, int64_t size)
+{
+    int rc = 0;
+    char *id_ptr = xasprintf ("%"PRId64"", job_id);
+    size_t *size_ptr = (size_t *) zhash_lookup (resrc->allocs, id_ptr);
+
+    if (size_ptr) {
+        *size_ptr -= size;
+        if (*size_ptr <= 0) {
+            resrc_release_resource (resrc, job_id);
+        }
+    } else {
+        rc = -1;
+    }
+
+    free (id_ptr);
+
+    return rc;
+}
+
 
 /*
  * Just like resrc_allocate_resource() above, but for a reservation
@@ -899,19 +981,24 @@ int resrc_reserve_resource (resrc_t *resrc, int64_t job_id,
             goto ret;
 
         id_ptr = xasprintf("%"PRId64"", job_id);
-        size_ptr = xzmalloc (sizeof (size_t));
-        *size_ptr = resrc->staged;
-        zhash_insert (resrc->reservtns, id_ptr, size_ptr);
-        zhash_freefn (resrc->reservtns, id_ptr, free);
-        resrc->staged = 0;
+        size_ptr = (size_t *) zhash_lookup (resrc->reservtns, id_ptr);
+        if (size_ptr) {
+            *size_ptr += resrc->staged;
+        } else {
+            size_ptr = xzmalloc (sizeof (size_t));
+            *size_ptr = resrc->staged;
+            zhash_insert (resrc->reservtns, id_ptr, size_ptr);
+            zhash_freefn (resrc->reservtns, id_ptr, free);
 
-        /* add walltime */
-        j = Jnew ();
-        Jadd_int64 (j, "starttime", time_now);
-        Jadd_int64 (j, "endtime", end_time);
-        json_str = strdup (Jtostr (j));
-        zhash_insert (resrc->twindow, id_ptr, (void *)json_str);
-        Jput (j);
+            /* add walltime */
+            j = Jnew ();
+            Jadd_int64 (j, "starttime", time_now);
+            Jadd_int64 (j, "endtime", end_time);
+            json_str = strdup (Jtostr (j));
+            zhash_insert (resrc->twindow, id_ptr, (void *)json_str);
+            Jput (j);
+        }
+        resrc->staged = 0;
 
         rc = 0;
         free (id_ptr);

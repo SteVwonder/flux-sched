@@ -85,7 +85,7 @@ resrc_tree_list_t *find_resources (flux_t h, resrc_t *resrc,
         goto ret;
     }
 
-    nfound = resrc_tree_search (resrc_tree_children (resrc_tree), resrc_reqst,
+    nfound = resrc_tree_search (resrc_tree_children(resrc_tree), resrc_reqst,
                                 found_trees, true);
 
     if (!nfound) {
@@ -188,6 +188,35 @@ static bool select_children (flux_t h, resrc_tree_list_t *found_children,
 }
 
 /*
+static size_t get_resrc_availability (resrc_t *resrc, resrc_t *sample)
+{
+    int64_t jstarttime, jendtime, jwalltime;
+
+    // retrieve first element of twindow from request sample
+    char *json_str_window = zhash_first (resrc_twindow (sample));
+    if (!json_str_window)
+        return 0;
+
+    // retrieve the start & end time information from request sample
+    JSON job_window = Jfromstr (json_str_window);
+    if (!(Jget_int64 (job_window, "starttime", &jstarttime))) {
+        Jput (job_window);
+        return 0;
+    }
+    if (!(Jget_int64 (job_window, "endtime", &jendtime))) {
+        if ((Jget_int64 (job_window, "walltime", &jwalltime))) {
+            jendtime = jstarttime + jwalltime;
+        } else {
+            Jput (job_window);
+            return 0;
+        }
+    }
+
+    return resrc_available_during_range(resrc, jstarttime, jendtime);
+}
+*/
+
+/*
  * select_resources() selects from the set of resource candidates the
  * best resources for the job.  If reserve is set, whatever resources
  * are selected will be reserved for the job and removed from
@@ -202,6 +231,7 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
                                      resrc_reqst_t *resrc_reqst)
 {
     int64_t reqrd;
+    //size_t available;
     resrc_t *resrc;
     resrc_tree_list_t *selected_res = NULL;
     resrc_tree_t *new_tree = NULL;
@@ -220,6 +250,8 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
         resrc = resrc_tree_resrc (rt);
         if (resrc_match_resource (resrc, resrc_reqst_resrc (resrc_reqst),
                                   true)) {
+
+            //available = get_resrc_availability(resrc, resrc_reqst_resrc(resrc_reqst));
             new_tree = resrc_tree_new (NULL, resrc);
             if (resrc_reqst_num_children (resrc_reqst)) {
                 if (resrc_tree_num_children (rt)) {
@@ -227,8 +259,6 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
                                          resrc_reqst_children (resrc_reqst),
                                          new_tree)) {
                         resrc_tree_list_append (selected_res, new_tree);
-                        flux_log (h, LOG_DEBUG, "selected1 %s",
-                                  resrc_name (resrc));
                         reqrd--;
                     } else {
                         resrc_tree_destroy (new_tree, false);
@@ -236,7 +266,6 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
                 }
             } else {
                 resrc_tree_list_append (selected_res, new_tree);
-                flux_log (h, LOG_DEBUG, "selected %s", resrc_name (resrc));
                 reqrd--;
             }
         }

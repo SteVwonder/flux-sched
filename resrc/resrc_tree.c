@@ -189,7 +189,7 @@ resrc_tree_t *resrc_tree_deserialize (JSON o, resrc_tree_t *parent)
     resrc_t *resrc = NULL;
     resrc_tree_t *resrc_tree = NULL;
 
-    resrc = resrc_new_from_json (o, NULL, false);
+    resrc = resrc_new_from_json (o, resrc_tree_resrc (parent), true);
     if (resrc) {
         resrc_tree = resrc_tree_new (parent, resrc);
 
