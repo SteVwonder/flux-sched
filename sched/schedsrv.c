@@ -887,6 +887,8 @@ static int req_tpexec_allocate (ssrvctx_t *ctx, flux_lwj_t *job)
 done:
     if (jcb)
         Jput (jcb);
+    if (ro)
+      Jput (ro);
     return rc;
 }
 
@@ -1643,7 +1645,7 @@ static int fcfs (ssrvctx_t *ctx) {
     return rc;
 }
 
-static int easy_backfill (ssrvctx_t *ctx)
+static int easy_backfill (ssrvctx_t *ctx, bool res_changed)
 {
     int rc = 0;
     flux_lwj_t *job = NULL, *reserved_job = NULL;
@@ -1656,6 +1658,11 @@ static int easy_backfill (ssrvctx_t *ctx)
     zlist_t *jobs = ctx->p_queue;
     int64_t time_now = (ctx->sctx.in_sim) ? (int64_t) ctx->sctx.sim_state->sim_time : -1;
 
+    if (!res_changed) {
+      job = (flux_lwj_t*) zlist_last (ctx->p_queue);
+      return schedule_job (ctx, job, time_now);
+    }
+
     // Build completion events for all currently running jobs
     int64_t *completion_time = NULL;
     zlist_t *completion_times = zlist_new ();
@@ -1667,6 +1674,7 @@ static int easy_backfill (ssrvctx_t *ctx)
         zlist_append (completion_times, completion_time);
         zlist_freefn (completion_times, completion_time, free, true);
     }
+    zlist_destroy (&running_jobs);
 
     // If the job has resources reserved then release them
     // TODO: make this method of reserving cleaner
@@ -1741,14 +1749,14 @@ static int easy_backfill (ssrvctx_t *ctx)
     return rc;
 }
 
-static int schedule_jobs (ssrvctx_t *ctx)
+static int schedule_jobs (ssrvctx_t *ctx, bool res_changed)
 {
     int rc = -1;
 
     if (ctx->backfill) {
-        rc = easy_backfill (ctx);
+      rc = easy_backfill (ctx, res_changed);
     } else {
-        rc = fcfs (ctx);
+      rc = fcfs (ctx);
     }
 
     return rc;
@@ -1799,7 +1807,7 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
         /* fall through for implicit event generation */
     case J_PENDING:
         VERIFY (trans (J_SCHEDREQ, J_SCHEDREQ, &(job->state)));
-        schedule_jobs (ctx); /* includes request allocate if successful */
+        schedule_jobs (ctx, false); /* includes request allocate if successful */
         break;
     case J_SCHEDREQ:
         /* A schedule reqeusted should not get an event. */
@@ -1836,12 +1844,14 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
             } else
                 flux_msg_destroy (msg);
         }
-        break;
     case J_CANCELLED:
-        VERIFY (trans (J_REAPED, newstate, &(job->state)));
+      //VERIFY (trans (J_REAPED, newstate, &(job->state)));
         zlist_remove (ctx->c_queue, job);
         if (job->req)
             free (job->req);
+        if (job->resrc_trees) {
+          resrc_tree_list_destroy (job->resrc_trees, false);
+        }
         free (job);
         break;
     case J_COMPLETE:
@@ -1872,7 +1882,7 @@ bad_transition:
 static void res_event_cb (flux_t h, flux_msg_handler_t *w,
                           const flux_msg_t *msg, void *arg)
 {
-    schedule_jobs (getctx ((flux_t)arg));
+  schedule_jobs (getctx ((flux_t)arg), true);
     return;
 }
 

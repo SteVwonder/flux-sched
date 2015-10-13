@@ -36,6 +36,7 @@
 #include "src/common/libutil/log.h"
 #include "src/common/libutil/shortjson.h"
 #include "simulator.h"
+#include "resrc_tree.h"
 
 sim_state_t *new_simstate ()
 {
@@ -136,6 +137,7 @@ sim_state_t *json_to_sim_state (JSON o)
 
 void free_job (job_t *job)
 {
+    resrc_tree_list_destroy (job->resrc_trees, true);
     kvsdir_destroy (job->kvs_dir);
     free (job);
 }
@@ -151,6 +153,8 @@ job_t *blank_job ()
     job->walltime = 0;
     job->nnodes = 0;
     job->ncpus = 0;
+    job->io_rate = 0;
+    job->resrc_trees = NULL;
     job->kvs_dir = NULL;
     return job;
 }
