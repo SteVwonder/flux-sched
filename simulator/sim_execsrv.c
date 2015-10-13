@@ -540,11 +540,15 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
     job_t *job = NULL;
     int num_jobs = -1;
     double next_event = -1, next_termination = -1, curr_progress = -1,
-        io_penalty = 0, io_percentage = 0;
+        io_penalty = 0, io_percentage = 0, io_time_delta = 0;
     size_t *job_min_bandwidth = NULL;
 
     zlist_t *running_jobs = ctx->running_jobs;
     double sim_time = ctx->sim_state->sim_time;
+
+    JSON job_stat = NULL;
+    JSON job_stats = NULL;
+    char stats_kvs_key[100];
 
     while (curr_time < sim_time) {
         num_jobs = zlist_size (running_jobs);
@@ -557,6 +561,7 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
         next_event = ((sim_time < next_termination) || (next_termination < 0))
                          ? sim_time
                          : next_termination;  // min of the two
+        job_stats = Jnew_ar ();
         while (num_jobs > 0) {
             job = zlist_pop (running_jobs);
             if (job->start_time <= curr_time) {
@@ -566,17 +571,34 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
                 io_penalty =
                     determine_io_penalty (job->io_rate, *job_min_bandwidth);
                 io_percentage = (io_penalty / (io_penalty + 1));
-                job->io_time += (next_event - curr_time) * io_percentage;
+                io_time_delta = (next_event - curr_time) * io_percentage;
+                job->io_time += io_time_delta;
                 curr_progress = calc_curr_progress (job, next_event);
+
+                // Add job stats to JSON array for logging to KVS
+                flux_log (ctx->h, LOG_DEBUG, "%s: job id: %d", __FUNCTION__, job->id);
+                job_stat = Jnew ();
+                Jadd_int (job_stat, "jobid", job->id);
+                Jadd_double (job_stat, "io_penalty", io_penalty);
+                Jadd_double (job_stat, "io_percent", io_percentage);
+                Jadd_double (job_stat, "new_io_time", job->io_time);
+                Jadd_double (job_stat, "delta_io_time", io_time_delta);
+                Jadd_double (job_stat, "curr_progress", curr_progress);
+                json_object_array_add(job_stats, job_stat);
+
                 if (curr_progress < 1)
                     zlist_append (running_jobs, job);
                 else
                     complete_job (ctx, job, next_event);
+
             } else {
                 zlist_append (running_jobs, job);
             }
             num_jobs--;
         }
+        sprintf (stats_kvs_key, "sim_exec.%d-%d", (int) curr_time, (int) next_event);
+        kvs_put_string (ctx->h, stats_kvs_key, Jtostr (job_stats));
+        Jput (job_stats);
         curr_time = next_event;
     }
 
@@ -764,6 +786,7 @@ static void populate_rdl_from_kvs (ctx_t *ctx, const char *rdl_kvs_path)
 
     resrc_tree_list_free (tree_list);
     Jput (rdl_json);
+    free (kvs_entry);
 }
 
 // Handle trigger requests from the sim module ("sim_exec.trigger")
