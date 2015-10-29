@@ -37,6 +37,18 @@
 #include "src/common/libutil/jsonutil.h"
 #include "src/common/libutil/xzmalloc.h"
 
+
+#include <flux/core.h>
+#include "src/common/libutil/log.h"
+
+typedef struct resrc_slack_info {
+    uint64_t owner;             /* 0 = self, -1 = parent, other = children */ 
+    uint64_t leasee;            /* 0 = self, -1 = parent, other = children */
+    int      asked;             /* 1 = yes, 0 = no */ 
+    int      to_be_returned;    /* 1 = yes, 0 = no */
+    int      returned;          /* 1 = yes, 0 = no */
+} resrc_slinfo_t;
+
 struct resrc {
     char *type;
     char *path;
@@ -54,13 +66,12 @@ struct resrc {
     zhash_t *allocs;
     zhash_t *reservtns;
     zhash_t *twindow;
+    resrc_slinfo_t slinfo;
 };
-
 
 /***************************************************************************
  *  API
  ***************************************************************************/
-
 char *resrc_type (resrc_t *resrc)
 {
     if (resrc)
@@ -87,6 +98,14 @@ int64_t resrc_id (resrc_t *resrc)
     if (resrc)
         return resrc->id;
     return -1;
+}
+
+void resrc_uuid (resrc_t *resrc, char *uuid)
+{
+    if (resrc)
+        uuid_unparse (resrc->uuid, uuid);
+    else
+        uuid = NULL;
 }
 
 size_t resrc_size (resrc_t *resrc)
@@ -391,6 +410,8 @@ char* resrc_state (resrc_t *resrc)
             str = "down";       break;
         case RESOURCE_UNKNOWN:
             str = "unknown";    break;
+        case RESOURCE_SLACKSUB:
+            str = "slacksub";   break;
         case RESOURCE_END:
         default:
             str = "n/a";        break;
@@ -399,11 +420,39 @@ char* resrc_state (resrc_t *resrc)
     return str;
 }
 
+int64_t resrc_owner (resrc_t *resrc)
+{
+    if (resrc)
+        return resrc->slinfo.owner;
+    return -1;
+}
+
+int64_t resrc_leasee (resrc_t *resrc)
+{
+    if (resrc)
+        return resrc->slinfo.leasee;
+    return -1;
+}
+
+void resrc_set_state (resrc_t *resrc, resource_state_t state) 
+{
+    resrc->state = state;
+    return;
+}
+
 resrc_tree_t *resrc_phys_tree (resrc_t *resrc)
 {
     if (resrc)
         return resrc->phys_tree;
     return NULL;
+}
+
+void resrc_set_owner (resrc_t *resrc, int64_t owner)
+{
+    if (resrc) {
+        resrc->slinfo.owner = owner;
+    }    
+    return;
 }
 
 resrc_t *resrc_new_resource (const char *type, const char *path,
@@ -431,6 +480,11 @@ resrc_t *resrc_new_resource (const char *type, const char *path,
         resrc->properties = zhash_new ();
         resrc->tags = zhash_new ();
         resrc->twindow = zhash_new ();
+        resrc->slinfo.owner = 0;
+        resrc->slinfo.leasee = 0;
+        resrc->slinfo.to_be_returned = 0;
+        resrc->slinfo.asked = 0;
+        resrc->slinfo.returned = 0;
     }
 
     return resrc;
@@ -457,6 +511,7 @@ resrc_t *resrc_copy_resource (resrc_t *resrc)
             new_resrc->twindow = zhash_dup (resrc->twindow);
         else
             new_resrc->twindow = NULL;
+        new_resrc->slinfo = resrc->slinfo;
     }
 
     return new_resrc;
@@ -488,6 +543,13 @@ void resrc_resource_destroy (void *object)
     }
 }
 
+void resrc_resource_destroy_special (void *object, zhash_t *hash_table)
+{
+    resrc_t *resrc = (resrc_t *) object;
+    zhash_delete (hash_table, resrc->uuid);
+    resrc_resource_destroy (resrc);    
+}
+
 resrc_t *resrc_new_from_json (JSON o, resrc_t *parent, bool physical)
 {
     JSON jhierarchyo = NULL; /* json hierarchy object */
@@ -497,6 +559,8 @@ resrc_t *resrc_new_from_json (JSON o, resrc_t *parent, bool physical)
     const char *path = NULL;
     const char *tmp = NULL;
     const char *type = NULL;
+    int64_t jduration;
+    const char *slack_str = NULL;
     int64_t id;
     int64_t ssize;
     json_object_iter iter;
@@ -510,6 +574,7 @@ resrc_t *resrc_new_from_json (JSON o, resrc_t *parent, bool physical)
     Jget_str (o, "name", &name);
     if (!(Jget_int64 (o, "id", &id)))
         id = 0;
+    
     if (Jget_str (o, "uuid", &tmp))
         uuid_parse (tmp, uuid);
     else
@@ -583,6 +648,26 @@ resrc_t *resrc_new_from_json (JSON o, resrc_t *parent, bool physical)
                 zhash_freefn (resrc->tags, iter.key, free);
                 Jput (jtago);
             }
+        }
+       
+        // TODO: Review this 
+        /* add twindow */
+        if (Jget_int64 (o, "walltime", &jduration)) {
+            JSON w = Jnew ();
+            Jadd_int64 (w, "walltime", jduration);
+            zhash_insert (resrc->twindow, "0", (void *)Jtostr (w));
+            Jput (w);
+        } else if ((!strncmp (type, "node", 5)) ||
+                   (!strncmp (type, "core", 5))) {
+            JSON j = Jnew ();
+            Jadd_int64 (j, "start", epochtime ());
+            Jadd_int64 (j, "end", TIME_MAX);
+            zhash_insert (resrc->twindow, "0", (void *)Jtostr (j));
+            Jput (j);
+        }
+
+        if (Jget_str (o, "slack", &slack_str)) {
+            zhash_update (resrc->twindow, "0", (void *)slack_str);
         }
     }
 ret:
@@ -822,7 +907,6 @@ int resrc_to_json (JSON o, resrc_t *resrc)
 {
     char uuid[40];
     int rc = -1;
-
     if (resrc) {
         Jadd_str (o, "type", resrc_type (resrc));
         Jadd_str (o, "path", resrc_path (resrc));
@@ -831,6 +915,11 @@ int resrc_to_json (JSON o, resrc_t *resrc)
         uuid_unparse (resrc->uuid, uuid);
         Jadd_str (o, "uuid", uuid);
         Jadd_int64 (o, "size", resrc_size (resrc));
+        //TODO: Review this
+        char *value = (char *) zhash_lookup (resrc->twindow, "slack");
+        if (value)
+            Jadd_str (o, "slack", value);
+
         rc = 0;
     }
     return rc;
@@ -922,7 +1011,6 @@ static bool resrc_walltime_match (resrc_t *resrc, resrc_t *sample,
         if (endtime > (lendtime - 10)) {
             return false;
         }
-    }
 
     /* find if it sample fits in time range */
     size_t available = resrc_available_during_range (resrc, starttime,
@@ -930,6 +1018,19 @@ static bool resrc_walltime_match (resrc_t *resrc, resrc_t *sample,
     rc = (available >= sample->size);
 
     return rc;
+}
+
+/*
+ * Ensure all the slack state information matches
+ */
+bool resrc_scons_match (resrc_t *resrc)
+{
+    if (resrc->slinfo.to_be_returned)
+        return false;
+    if (resrc->slinfo.returned)
+        return false;
+    
+    return true;   
 }
 
 bool resrc_match_resource (resrc_t *resrc, resrc_t *sample, bool available,
@@ -1199,6 +1300,94 @@ int resrc_release_allocation (resrc_t *resrc, int64_t rel_job)
 ret:
     return rc;
 }
+    
+int resrc_add_resources_from_json (resrc_t *resrc, zhash_t *hash_table, JSON o, bool new, int64_t owner)
+{
+    int rc = -1;
+    resrc_tree_list_t *deserialized_tree_list = resrc_tree_list_deserialize (o);
+    
+    if (new)
+        resrc->phys_tree = resrc_tree_new (NULL, resrc);
+
+    resrc_tree_t *resrc_tree = resrc_tree_list_first (deserialized_tree_list);
+
+    while (resrc_tree) {
+        rc = resrc_tree_add_child_special (resrc_phys_tree (resrc), resrc_tree, hash_table, owner);
+        if (rc < 0) {
+            return rc;
+        }
+        resrc_tree = resrc_tree_list_next (deserialized_tree_list);
+    }
+
+    return rc;
+}
+
+
+int resrc_mark_resource_slack (resrc_t *resrc, int64_t jobid, int64_t endtime)
+{
+    int rc = -1;
+    int64_t time_now = epochtime ();
+
+    if (!resrc) {
+        return rc;
+    }
+
+    JSON j = Jnew ();
+    Jadd_int64 (j, "starttime", time_now);
+    Jadd_int64 (j, "endtime", endtime);
+    zhash_insert (resrc->twindow, "slack", (void *)Jtostr (j));
+    Jput (j);
+
+    resrc->state = RESOURCE_IDLE;
+
+    rc = 0;
+    return rc;
+}
+
+int64_t resrc_find_slack_endtime (resrc_t *resrc)
+{
+    int64_t endtime = -1;
+    int64_t tmp_endtime = 0;
+    int64_t tmp_starttime = 0;
+    int64_t time_now = epochtime ();
+    JSON j = NULL;
+
+    if (!resrc)
+        return -1;
+
+    char *jstr = zhash_lookup (resrc->twindow, "slack");
+    if (jstr) {
+        j = Jfromstr (jstr);
+        if (!(Jget_int64 (j, "endtime", &tmp_endtime))) 
+            goto ret; 
+        if (time_now > (tmp_endtime - 2*SLACK_BUFFER_TIME))
+            goto ret;
+        endtime = tmp_endtime; 
+    } else {
+        jstr = zhash_lookup (resrc->twindow, "0");
+        if (!jstr)
+            goto ret;
+        j = Jfromstr (jstr);
+        if (!(Jget_int64 (j, "endtime", &tmp_endtime)))
+            goto ret;
+        jstr = zhash_first (resrc->twindow);
+        while (jstr) {
+            if (!(Jget_int64 (j, "starttime", &tmp_starttime)))
+                continue;
+            if ((tmp_starttime > time_now) && (tmp_starttime < endtime))
+                tmp_endtime = tmp_starttime;
+            zhash_next (resrc->twindow);
+        } 
+        if (time_now > (tmp_endtime - 2*SLACK_BUFFER_TIME))
+            goto ret;
+        endtime = tmp_endtime;
+    }   
+
+ret:
+    if (j) 
+        Jput (j);
+    return endtime;
+}
 
 /*
  * Remove all reservations of a resource.  Supports both now and
@@ -1242,6 +1431,271 @@ ret:
     return rc;
 }
 
+int resrc_mark_resources_slacksub_or_returned (zhash_t *hash_table, JSON o)
+{
+    int rc = -1;
+    json_object_iter iter;
+    
+    json_object_object_foreachC (o, iter) {    
+        resrc_t *resrc = zhash_lookup (hash_table, iter.key);
+        if (!resrc)
+            continue;
+        if (!(!(strncmp(resrc->type, "cores", 5)))) 
+            continue;
+        if (resrc->slinfo.owner == -1) {
+            resrc->state = RESOURCE_IDLE;
+            if (resrc->slinfo.to_be_returned)
+                resrc->slinfo.to_be_returned = 0;
+            resrc->slinfo.returned = 1;   
+        } else {
+            resrc->state = RESOURCE_SLACKSUB;
+            resrc->slinfo.leasee = -1;
+        }     
+    } 
+
+    rc = 0;
+    return rc;
+}
+
+int resrc_mark_resources_to_be_returned (zhash_t *hash_table, JSON ro_array)
+{
+    int rc = -1;
+    int len = 0;
+    int i;
+
+    if (!(Jget_ar_len (ro_array, &len)) || (len <= 0)) {
+        return rc;
+    }
+
+    for (i = 0; i < len; i++) {
+        const char *uuid;
+        Jget_ar_str (ro_array, i, &uuid);
+        resrc_t *resrc = zhash_lookup (hash_table, uuid);
+        if (!resrc) {
+            return rc;
+        }
+        resrc->slinfo.to_be_returned = 1;
+    }    
+
+    rc = 0;
+    return rc;
+}
+
+int resrc_mark_resources_asked (zhash_t *hash_table, JSON ro_array)
+{
+    int rc = -1;
+    int len = 0;
+    int i;
+
+    if (!(Jget_ar_len (ro_array, &len)) || (len <= 0)) {
+        return rc;
+    }
+
+    for (i = 0; i < len; i++) {
+        const char *uuid;
+        Jget_ar_str (ro_array, i, &uuid);
+        resrc_t *resrc = zhash_lookup (hash_table, uuid);
+        if (!resrc) {
+            return rc;
+        }
+        resrc->slinfo.asked = 1;
+    }    
+
+    rc = 0;
+    return rc;
+}
+
+int resrc_mark_resources_returned (zhash_t *hash_table, JSON ro_array)
+{
+    int rc = -1;
+    int len = 0;
+    int i;
+
+    if (!(Jget_ar_len (ro_array, &len)) || (len <= 0)) {
+        return rc;
+    }
+
+    for (i = 0; i < len; i++) {
+        const char *uuid;
+        Jget_ar_str (ro_array, i, &uuid);
+        resrc_t *resrc = zhash_lookup (hash_table, uuid);
+        if (!resrc) 
+            continue;            
+        if (resrc->slinfo.to_be_returned)
+            resrc->slinfo.to_be_returned = 0;
+        if (resrc->slinfo.asked)
+            resrc->slinfo.asked = 0;
+
+        if (resrc->slinfo.owner > 0) {
+            // remove slack entry in twindow
+            zhash_delete (resrc->twindow, "slack");
+            resrc->state = RESOURCE_ALLOCATED;
+        } else if (resrc->slinfo.owner < 0) {
+            // remove resrc from tree
+            resrc->state = RESOURCE_IDLE;
+            resrc->slinfo.returned = 1;
+        } else {
+            // should not reach
+            zhash_delete (resrc->twindow, "slack");
+            resrc->state = RESOURCE_IDLE;
+        }
+    }
+
+    rc = 0;
+    return rc;
+}
+
+int resrc_mark_resource_return_received (resrc_t *resrc, int64_t jobid)
+{
+    // TODO: allocs and stuff
+    int rc = -1;
+    if (!resrc)
+        goto ret;
+    if (!(!(strncmp (resrc->type, "cores", 5))))
+        goto ret;
+
+    char *jobid_str;
+    asprintf (&jobid_str, "%ld", jobid);
+    zhash_delete (resrc->twindow, jobid_str);
+    if (resrc->slinfo.asked)
+        resrc->slinfo.asked = 0;
+    resrc->slinfo.leasee = 0;
+    resrc->state = RESOURCE_IDLE;
+    rc = 0;
+ret:
+    return rc;
+}
+
+int resrc_retrieve_lease_information (zhash_t *hash_table, JSON ro_array, JSON out)
+{
+    int rc = -1;
+    int len = 0;
+    int i;
+    
+    if (!(Jget_ar_len (ro_array, &len)) || (len <= 0)) {
+        return rc;
+    }
+
+    for (i = 0; i < len; i++) {
+        /* find leasee */
+        const char *uuid;
+        Jget_ar_str (ro_array, i, &uuid);
+        resrc_t *resrc = zhash_lookup (hash_table, uuid);
+        if (!resrc) {
+            return rc;
+        }
+        char *jobid_str;
+        asprintf (&jobid_str, "%ld", resrc->slinfo.leasee);
+        
+        JSON oar = NULL;
+        if (!(Jget_obj (out, jobid_str, &oar))) {
+            /* new entry needed */
+            JSON new_ar = Jnew_ar ();
+            Jadd_ar_str (new_ar, uuid);
+            Jadd_obj (out, jobid_str, new_ar);
+            Jput (new_ar);
+        } else {
+            /* modify existing entry */
+            Jadd_ar_str (oar, uuid);
+        }
+    }
+
+    rc = 0;
+    return rc;
+}
+
+int resrc_collect_own_resources_unasked (zhash_t *hash_table, JSON ro_array)
+{
+    int rc = -1;
+
+    resrc_t *resrc = zhash_first (hash_table);
+    while (resrc) {
+        if ((resrc->state != RESOURCE_ALLOCATED) || (resrc->state != RESOURCE_SLACKSUB))
+            goto next;
+        if (resrc->slinfo.owner != 0)
+            goto next;
+        if (resrc->slinfo.leasee == 0)
+            goto next;
+        if (resrc->slinfo.asked != 0)
+            goto next;
+        Jadd_ar_str (ro_array, (const char*) resrc->uuid);
+next:
+        resrc = zhash_next (hash_table);
+    } 
+
+    rc = 0;
+    return rc;
+}
+
+bool resrc_check_return_ready (resrc_t *resrc, int64_t *jobid)
+{
+    int64_t endtime = 0;
+    char *json_str_window = NULL;
+    int64_t time_now = epochtime();
+    JSON j = NULL;
+    
+    if (!resrc)
+        return false;
+    if (!(!(strncmp(resrc->type, "cores", 5))));
+        return false;
+    if (resrc->slinfo.owner == 0)
+        return false;
+    if (resrc->state != RESOURCE_IDLE)
+        return false;
+    if (resrc->slinfo.returned == 1)
+        return false;
+    if (resrc->slinfo.leasee != 0)
+        return false;
+    json_str_window = zhash_lookup (resrc->twindow, "slack");    
+    if (!json_str_window)
+        return false;
+    j = Jfromstr (json_str_window);
+    if (!(Jget_int64 (j, "endtime", &endtime))) {
+        Jput (j);
+        return false;
+    }
+    if (time_now < (endtime - SLACK_BUFFER_TIME)) {
+        Jput (j);
+        return false;
+    }
+    *jobid = resrc->slinfo.owner;
+    Jput (j);
+    return true;
+}
+/* TODO: include any previously added resource by parent as well 
+ */
+bool resrc_check_slacksub_ready (resrc_t *resrc, int64_t *endtime)
+{
+    if (!resrc)
+        return false;
+    if (!(!(strncmp(resrc_type (resrc), "cores", 5))))
+        return false;
+    if (resrc->state != RESOURCE_IDLE)
+        return false;
+    if (resrc->slinfo.returned == 1)
+        return false;
+    if (resrc->slinfo.to_be_returned == 1)
+        if (resrc->slinfo.owner != -1) 
+            return false;
+    *endtime = resrc_find_slack_endtime(resrc);
+    if (*endtime == -1)
+        return false;
+    
+    return true;
+}
+
+bool resrc_check_resource_destroy_ready (resrc_t *resrc)
+{
+    if (!resrc)
+        return false;
+    if (resrc->slinfo.owner == 0)
+        return false;
+    if (resrc->state != RESOURCE_IDLE)
+        return false;
+    if (resrc->slinfo.returned != 1)
+        return false;
+    return true;
+}
 /*
  * vi: ts=4 sw=4 expandtab
  */

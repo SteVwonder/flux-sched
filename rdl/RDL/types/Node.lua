@@ -1,4 +1,3 @@
---/***************************************************************************\
 --  Copyright (c) 2014 Lawrence Livermore National Security, LLC.  Produced at
 --  the Lawrence Livermore National Laboratory (cf, AUTHORS, DISCLAIMER.LLNS).
 --  LLNL-CODE-658032 All rights reserved.
@@ -22,18 +21,15 @@
 --  See also:  http://www.gnu.org/licenses/
 --\***************************************************************************/
 
-uses "Socket"
+SimpleNode = Resource:subclass ('SimpleNode')
 
-Node = Resource:subclass ('Node')
-function Node:initialize (arg)
+function SimpleNode:initialize (arg)
     local basename = arg.name or arg.basename
-    assert (basename, "Required Node arg `name' missing")
-
+    assert (basename, "Required SimpleNode arg `name' missing")
     local id = arg.id
-    assert (arg.sockets, "Required Node arg `sockets' missing")
-    assert (type (arg.sockets) == "table",
-            "Node argument sockets must be a table of core ids")
+    assert (arg.ncores, "Required SimpleNode arg `ncores' missing")
 
+    -- Initialize with base Resource class initializer:
     Resource.initialize (self,
         { "node",
           id = id,
@@ -43,25 +39,23 @@ function Node:initialize (arg)
         }
     )
 
-	local num_sockets = 0
-	for _,_ in pairs (arg.sockets) do
-	   num_sockets = num_sockets + 1
-	end
-
-	local bw_per_socket = 0
-    if arg.tags ~= nil and arg.tags['max_bw'] ~= nil then
-	   bw_per_socket = arg.tags.max_bw / num_sockets
+    -- Add core0..core(n-1)
+    for i = 0, arg.ncores - 1 do
+        self:add_child (
+            Resource{ "core",
+                id = i,
+                properties = {},
+                tags = {}
+            }
+        )
     end
 
-    local sockid = 0
-    for _,c in pairs (arg.sockets) do
-        self:add_child (Socket{ id = sockid, cpus = c,
-                                memory = arg.memory_per_socket,
-                                tags = { ["max_bw"] = bw_per_socket, ["alloc_bw"] = 0 }})
-        sockid = sockid + 1
+    if arg.memory and tonumber (arg.memory) then
+        self:add_child (
+            Resource{ "memory", size = arg.memory }
+        )
     end
+
 end
 
-return Node
-
--- vi: ts=4 sw=4 expandtab
+return SimpleNode

@@ -48,6 +48,12 @@ wreck:add_options ({
         usage = "Force number of tasks per node" },
     { name = "nnodes", char = "N", arg = "N",
         usage = "Force number of nodes" },
+    { name = "is_hierarchical", char = "H", arg = "H",
+        usage = "Is hierarchical job" },
+    { name = "hfile", char = "F", arg = "F",
+        usage = "Hierarchical file" },
+    { name = "walltime", char = "T", arg = "T",
+        usage = "Walltime" },
 })
 
 if not wreck:parse_cmdline (arg) then

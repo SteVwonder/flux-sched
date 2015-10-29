@@ -76,7 +76,36 @@ int resrc_tree_add_child (resrc_tree_t *parent, resrc_tree_t *child)
         child->parent = parent;
         rc = resrc_tree_list_append (parent->children, child);
     }
+    return rc;
+}
 
+int resrc_tree_add_child_special (resrc_tree_t *parent, resrc_tree_t *child, zhash_t *hash_table, int64_t owner)
+{
+    int rc = -1;
+    if (parent) {
+        resrc_t *resrc = resrc_tree_resrc (child);
+        char uuid[40];
+        resrc_uuid (resrc, uuid);
+        resrc_t *resrc_exist = zhash_lookup (hash_table, uuid);
+        if (resrc_exist) {
+            if (resrc_tree_num_children (child)) {
+                resrc_tree_t *chtree = resrc_tree_list_first (child->children);
+                while (chtree) {
+                    rc = resrc_tree_add_child_special (resrc_phys_tree (resrc_exist), chtree, hash_table, owner);
+                    if (rc < 0) 
+                        goto ret;
+                    chtree = resrc_tree_list_next (child->children);
+                }
+            }
+            rc = 0;
+        } else {
+        child->parent = parent;
+        rc = resrc_tree_list_append (parent->children, child);   
+        resrc_tree_set_owner (child, owner);
+        resrc_hash_by_uuid (child, hash_table);
+        }
+    }
+ret:
     return rc;
 }
 
@@ -301,6 +330,18 @@ int resrc_tree_list_append (resrc_tree_list_t *rtl, resrc_tree_t *rt)
     return -1;
 }
 
+int resrc_tree_list_list_append (resrc_tree_list_t *rtl, resrc_tree_list_t *newrtl)
+{
+    if (rtl && rtl->list && newrtl && newrtl->list) {
+        resrc_tree_t *rt = resrc_tree_list_first (newrtl);
+        while (rt) {
+            resrc_tree_list_append (rtl, rt);
+            rt = resrc_tree_list_next (newrtl);
+        }
+    }
+    return -1;
+}
+
 resrc_tree_t *resrc_tree_list_first (resrc_tree_list_t *rtl)
 {
     if (rtl && rtl->list)
@@ -472,6 +513,136 @@ void resrc_tree_list_unstage_resources (resrc_tree_list_t *rtl)
             rt = resrc_tree_list_next (rtl);
         }
     }
+}
+
+resrc_t *resrc_find_by_id_tree (resrc_tree_t *resrc_tree, int64_t id)
+{
+    resrc_t *resrc;
+
+    if (resrc_tree) {
+        resrc = resrc_tree_resrc (resrc_tree);
+        if (resrc_id (resrc) == id)
+            return resrc;
+        if (resrc_tree_num_children (resrc_tree)) {
+            resrc_tree_t *child_tree = resrc_tree_list_first (resrc_tree->children);
+            while (child_tree) {
+                resrc = resrc_find_by_id_tree (child_tree, id);
+                if (resrc) 
+                    return resrc;
+                child_tree = resrc_tree_list_next (resrc_tree->children);
+            }    
+        }
+    }
+
+    return NULL;
+}
+
+resrc_t *resrc_tree_by_id_tree_list (resrc_tree_list_t *resrc_tree_list, int64_t id)
+{
+    resrc_t *resrc = NULL;
+    resrc_tree_t *resrc_tree = resrc_tree_list_first (resrc_tree_list);
+    while (resrc_tree) {
+        resrc = resrc_find_by_id_tree (resrc_tree, id);
+        if (resrc)
+            return resrc;
+        resrc_tree = resrc_tree_list_next (resrc_tree_list);
+    }
+
+    return NULL;
+
+}
+
+int resrc_hash_by_uuid (resrc_tree_t *resrc_tree, zhash_t *hash_table)
+{
+    int rc = 0;
+    resrc_t *resrc = NULL;
+    if (resrc_tree) {
+        resrc = resrc_tree_resrc (resrc_tree);
+        char uuid[40];
+        resrc_uuid (resrc, uuid);
+        //uuid_unparse (resrc->uuid, uuid);
+        zhash_insert (hash_table, uuid, (void *)resrc);
+        if (resrc_tree_num_children (resrc_tree)) {
+            resrc_tree_t *child_tree = resrc_tree_list_first (resrc_tree->children);
+            while (child_tree) {
+                resrc_hash_by_uuid (child_tree, hash_table);
+                child_tree = resrc_tree_list_next (resrc_tree->children);
+            }
+        } 
+
+    }
+
+    return rc;
+}
+
+int resrc_hash_by_uuid_list (resrc_tree_list_t *resrc_tree_list, zhash_t *hash_table)
+{
+    int rc = 0;
+    
+    resrc_tree_t *resrc_tree = resrc_tree_list_first (resrc_tree_list);
+    while (resrc_tree) {
+        resrc_hash_by_uuid (resrc_tree, hash_table);
+        resrc_tree = resrc_tree_list_next (resrc_tree_list);
+    }
+    return rc;
+}
+
+int resrc_tree_set_owner (resrc_tree_t *resrc_tree, int64_t owner)
+{
+    int rc = 0;
+    resrc_t *resrc = NULL;
+    if (resrc_tree) {
+        resrc = resrc_tree_resrc (resrc_tree);
+        resrc_set_owner (resrc, owner);
+        if (resrc_tree_num_children (resrc_tree)) {
+            resrc_tree_t *child_tree = resrc_tree_list_first (resrc_tree->children);
+            while (child_tree) {
+                resrc_tree_set_owner (resrc_tree, owner);
+                child_tree = resrc_tree_list_next (resrc_tree->children);
+            }
+        }
+    }
+    return rc;
+}
+
+
+int resrc_tree_destroy_returned_resources (resrc_tree_t *resrc_tree, zhash_t *hash_table)
+{
+    int rc = 0;
+    resrc_t *resrc = NULL;
+    if (resrc_tree) {
+        resrc = resrc_tree_resrc (resrc_tree);
+        if (resrc_tree_num_children (resrc_tree)) {
+            resrc_tree_t *child_tree = resrc_tree_list_first (resrc_tree->children);
+            while (child_tree) {
+                resrc_tree_destroy_returned_resources (child_tree, hash_table);
+                child_tree = resrc_tree_list_next (resrc_tree->children);
+            }
+            if (!(resrc_tree_num_children (resrc_tree))) {
+                // delete it
+                char uuid[40];
+                resrc_uuid (resrc, uuid);
+                zhash_delete (hash_table, uuid);
+                resrc_tree_destroy (resrc_tree, true);
+            }
+        } else {
+            if (!(strncmp (resrc_type (resrc), "cores", 5))) {
+                if (resrc_check_resource_destroy_ready (resrc)) {
+                    char uuid[40];
+                    resrc_uuid (resrc, uuid);
+                    zhash_delete (hash_table, uuid);
+                    resrc_tree_destroy (resrc_tree, true);
+                }
+            } else {
+                // should not be reached: non core resource with no children here
+                char uuid[40];
+                resrc_uuid (resrc, uuid);
+                zhash_delete (hash_table, uuid);
+                resrc_tree_destroy (resrc_tree, true);
+            } 
+        }
+    }
+    return rc;
 }
 
 /*

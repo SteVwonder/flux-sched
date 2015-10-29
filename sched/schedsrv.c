@@ -51,7 +51,7 @@
 #include "../simulator/simulator.h"
 
 #define DYNAMIC_SCHEDULING 0
-#define ENABLE_TIMER_EVENT 0
+#define ENABLE_TIMER_EVENT 1
 #define SCHED_UNIMPL -1
 
 #if ENABLE_TIMER_EVENT
@@ -60,6 +60,15 @@ static int timer_event_cb (flux_t h, void *arg);
 static void res_event_cb (flux_t h, flux_msg_handler_t *w,
                           const flux_msg_t *msg, void *arg);
 static int job_status_cb (JSON jcb, void *arg, int errnum);
+
+static int req_childbirth_cb (flux_t h, int typemask,
+                              zmsg_t **zmsg, void *arg);
+static int req_qstat_cb (flux_t h, int typemask,
+                         zmsg_t **zmsg, void *arg);
+static int req_addresources_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg);
+static int req_askresources_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg);
+static int req_cslack_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg);
+static int req_cslack_invalid_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg);
 
 /******************************************************************************
  *                                                                            *
@@ -113,7 +122,17 @@ typedef struct {
 typedef struct {
     resrc_t      *root_resrc;         /* resrc object pointing to the root */
     char         *root_uri;           /* Name of the root of the RDL hierachy */
+    zhash_t      *resrc_id_hash;      /* All root resources hashed by id */
 } rdlctx_t;
+
+typedef struct {
+    slack_state_t slack_state;        /* My slack state */
+    int64_t       resource_out_count; /* Number of resources given out */
+    int           wait_until_return;  /* If 1, surplus = 0 until all own resources are returned */
+    int64_t       jobid;
+    int           psize;
+    int           rsize;    
+} slackctx_t;
 
 /* TODO: Implement prioritization function for p_queue */
 typedef struct {
@@ -121,9 +140,14 @@ typedef struct {
     zlist_t      *p_queue;            /* Pending job priority queue */
     zlist_t      *r_queue;            /* Running job queue */
     zlist_t      *c_queue;            /* Complete/cancelled job queue */
+    zlist_t      *i_queue;            /* Instance queue with running jobs */
     rdlctx_t      rctx;               /* RDL context */
     simctx_t      sctx;               /* simulator context */
     sched_ops_t   sops;               /* scheduler plugin operations */
+    int64_t       my_job_id;          /* My job id in my parent */
+    int64_t       my_walltime;        /* My walltime */
+    char         *parent_uri;         /* My parent's URI */
+    slackctx_t    slctx;              /* Slack info context */ 
 } ssrvctx_t;
 
 /******************************************************************************
@@ -137,7 +161,9 @@ static void freectx (void *arg)
     zlist_destroy (&(ctx->p_queue));
     zlist_destroy (&(ctx->r_queue));
     zlist_destroy (&(ctx->c_queue));
+    zlist_destroy (&(ctx->i_queue));
     resrc_tree_destroy (resrc_phys_tree (ctx->rctx.root_resrc), true);
+    zhash_destroy (&(ctx->rctx.resrc_id_hash));
     free (ctx->rctx.root_uri);
     free (ctx->sctx.sim_state);
     if (ctx->sctx.res_queue)
@@ -162,6 +188,8 @@ static ssrvctx_t *getctx (flux_t h)
             oom ();
         if (!(ctx->c_queue = zlist_new ()))
             oom ();
+        if (!(ctx->i_queue = zlist_new ()))
+            oom ();
         ctx->rctx.root_resrc = NULL;
         ctx->rctx.root_uri = NULL;
         ctx->sctx.in_sim = false;
@@ -176,6 +204,16 @@ static ssrvctx_t *getctx (flux_t h)
         ctx->sops.allocate_resources = NULL;
         ctx->sops.reserve_resources = NULL;
         flux_aux_set (h, "schedsrv", ctx, freectx);
+ 
+        ctx->rctx.resrc_id_hash = zhash_new ();
+        ctx->slctx.slack_state = false;
+        ctx->slctx.jobid = 0;
+        ctx->slctx.psize = 0;
+        ctx->slctx.rsize = 0;
+        ctx->slctx.resource_out_count = 0; 
+        ctx->my_job_id = 0;
+        ctx->my_walltime = 0;
+        ctx->parent_uri = NULL;
     }
     return ctx;
 }
@@ -193,6 +231,26 @@ static inline void get_states (JSON jcb, int64_t *os, int64_t *ns)
     Jget_int64 (o, JSC_STATE_PAIR_NSTATE, ns);
 }
 
+static inline void get_walltime (flux_t h, flux_lwj_t *j, int64_t *walltime)
+{
+    kvsdir_t *dir;
+    *walltime = INT64_MAX;
+
+    if (kvs_get_dir (h, &dir, "lwj.%lu", j->lwj_id) < 0) {
+        flux_log (h, LOG_ERR, "Couldn't get job kvs dir. getting walltime failed");
+        return; 
+    }
+
+    if (kvsdir_get_int64 (dir, "walltime", walltime) < 0) {
+        flux_log (h, LOG_DEBUG, "No walltime set");
+        return;
+    }   
+
+    if (*walltime == 0) 
+        *walltime = INT64_MAX; 
+
+}
+
 static inline int fill_resource_req (flux_t h, flux_lwj_t *j)
 {
     int rc = -1;
@@ -201,6 +259,7 @@ static inline int fill_resource_req (flux_t h, flux_lwj_t *j)
     int64_t walltime = 0;
     JSON jcb = NULL;
     JSON o = NULL;
+    int64_t walltime = 0;
 
     if (!j) goto done;
 
@@ -223,6 +282,76 @@ static inline int fill_resource_req (flux_t h, flux_lwj_t *j)
 done:
     if (jcb)
         Jput (jcb);
+    return rc;
+}
+
+
+static inline int fill_hierarchical_req (flux_t h, flux_lwj_t *j)
+{
+
+    int rc = -1;
+    char *cmdline_str;
+    kvsdir_t *dir;
+    char *hfile = NULL;
+
+    if (kvs_get_dir (h, &dir, "lwj.%lu", j->lwj_id) < 0) {
+        flux_log (h, LOG_ERR, "Couldn't get job kvs dir. Hierarchy addons failed");
+        goto done;
+    }
+
+    kvsdir_get (dir, "cmdline", &cmdline_str);
+    flux_log (h, LOG_INFO, "cmdline from sched = %s\n", cmdline_str);
+
+
+    if (kvsdir_get_int (dir, "is_hierarchical", &(j->is_hierarchical)) < 0) {
+        flux_log (h, LOG_ERR, "Job is not hierarchical");
+        j->is_hierarchical = 0;
+        goto done;
+    }
+
+    if (kvsdir_get_string (dir, "hfile", &hfile) < 0) {
+        flux_log (h, LOG_ERR, "Will launch hierarchical job with no hfile");
+        hfile = NULL;
+    }
+
+    if (j->is_hierarchical) {
+
+        char jobid[22];
+        sprintf(jobid, "%lu", j->lwj_id);
+
+        JSON aro = Jnew_ar ();
+        Jadd_ar_str (aro, "/g/g92/surajpkn/flux-core/src/cmd/flux");
+        Jadd_ar_str (aro, "-M");
+        Jadd_ar_str (aro, "/g/g92/surajpkn/flux-sched/");
+        Jadd_ar_str (aro, "broker");
+        Jadd_ar_str (aro, "/g/g92/surajpkn/initial_program");
+        Jadd_ar_str (aro, "-j");
+        Jadd_ar_str (aro, jobid);
+        if (hfile) {
+            Jadd_ar_str (aro, "-f");
+            Jadd_ar_str (aro, hfile);
+        }
+
+        JSON o = Jnew ();
+        Jadd_obj (o, "cmdline", aro);
+        json_object_iter i;
+        json_object_object_foreachC (o, i);
+        {
+            flux_log (h, LOG_DEBUG, "New cmdline: %s:%s\n",i.key, json_object_to_json_string(i.val));
+            if (kvsdir_put (dir, i.key, json_object_to_json_string (i.val)) < 0) {
+                flux_log (h, LOG_ERR, "Could not modify cmdline of hierarchical job: %lu", j->lwj_id);
+            }
+        }
+        kvs_commit (h);
+        Jput (aro);
+
+    }
+
+    /* Set job slack state as false */
+    j->slackinfo = (flux_slackinfo_t*) malloc (sizeof(flux_slackinfo_t));
+    j->slackinfo->slack_state = false;
+
+done:
     return rc;
 }
 
@@ -299,9 +428,23 @@ static flux_lwj_t *q_find_job (ssrvctx_t *ctx, int64_t id)
     return NULL;
 }
 
+static flux_lwj_t* find_job_in_queue (zlist_t *queue, int64_t jobid)
+{
+    flux_lwj_t *job = NULL;
+    job = zlist_first (queue);
+    while (job) {
+        if (job->lwj_id == jobid) 
+            break;
+        job = zlist_next (queue);
+    }    
+    return job;
+}
+
 static int q_move_to_rqueue (ssrvctx_t *ctx, flux_lwj_t *j)
 {
     zlist_remove (ctx->p_queue, j);
+    if (j->is_hierarchical)
+        zlist_append (ctx->i_queue, j);
     return zlist_append (ctx->r_queue, j);
 }
 
@@ -311,6 +454,8 @@ static int q_move_to_cqueue (ssrvctx_t *ctx, flux_lwj_t *j)
     // FIXME: no transition from pending queue to cqueue yet
     //zlist_remove (ctx->p_queue, j);
     zlist_remove (ctx->r_queue, j);
+    if (j->is_hierarchical)
+        zlist_remove (ctx->i_queue, j);
     return zlist_append (ctx->c_queue, j);
 }
 
@@ -324,6 +469,402 @@ static flux_lwj_t *fetch_job_and_event (ssrvctx_t *ctx, JSON jcb,
     return q_find_job (ctx, jid);
 }
 
+void retrieve_stat_info (ssrvctx_t *ctx, int64_t *jobid, int *psize, int *rsize)
+{
+    flux_lwj_t *job;
+    *psize = zlist_size (ctx->p_queue);
+    *rsize = zlist_size (ctx->r_queue);
+    if (*psize) {
+        job = zlist_first (ctx->p_queue);
+        *jobid = job->lwj_id;
+    } else {
+        *jobid = 0;
+    }
+    return;
+}
+
+static void job_cslack_set (flux_lwj_t *job, JSON needobj)
+{
+    job->slackinfo->slack_state = CSLACK;
+    if (job->slackinfo->need) {
+        Jput (job->slackinfo->need);
+        job->slackinfo->need = NULL;
+    }
+    job->slackinfo->need = Jfromstr (Jtostr (needobj));
+}
+
+static void job_cslack_invalidate (flux_lwj_t *job)
+{
+    job->slackinfo->slack_state = INVALID;
+    if (job->slackinfo->need != NULL) {
+        Jput (job->slackinfo->need);
+        job->slackinfo->need = NULL;
+    }   
+}
+
+bool all_children_cslack (ssrvctx_t *ctx)
+{
+    bool rc = true;
+    flux_lwj_t *job = NULL;
+    zlist_t *jobs = ctx->i_queue;
+    job = zlist_first (jobs);
+    while (job) {
+        if (job->slackinfo->slack_state != CSLACK) {
+            rc = false;
+            break;
+        }
+        job = (flux_lwj_t*)zlist_next (jobs);
+    } 
+    return rc;
+}
+
+/******************************************************************************
+ *                                                                            *
+ *                            Scheduler Communication                         *
+ *                                                                            *
+ ******************************************************************************/
+static int send_childbirth_msg (ssrvctx_t *ctx)
+{
+    int rc = -1;
+    flux_t h = ctx->h;
+    flux_rpc_t *rpc;
+
+    if (ctx->my_job_id == 0) {
+        flux_log (h, LOG_INFO, "Instance does not have parent");
+        rc = 0;
+        goto ret;
+    }
+
+    const char *parent_uri = flux_attr_get (h, "parent-uri", NULL);
+    if (!parent_uri) {
+        flux_log (h, LOG_ERR, "Instance is child, but could not get parent URI");
+        goto ret;
+    }
+
+    const char *local_uri = flux_attr_get (h, "local-uri", NULL);
+    if (!local_uri) {
+        flux_log (h, LOG_ERR, "Could not get local URI");
+        goto ret;
+    }
+
+    flux_t parent_h = flux_open (parent_uri, 0);
+    if (parent_h == NULL) {
+        flux_log (h, LOG_ERR, "Could not open connection to parent");
+        goto ret;
+    }
+
+    JSON in = Jnew();
+    Jadd_str (in, "child-uri", local_uri);
+    Jadd_int64 (in, "jobid", ctx->my_job_id);
+    rpc = flux_rpc (parent_h, "sched.childbirth", Jtostr(in), FLUX_NODEID_ANY, 0);
+    if (!rpc) {
+        flux_log (h, LOG_ERR, "Could not send childbirth to parent");
+        goto ret; 
+    }
+
+    flux_close (parent_h);
+
+    Jput (in);
+
+    ctx->parent_uri = xstrdup (parent_uri);
+    
+    rc = 0;
+
+ret:
+    return rc;
+}
+
+
+static int accumulate_surplus_need (ssrvctx_t *ctx, int k_needs, JSON o, int *rcount)
+{
+    int rc = -1;
+    int jcount = 0;
+    flux_t h = ctx->h;
+    JSON j = Jnew ();
+    JSON r = Jnew ();
+
+    /* If all my resources are not yet with me, do not send surplus */
+    if (ctx->slctx.wait_until_return) {
+        *rcount = 0;
+        goto needs;
+    }
+
+    /* Calculate surplus */
+    resrc_t *resrc = zhash_first (ctx->rctx.resrc_id_hash);
+    while (resrc) {
+        int64_t endtime = 0;
+        if (!(resrc_check_slacksub_ready (resrc, &endtime)))    // ensures only cores are included. even the ones that I am not the owner of. 
+            goto next;
+        char ruuid[40];
+        resrc_uuid (resrc, ruuid);
+        Jadd_int64 (j, ruuid, endtime);
+        flux_log (h, LOG_ERR, "Accumulated resource with uuid: %s of type: %s and endtime:%ld", ruuid, resrc_type (resrc), endtime);
+        if (resrc_owner (resrc) == 0)
+            (*rcount)++;
+next:
+        resrc = zhash_next (ctx->rctx.resrc_id_hash);
+    }
+    flux_log (h, LOG_ERR, "final value of rcount: %d", *rcount);
+    
+    /* Add surplus to message */
+    Jadd_obj (o, "surplus", j);
+
+needs:   
+    if (k_needs == 0) 
+        goto ret;
+
+    /* Calculate needs */
+    flux_lwj_t *job = zlist_first (ctx->p_queue);
+    while ((job) && (jcount < K_NEEDS)) {
+        JSON child_core = Jnew ();
+        Jadd_str (child_core, "type", "core");
+        Jadd_int (child_core, "req_qty", job->req->corespernode);
+        Jadd_int64 (child_core, "walltime", job->req->walltime);
+
+        JSON req_res = Jnew ();
+        Jadd_str (req_res, "type", "node");
+        Jadd_int (req_res, "req_qty", job->req->nnodes);
+        Jadd_int (req_res, "walltime", job->req->walltime);
+
+        json_object_object_add (req_res, "req_child", child_core);
+
+        char *key;
+        asprintf (&key, "need%d", jcount);
+        Jadd_obj (r, key, req_res);
+       
+        Jput (child_core);
+        Jput (req_res);
+ 
+        jcount++;
+    
+        job = zlist_next (ctx->p_queue);
+    }
+    flux_log (h, LOG_DEBUG, "added %d needs from self", jcount);
+
+    /* add children needs */
+    job = zlist_first (ctx->i_queue);
+    while ((job) && (jcount < K_NEEDS)) {
+        
+        if (job->slackinfo->need == NULL)
+            continue;
+        
+        json_object_iter i;
+        json_object_object_foreachC (job->slackinfo->need, i) { 
+            char *key;
+            asprintf (&key, "need%d", jcount);
+            Jadd_obj (r, key, i.val);
+
+            jcount++;
+
+            if (jcount == K_NEEDS)
+                break;
+        }
+        flux_log (h, LOG_DEBUG, "needs increased to %d after adding a child's needs", jcount);
+        job = zlist_next (ctx->i_queue);
+    }
+    
+    flux_log (h, LOG_DEBUG, "total needs added: %d", jcount); 
+    
+    /* Add need to message */ 
+    if (jcount > 0) {
+        Jadd_obj (o, "need", r);
+    }
+
+#if 0
+    /* alternate way of collecting needs. First need from my job and each child job */
+    flux_lwj_t *job = zlist_first (ctx->p_queue);
+    if (job) {
+        JSON child_core = Jnew ();
+        Jadd_str (child_core, "type", "core");
+        Jadd_int (child_core, "req_qty", job->req->corespernode);
+        Jadd_int64 (child_core, "walltime", job->req->walltime);
+
+        JSON req_res = Jnew ();
+        Jadd_str (req_res, "type", "node");
+        Jadd_int (req_res, "req_qty", job->req->nnodes);
+        Jadd_int (req_res, "walltime", job->req->walltime);
+
+        json_object_object_add (req_res, "req_child", child_core);
+
+        char *key;
+        asprintf (&key, "need%d", jcount);
+        Jadd_obj (r, key, req_res);
+
+        Jput (child_core);
+        Jput (req_res);        
+        jcount++;
+    }
+    job = zlist_first (i_queue);
+    while (job) {
+        if (job->slackinfo->need == NULL)
+            continue;
+        json_object_iter i;
+        json_object_object_foreachC (job->slackinfo->need, i) {
+            char *key;
+            asprintf (&key, "need%ld", jcount);
+            Jadd_obj (r, key, i.val);
+
+            jcount++;
+            break;
+        }
+        job = zlist_next (i_queue);     
+    } 
+#endif 
+
+ret:
+    Jput (j);
+    Jput (r);
+    return rc;
+}
+
+/*
+ * Send complete slack status to another instance
+ */
+int send_cslack (ssrvctx_t *ctx, JSON jmsg)
+{
+    int rc = -1;
+    flux_t h = ctx->h;
+    JSON o = Jnew ();
+
+    Jadd_int64 (o, "jobid", ctx->my_job_id);
+    if (jmsg != NULL)
+        Jadd_obj (o, "msg", jmsg);
+    
+    flux_t parent_h = flux_open (ctx->parent_uri, 0);
+    if (!parent_h) {
+        flux_log (h, LOG_ERR, "couldn't open handle to parent");
+        return rc;
+    }
+    flux_rpc (parent_h, "sched.cslack", Jtostr (o), FLUX_NODEID_ANY, 0);
+    flux_close (parent_h);
+    Jput (o);
+
+    rc = 0;
+    return rc;
+}
+
+
+static int send_cslack_invalid (ssrvctx_t *ctx, JSON jmsg)
+{
+    int rc = -1;
+    flux_t remote_h;
+    JSON o = Jnew ();
+
+    Jadd_int64 (o, "jobid", ctx->my_job_id);
+    if (jmsg)
+        Jadd_obj (o, "ask", jmsg); 
+    
+    remote_h = flux_open (ctx->parent_uri, 0);
+    flux_rpc (remote_h, "sched.cslack_invalidate", Jtostr (o), FLUX_NODEID_ANY, 0);
+    flux_close (remote_h);
+    
+    Jput (o);
+    rc = 0;
+    return rc;
+}
+
+static int send_to_child (ssrvctx_t *ctx, flux_lwj_t *job, JSON jmsg, char *service)
+{
+    int rc = -1;
+    flux_t h = ctx->h;
+
+    JSON o = Jnew ();
+    Jadd_int64 (o, "jobid", -1);
+    Jadd_obj (o, "msg", jmsg);
+
+    flux_t child_h = flux_open (job->contact, 0);
+    if (!child_h) {
+        flux_log (h, LOG_ERR, "Couldn't open handle to child");
+        return rc;
+    }
+    flux_rpc (child_h, service, Jtostr (o), FLUX_NODEID_ANY, 0);
+    flux_close (child_h);
+
+    Jput (o);
+    rc = 0;
+    return rc;
+}
+
+static int send_to_parent (ssrvctx_t *ctx, JSON jmsg, char *service)
+{
+    int rc = -1;
+    flux_t h = ctx->h;
+
+    JSON o = Jnew ();
+    Jadd_int64 (o, "jobid", ctx->my_job_id);
+    Jadd_obj (o, "msg", jmsg);
+
+    flux_t parent_h = flux_open (ctx->parent_uri, 0);
+    if (!parent_h) {
+        flux_log (h, LOG_ERR, "Couldn't open connection to parent");
+        return rc;
+    }
+    flux_rpc (parent_h, service, Jtostr (o), FLUX_NODEID_ANY, 0);
+    flux_close (parent_h);
+
+    Jput (o);
+    rc = 0;
+    return rc;
+}
+
+static int return_idle_slack_resources (ssrvctx_t *ctx)
+{
+    
+    int rc = 0;
+    int64_t jobid = 0;
+    flux_t h = ctx->h;
+    zhash_t *jobid_uuid_hash = zhash_new ();
+
+    resrc_t *resrc = zhash_first (ctx->rctx.resrc_id_hash);
+    while (resrc) { 
+        if (resrc_check_return_ready (resrc, &jobid) == false)
+            goto next;
+        char *jobid_str = NULL; 
+        asprintf (&jobid_str, "%ld", jobid);
+        char *juidarry = zhash_lookup (jobid_uuid_hash, jobid_str);
+        if (juidarry) {
+            JSON j = Jfromstr (juidarry);
+            Jadd_ar_str (j, (const char *)zhash_cursor (ctx->rctx.resrc_id_hash));
+            zhash_update (jobid_uuid_hash, jobid_str, (void *)Jtostr (j));
+            Jput (j);
+        } else {
+            JSON j = Jnew_ar ();
+            Jadd_ar_str (j, (const char *)zhash_cursor (ctx->rctx.resrc_id_hash));
+            zhash_insert (jobid_uuid_hash, jobid_str, (void *)Jtostr(j)); 
+            Jput (j);
+        }
+next:
+        resrc = zhash_next (ctx->rctx.resrc_id_hash);
+    } 
+
+    /* Now we know what jobs have to get what resources back */
+    char *jstr = zhash_first (jobid_uuid_hash);
+    while (jstr) {
+        const char *jobid_str = zhash_cursor (jobid_uuid_hash);
+        JSON uo = Jfromstr (jstr);
+        jobid = strtol (jobid_str, NULL, 10);
+        if (jobid == -1) {
+            if ((send_to_parent (ctx, uo, "sched.addresources")) < 0) {
+                flux_log (h, LOG_ERR, "couldn't send resources back to parent");
+                goto nextone;
+            }
+        } else { 
+            flux_lwj_t *job = find_job_in_queue (ctx->i_queue, jobid);
+            if (!job) {
+                flux_log (h, LOG_ERR, "job in resrc not found in i_queue");
+                goto nextone;
+            }
+            send_to_child (ctx, job, uo, "sched.addresources");
+        }
+        resrc_mark_resources_returned (ctx->rctx.resrc_id_hash, uo);
+nextone:
+        jstr = zhash_next (jobid_uuid_hash);
+    }
+
+    resrc_tree_destroy_returned_resources (resrc_phys_tree(ctx->rctx.root_resrc), ctx->rctx.resrc_id_hash);
+
+    return rc;
+}
 
 /******************************************************************************
  *                                                                            *
@@ -411,10 +952,83 @@ static void setup_rdl_lua (flux_t h)
     flux_log (h, LOG_DEBUG, "LUA_CPATH %s", getenv ("LUA_CPATH"));
 }
 
+static int retrieve_instance_jobid (ssrvctx_t *ctx, int argc, char **argv)
+{
+    int i;
+    int rc = 0;
+    char *jobid_str = NULL;
+
+    for (i = 0; i < argc; i++) {
+        if (!strncmp ("jobid=", argv[i], sizeof ("jobid")))
+            jobid_str = xstrdup (strstr (argv[i], "=") + 1);
+    }
+
+    if (jobid_str != NULL)
+        ctx->my_job_id = strtol (jobid_str, NULL, 10);
+
+    return rc;
+}
+
+static void print_rdl (ssrvctx_t *ctx)
+{
+    //resrc_print_resource (ctx->rctx.root_resrc);
+    //resrc_tree_print (resrc_phys_tree (ctx->rctx.root_resrc));
+}
+
+static int load_rdl_from_parent_kvs (ssrvctx_t *ctx) 
+{
+    int rc = -1;
+    flux_t h = ctx->h;
+    char *rdlstr;
+    kvsdir_t *dir;
+    
+    flux_t parent_h = flux_open (ctx->parent_uri, 0);
+    if (!parent_h) {
+        flux_log (h, LOG_ERR, "Could not open connection to parent");
+        goto ret;
+    }
+
+    if (kvs_get_dir (parent_h, &dir, "lwj.%lu", ctx->my_job_id) < 0) {
+        flux_log (h, LOG_ERR, "Couldn't get job kvs dir. Hierarchy addons failed");
+        goto ret;
+    }        
+
+    if (kvsdir_get_string (dir, "rdl", &rdlstr) < 0) {
+        flux_log (h, LOG_ERR, "Couldn't get rdl from parent kvs: %s", strerror (errno));
+        goto ret;
+    }
+
+    if (kvsdir_get_int64 (dir, "walltime", &ctx->my_walltime) < 0) {
+        flux_log (h, LOG_ERR, "Couldn't get rdl from parent kvs: %s", strerror (errno));
+        ctx->my_walltime = INT64_MAX;
+    }
+
+    flux_close (parent_h);
+
+    /* deserialize rdlstring and store in ctx.rctx*/
+    JSON ro = Jfromstr (rdlstr);
+    uuid_t uuid;
+    uuid_clear (uuid);
+
+    ctx->rctx.root_resrc = resrc_new_resource ("cluster", "stand-in-for_head", 0, uuid, 1);
+    resrc_add_resources_from_json (ctx->rctx.root_resrc, ctx->rctx.resrc_id_hash, ro, true, 0);
+    //resrc_hash_by_uuid (resrc_phys_tree (ctx->rctx.root_resrc), ctx->rctx.resrc_id_hash);
+
+    rc = 0;
+
+ret:
+    return rc;
+}
+
 static int load_resources (ssrvctx_t *ctx, char *path, char *uri)
 {
     int rc = -1;
 
+    if (ctx->my_job_id !=0) {
+        rc = load_rdl_from_parent_kvs (ctx);
+        return rc;
+    }
+    
     setup_rdl_lua (ctx->h);
     if (path) {
         if (uri)
@@ -461,6 +1075,7 @@ static int load_resources (ssrvctx_t *ctx, char *path, char *uri)
         flux_log (ctx->h, LOG_INFO, "loaded resrc using hwloc (status %d)", rc);
     }
 
+    resrc_hash_by_uuid (resrc_phys_tree (ctx->rctx.root_resrc), ctx->rctx.resrc_id_hash);
     return rc;
 }
 
@@ -699,7 +1314,6 @@ static int reg_sim_events (ssrvctx_t *ctx)
     }
 
     send_alive_request (ctx->h, "sched");
-
     rc = 0;
 done:
     return rc;
@@ -790,6 +1404,84 @@ done:
     return rc;
 }
 
+/*
+ * Register request/responses
+ */
+static int inline reg_requests (ssrvctx_t *ctx)
+{
+    int rc = 0;
+    flux_t h = ctx->h;
+
+    if (flux_msghandler_add (h, FLUX_MSGTYPE_REQUEST, "sched.childbirth",
+                             (FluxMsgHandler)req_childbirth_cb, (void *)h) < 0) {
+        flux_log (h, LOG_ERR,
+                  "error registering childbirth request handler: %s",
+                  strerror (errno));
+
+        rc = -1;
+        goto done;
+    }
+
+    if (flux_msghandler_add (h, FLUX_MSGTYPE_REQUEST, "sched.qstat",
+                             (FluxMsgHandler)req_qstat_cb, (void *)h) < 0) {
+
+        flux_log (h, LOG_ERR,
+                  "error registering qstat request handler: %s",
+                  strerror (errno));
+
+        rc = -1;
+        goto done;
+    }
+
+    if (flux_msghandler_add (h, FLUX_MSGTYPE_REQUEST, "sched.cslack",
+                             (FluxMsgHandler)req_cslack_cb, (void *)h) < 0) {
+
+        flux_log (h, LOG_ERR,
+                  "error registering cslack request handler: %s",
+                  strerror (errno));
+
+        rc = -1;
+        goto done;
+    }
+
+    if (flux_msghandler_add (h, FLUX_MSGTYPE_REQUEST, "sched.cslack_invalid",
+                             (FluxMsgHandler)req_cslack_invalid_cb, (void *)h) < 0) {
+
+        flux_log (h, LOG_ERR,
+                  "error registering cslack_invalid request handler: %s",
+                  strerror (errno));
+
+        rc = -1;
+        goto done;
+    }
+
+    if (flux_msghandler_add (h, FLUX_MSGTYPE_REQUEST, "sched.addresources",
+                             (FluxMsgHandler)req_addresources_cb, (void *)h) < 0) {
+
+        flux_log (h, LOG_ERR,
+                  "error registering addresources request handler: %s",
+                  strerror (errno));
+
+        rc = -1;
+        goto done;
+    }
+
+    if (flux_msghandler_add (h, FLUX_MSGTYPE_REQUEST, "sched.askresources",
+                             (FluxMsgHandler)req_askresources_cb, (void *)h) < 0) {
+
+        flux_log (h, LOG_ERR,
+                  "error registering askresources request handler: %s",
+                  strerror (errno));
+
+        rc = -1;
+        goto done;
+    }
+
+
+
+done:
+    return rc;
+}
 
 /********************************************************************************
  *                                                                              *
@@ -878,13 +1570,42 @@ done:
 }
 
 #if DYNAMIC_SCHEDULING
-static int req_tpexec_grow (flux_t h, flux_lwj_t *job)
+static int req_tpexec_grow (flux_t h, flux_lwj_t *job, resrc_tree_list_t *resrc_tree_list)
 {
     /* TODO: NOT IMPLEMENTED */
     /* This runtime grow service will grow the resource set of the job.
        The special non-elastic case will be to grow the resource from
        zero to the selected RDL
     */
+
+    /* Add resources 
+     * 1. take each resrc_tree from resrc_tree_list. 
+     * 2. Compare that with each of job's tree_list. 
+     * 3. If there is a match, then do the add child special
+     * 4. Otherwise, append it to the list */
+    resrc_tree_t *resrc_tree = zlist_first (resrc_tree_list);
+    while (resrc_tree) {
+        resrc_t *resrc = resrc_tree_resrc (resrc_tree);
+        resrc_tree_t *job_resrc_tree = zlist_first (job->resrc_trees);
+        while (job_resrc_tree) {
+            resrc_t *job_resrc = resrc_tree_resrc (resrc_tree);
+            char uuid[40] = {0}, juuid[40] = {0};    
+            resrc_uuid (resrc, uuid);
+            resrc_uuid (resrc, juuid);
+            if (!(strcmp (uuid, juuid))) {
+                // add children   
+                resrc_tree_add_child_special (job_resrc_tree, resrc_tree);
+                goto next;
+            }
+            zlist_next (job_resrc_tree);
+        }
+        resrc_tree_list_append (job->resrc_trees, resrc_tree);
+next:
+        zlist_next (resrc_tree_list);
+    }
+     
+
+
     return SCHED_UNIMPL;
 }
 
@@ -1059,6 +1780,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
             }
         }
     }
+
     rc = 0;
 done:
     if (resrc_reqst)
@@ -1072,6 +1794,7 @@ done:
 static int schedule_jobs (ssrvctx_t *ctx)
 {
     int rc = 0;
+    int c = 0;
     flux_lwj_t *job = NULL;
     /* Prioritizing the job queue is left to an external agent.  In
      * this way, the scheduler's activities are pared down to just
@@ -1089,11 +1812,26 @@ static int schedule_jobs (ssrvctx_t *ctx)
     while (!rc && job) {
         if (job->state == J_SCHEDREQ) {
             rc = schedule_job (ctx, job, starttime);
+            if (!rc)
+                c++;
         }
         job = (flux_lwj_t*)zlist_next (jobs);
     }
 
-    return rc;
+    return c;
+}
+
+static int dynamic_action (ssrvctx_t *ctx)
+{
+    int sc = 0;
+
+    /* schedule own jobs */
+    sc = schedule_jobs (ctx);
+
+    /* try to schedule needs */
+        
+
+    return sc;
 }
 
 
@@ -1138,10 +1876,15 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
         /* fall through for implicit event generation */
     case J_SUBMITTED:
         VERIFY (trans (J_PENDING, J_PENDING, &(job->state)));
+        fill_hierarchical_req (h, job);
         /* fall through for implicit event generation */
     case J_PENDING:
+        flux_log (h, LOG_DEBUG, "Job going from submitted to pending");
         VERIFY (trans (J_SCHEDREQ, J_SCHEDREQ, &(job->state)));
+        //set_slack_state (ctx, false);
         schedule_jobs (ctx); /* includes request allocate if successful */
+        //if (!ctx->resource_out_count)
+        //    set_slack_state (ctx, true);
         break;
     case J_SCHEDREQ:
         /* A schedule reqeusted should not get an event. */
@@ -1216,15 +1959,134 @@ bad_transition:
 static void res_event_cb (flux_t h, flux_msg_handler_t *w,
                           const flux_msg_t *msg, void *arg)
 {
+    ssrvctx_t *ctx = getctx (h);
+ 
+    JSON ao = Jnew_ar (); 
+    JSON jao = Jnew ();
+    resrc_collect_own_resources_unasked (ctx->rctx.resrc_id_hash, ao);  // uuid_array only
+    resrc_retrieve_lease_information (ctx->rctx.resrc_id_hash, ao, jao); // jobid : uuid_array, jobid : uuid_array
+
+    /* If in cslack, send invalid to parent and ask resources back if any */
+    if (ctx->slctx.slack_state == CSLACK) {
+        JSON pao = NULL;
+        if (Jget_obj (jao, "-1", &pao)) {
+            send_cslack_invalid (ctx, pao);
+            resrc_mark_resources_asked (ctx->rctx.resrc_id_hash, pao);
+        } else {
+            send_cslack_invalid (ctx, NULL);
+        }
+    } 
+
+    /* ask resources if any have been leased to children, i.key is string, i.val is json array */
+    json_object_iter i;
+    json_object_object_foreachC (jao, i) {
+
+        flux_log (h, LOG_DEBUG, "Dealing with resource from %s with %s", i.key, Jtostr (i.val)); 
+
+        /* ask parent only if not already asked due to cslack state */
+        if ((!(strcmp (i.key, "-1"))) && (ctx->slctx.slack_state != CSLACK)) {
+            send_to_parent (ctx, i.val, "askresources");
+            resrc_mark_resources_asked (ctx->rctx.resrc_id_hash, i.val);
+            continue;
+        }
+
+        int64_t jobid = strtol (i.key, NULL, 10);
+        flux_lwj_t *job = find_job_in_queue (ctx->i_queue, jobid);
+        if (!job) {
+            flux_log (h, LOG_ERR, "FATAL resource owner does not exist");
+            continue;
+        } 
+
+        if (send_to_child (ctx, job, i.val, "askresources") < 0) {
+            flux_log (h, LOG_ERR, "Could not send askresources to %ld", jobid);
+            continue;
+        }
+
+        resrc_mark_resources_asked  (ctx->rctx.resrc_id_hash, i.val);
+        flux_log (h, LOG_DEBUG, "resources asked to job : %ld", jobid);
+    }         
+ 
+    /* change slack state */
+    ctx->slctx.slack_state = INVALID;
+    if (ctx->slctx.resource_out_count > 0) 
+        ctx->slctx.wait_until_return = 1;
+     
     schedule_jobs (getctx ((flux_t)arg));
+
+    Jput (ao);
+    Jput (jao);
     return;
 }
 
 #if ENABLE_TIMER_EVENT
 static int timer_event_cb (flux_t h, void *arg)
 {
-    //flux_log (h, LOG_ERR, "TIMER CALLED");
-    schedule_jobs (getctx ((flux_t)arg));
+    ssrvctx_t *ctx = getctx ((flux_t)arg);
+    int64_t jobid;
+    int psize, rsize;
+    int rc = 0;
+    flux_log (h, LOG_ERR, "TIMER CALLED");
+
+    /* 1. If there are any resources overtime, return them */
+    return_idle_slack_resources (ctx);
+    flux_log (h, LOG_DEBUG, "return idle resources successful");
+
+    /* 2. If already in cslack, nothing to do */
+    if (ctx->slctx.slack_state == CSLACK) {
+        flux_log (h, LOG_DEBUG, "instance already in cslack. doing nothing");
+        goto ret;
+    }
+    flux_log (h, LOG_DEBUG, "instance not in cslack");
+    //schedule_jobs (ctx);
+
+    /* 3. If last 2 timers, no change, then slack */
+    retrieve_stat_info (ctx, &jobid, &psize, &rsize);
+    if (ctx->slctx.slack_state == SLACK) {  
+        flux_log (h, LOG_DEBUG, "Instance already in slack");
+    } else if ((ctx->slctx.jobid == jobid) && (ctx->slctx.psize == psize) && (ctx->slctx.rsize == rsize)) {
+        flux_log (h, LOG_DEBUG, "slack detected in timer");
+        ctx->slctx.slack_state = SLACK;
+    } else {
+        flux_log (h, LOG_DEBUG, "updating recent job information");
+        ctx->slctx.jobid = jobid;
+        ctx->slctx.psize = psize;
+        ctx->slctx.rsize = rsize;
+    }
+
+    /* 4. If in slack and all children cslack, then action */
+    if ((ctx->slctx.slack_state == SLACK) && (all_children_cslack(ctx))) {
+        flux_log (h, LOG_DEBUG, "instance in slack and all children in cslack. taking dynamic action");
+        //rc = dynamic_action();  // returns number of jobs started/expanded
+        if (rc > 0) {
+            flux_log (h, LOG_DEBUG, "started/expanded %d jobs, not changing to cslack", rc);
+            goto ret;
+        } else {
+            flux_log (h, LOG_DEBUG, "no jobs started/expanded. cslack");
+            ctx->slctx.slack_state = CSLACK;
+        }
+    }
+    
+    /* 5. If in cslack, submit to parent */
+    JSON jmsg = Jnew ();
+    int rcount = 0;
+    accumulate_surplus_need (ctx, 1, jmsg, &rcount);
+    flux_log (h, LOG_DEBUG, "surplus accumulated, rcount = %d\n", rcount);
+    if (send_cslack (ctx, jmsg) < 0) {
+        flux_log (h, LOG_DEBUG, "Could not send slack to parent. Error or parent does not implement push model.");
+        goto ret;
+    } else {
+        flux_log (h, LOG_DEBUG, "CSLACK successfully sent to parent");
+        JSON so = NULL;
+        if ((Jget_obj (jmsg, "surplus", &so))) {
+            resrc_mark_resources_slacksub_or_returned (ctx->rctx.resrc_id_hash, so); // uuid : ustart, uuid: ustart 
+            resrc_tree_destroy_returned_resources (resrc_phys_tree (ctx->rctx.root_resrc), ctx->rctx.resrc_id_hash); 
+        }
+        ctx->slctx.resource_out_count += rcount;
+    }
+    Jput (jmsg);
+    
+    rc = 0;
+ret:
     return 0;
 }
 #endif
@@ -1248,6 +2110,512 @@ static int job_status_cb (JSON jcb, void *arg, int errnum)
     Jput (jcb);
     return action (ctx, j, ns);
 }
+
+static int req_childbirth_cb (flux_t h, int typemask,  zmsg_t **zmsg, void *arg)
+{
+    int rc = -1;
+    int64_t jobid = -1;
+    JSON in = NULL;
+    const char *child_uri = NULL;
+    //const char *json_in = NULL;
+    ssrvctx_t *ctx = getctx (h);
+    flux_lwj_t *job;
+
+    flux_log (h, LOG_DEBUG, "Child has scheduler!\n");
+
+    /* decode msg */
+    if (flux_json_request_decode (*zmsg, &in) < 0)
+      flux_log (h, LOG_ERR, "Unable to decode message into json\n");
+
+
+    const char *header = flux_msg_get_route_string (*zmsg);
+    flux_log (h, LOG_DEBUG, "zmsg = %s\n",header);
+
+    /* Decode information */
+    Jget_int64 (in, "jobid", &jobid);
+    Jget_str (in, "child-uri", &child_uri);
+    job = q_find_job (ctx, jobid);
+    job->contact = xstrdup (child_uri);
+    Jput (in);
+
+#if 0
+    /* reply to msg */
+    JSON out = Jnew ();
+    Jadd_str(out, "test", "teststring");
+    rc = flux_json_respond (h, out, zmsg);
+    Jput (out);
+#endif
+
+    /* open a handle and send a message */
+#if 0
+    flux_rpc_t *rpc;
+    flux_t child_h = flux_open (child_uri, 0);
+    if (child_h == NULL) {
+        flux_log (h, LOG_INFO, " ERROR Could not do child open");
+        //return rc;
+    }
+    flux_log (h, LOG_DEBUG, "child connection opened\n");
+    rpc = flux_rpc (child_h, "sched.addresources", json_in, FLUX_NODEID_ANY, 0);
+    flux_close (child_h);
+#endif
+
+#if 0
+    zmsg_t *newmsg = flux_msg_create (FLUX_MSGTYPE_REQUEST);
+    flux_msg_enable_route (newmsg);
+    flux_msg_push_route (newmsg, header);
+    char *top = NULL;
+    //flux_msg_pop_route (newmsg, &top);
+    flux_msg_get_route_last (newmsg, &top);
+    flux_log (h, LOG_INFO, "top = %s\n",top);
+    flux_msg_set_topic (newmsg, "sched.addresources");
+    int routecount = flux_msg_get_route_count (newmsg);
+    flux_log (h, LOG_INFO, "route count = %d\n", routecount);
+    flux_send (h, newmsg, 0);
+    zmsg_destroy (&newmsg);
+#endif
+
+    rc = 0;
+    return rc;
+}
+
+static int req_qstat_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+{
+    int rc = -1;
+    int psize = -1;
+    int rsize = -1;
+    ssrvctx_t *ctx = NULL;
+    JSON out = Jnew ();
+
+    /* debug */
+    flux_log (h, LOG_DEBUG, "Received qstat request\n");
+
+    /* get the context */
+    if (!(ctx = getctx (h))) {
+        flux_log (h, LOG_ERR, "cannot find context");
+        goto send;
+    }
+
+    /* get size of the pending and running queues */
+    psize = zlist_size (ctx->p_queue);
+    rsize = zlist_size (ctx->r_queue);
+
+    /* send the size as json */
+send:
+    Jadd_int (out, "psize", psize);
+    Jadd_int (out, "rsize", rsize);
+    flux_json_respond (h, out, zmsg);
+    Jput (out);
+
+    /* return success always*/
+    rc = 0;
+    return rc;
+}
+
+/* 
+ * receive_resources_parent_from_child: Parent receives surplus resources from child 
+ */
+static int req_cslack_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+{
+    flux_log (h, LOG_DEBUG, "Callback on reporting surplus/need called");
+
+    int rc = 0;
+    int64_t jobid, id;
+    flux_lwj_t *job = NULL;
+    ssrvctx_t *ctx = getctx (h);
+
+    JSON in = Jnew ();
+    JSON jmsg = NULL;
+    JSON surobj = NULL;
+    JSON needobj = NULL;
+
+    /* decode msg */ 
+    if (flux_json_request_decode (*zmsg, &in) < 0) {
+        flux_log (h, LOG_ERR, "Unable to decode message into json");
+        return rc;
+    }
+    flux_log (h, LOG_DEBUG, "Message received: %s", Jtostr (in));
+
+    /* get information */
+    Jget_int64 (in, "jobid", &jobid);
+   
+    /* get job */
+    job = find_job_in_queue (ctx->i_queue, jobid);
+    if (!job) {
+        flux_log (h, LOG_ERR, "Job not found");
+        goto ret;
+    }    
+    flux_log (h, LOG_DEBUG, "Job has been found");
+    
+    /* Update surplus and need */
+    if (!(Jget_obj (in, "msg", &jmsg))) {
+        flux_log (h, LOG_DEBUG, "No surplus or need provided");
+        goto ret;
+    }
+    flux_log (h, LOG_DEBUG, "surplus or need information provided");
+
+    if (Jget_obj (jmsg, "surplus", &surobj)) {
+        flux_log (h, LOG_DEBUG, "jobid = %ld and surplus = %s", jobid, Jtostr (surobj));
+        /* Update slack reservation */
+        json_object_iter iter;
+        json_object_object_foreachC (surobj, iter) {
+
+            id = strtol (iter.key, NULL, 10);
+            resrc_t *resrc = zhash_lookup (ctx->rctx.resrc_id_hash, iter.key);
+            if (!resrc) {
+                flux_log (h, LOG_ERR, "Resource not found");
+                continue;
+            }
+            flux_log (h, LOG_DEBUG, "Resource type: %s, uuid: %s is being reported as slack", resrc_type (resrc), iter.key);
+            if (!(!(strncmp (resrc_type (resrc), "cores", 5)))) {
+                flux_log (h, LOG_ERR, "FATAL: non core resource slacksubbed by child");
+                continue;
+            }
+
+            const char *endtime_str = json_object_get_string (iter.val) ;
+            if (!endtime_str) {
+                flux_log (h, LOG_ERR, "Value invalid");
+                goto ret;
+            }
+            flux_log (h, LOG_DEBUG, "slack endtime obtained as: %s", endtime_str);
+
+            int64_t endtime = strtol (endtime_str, NULL, 10);
+            if (endtime == 0) {
+                // a slack resource that was originally sent from me
+                resrc_mark_resource_return_received (resrc, jobid);
+                if (resrc_owner(resrc) == 0)
+                    ctx->slctx.resource_out_count--;
+                flux_log (h, LOG_DEBUG, "Return resource received during slacksub :%s\n", resrc_name (resrc));
+            } else {
+                // a slack resource from job's allocation
+                resrc_mark_resource_slack (resrc, jobid, endtime);    
+           }
+        }
+    } else {    
+        flux_log (h, LOG_DEBUG, "Surplus = 0");
+    } 
+
+    if (Jget_obj (jmsg, "need", &needobj)) {
+        flux_log (h, LOG_DEBUG, "needob set");
+    } else {
+        flux_log (h, LOG_DEBUG, "Need = 0");
+    }
+
+    /* update job slack state */
+    job_cslack_set (job, needobj);
+    flux_log (h, LOG_DEBUG, "job cslack set");
+
+    /* return idle resources */
+    if (return_idle_slack_resources(ctx) < 0) {
+        flux_log (h, LOG_ERR, "error in returning idle slack resources");
+    }
+    flux_log (h, LOG_DEBUG, "Return idle resources successful"); 
+    
+    fflush (0);
+ret:
+    Jput (in);
+    rc = 0;
+    return rc;
+}
+
+/*
+ * resources added could be new or returned. 
+ */
+static int req_addresources_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+{
+    int rc = -1;
+    int i = 0;
+    int len = 0;
+    JSON id_array;
+    int64_t jobid;
+    JSON new_res = NULL;
+
+    /* get context */
+    ssrvctx_t *ctx = getctx (h);
+
+    /* decode msg */
+    JSON in = Jnew ();
+    if (flux_json_request_decode (*zmsg, &in) < 0) {
+        flux_log (h, LOG_ERR, "Unable to decode message into json");
+        goto ret;
+    }
+    flux_log (h, LOG_DEBUG, "Message decode succeeded in addresources");
+    
+    if (!(Jget_int64 (in, "jobid", &jobid))) {
+        flux_log (h, LOG_ERR, "Unable to determine who added resources");
+        goto ret;
+    }
+    flux_log (h, LOG_DEBUG, "Resources added by %ld", jobid);
+    
+
+    if (!(Jget_obj (in, "return", &id_array))) {
+        flux_log (h, LOG_DEBUG, "no resources returned");
+    } else {
+        // collect all returned resources
+        flux_log (h, LOG_DEBUG, "resource return included in addresources");
+        if (!(Jget_ar_len (id_array, &len))) {
+            flux_log (h, LOG_ERR, "FATAL: Could not get length of id array. skipping return resources");
+            goto new;        
+        }
+
+        for (i = 0; i < len; i++) {
+            const char *uuid;
+            Jget_ar_str (id_array, i, &uuid);
+            resrc_t *resrc = zhash_lookup (ctx->rctx.resrc_id_hash, uuid);
+            if (!resrc) {
+                flux_log (h, LOG_ERR, "stub resource in return resource");
+                continue;
+            }
+            if (!(!(strncmp (resrc_type (resrc), "cores", 5)))) {
+                flux_log (h, LOG_ERR, "non-core resource returned by job dropping it: %ld\n", jobid);
+                continue;
+            }
+            resrc_mark_resource_return_received (resrc, jobid);
+            if (resrc_owner (resrc) == 0)
+                ctx->slctx.resource_out_count--;      
+            flux_log (h, LOG_DEBUG, "resource return = %s\n", resrc_name (resrc)); 
+        }    
+    }
+
+new:
+    if (!(Jget_obj (in, "new", &new_res))) {
+        flux_log (h, LOG_DEBUG, "no new resources added");
+    } else {
+        flux_log (h, LOG_DEBUG, "new resources provided");
+        if (resrc_add_resources_from_json (ctx->rctx.root_resrc, ctx->rctx.resrc_id_hash, new_res, false, jobid) < 0) {
+            flux_log (h, LOG_ERR, "error in adding new resources");
+            return rc;
+        } 
+        flux_log (h, LOG_DEBUG, "new resources added succesfully");
+    }
+
+    /* update slack state */
+    if (ctx->slctx.slack_state == CSLACK) {
+        /* Invalidate cslack asking nothing for return */
+        send_cslack_invalid (ctx, NULL);
+        ctx->slctx.slack_state = INVALID; 
+    } else if (ctx->slctx.slack_state == SLACK) {
+        /* only change the state */
+        ctx->slctx.slack_state = INVALID;
+    }
+    flux_log (h, LOG_DEBUG, "slack state update successful");
+
+    /* return any idle slack resource */
+    if (return_idle_slack_resources (ctx) < 0) {
+        flux_log (h, LOG_ERR, "error in returning idle slack resources");
+        return rc;
+    }
+    flux_log (h, LOG_DEBUG, "slack resources return successful");
+
+    /* schedule jobs */
+    schedule_jobs (ctx);
+    
+    rc = 0;
+ret:
+    Jput (in);
+    return rc;
+}
+
+
+
+static int req_cslack_invalid_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+{
+    int rc = 0;
+    int64_t jobid;
+    flux_lwj_t *job;
+    ssrvctx_t *ctx = getctx (h);
+    JSON lao = Jnew ();
+
+    JSON in = Jnew ();
+    if (flux_json_request_decode (*zmsg, &in) < 0) {
+        flux_log (h, LOG_ERR, "Unable to decode message into json");
+        goto ret;
+    }
+    flux_log (h, LOG_DEBUG, "Message in req_cslack_invalid_cb decoded");
+
+    if (!(Jget_int64 (in, "jobid", &jobid))) {
+        flux_log (h, LOG_ERR, "Could not fetch jobid on receiving slack invalidate");
+        goto ret;
+    }
+    flux_log (h, LOG_DEBUG, "Slack invalide message from job: %"PRId64"\n", jobid);
+
+    /* 1. Find the job */
+    job = find_job_in_queue (ctx->r_queue, jobid);
+    if (!job) {
+        flux_log (h, LOG_ERR, "job %ld not found in running queue", jobid);
+        goto ret;
+    }   
+    flux_log (h, LOG_DEBUG, "job found in running queue");
+
+    /* 2. Set slack invalid in job */
+    job_cslack_invalidate (job);
+
+    /* 3. Have resources been asked for? lao contains "jobid": "uuid_array" -1 = parent, 0 = me, jobid = children */
+    JSON askobj = NULL;
+    if (!(Jget_obj (in, "ask", &askobj))) {
+        flux_log (h, LOG_DEBUG, "No resources have been asked");
+    } else {
+        flux_log (h, LOG_DEBUG, "Resources have been asked");
+        resrc_retrieve_lease_information (ctx->rctx.resrc_id_hash, askobj, lao);
+        flux_log (h, LOG_DEBUG, "resources asked = %s", Jtostr (lao));
+    }
+    
+    /* 4. Update my slack state ask parent */
+    if (ctx->slctx.slack_state == CSLACK) {
+        /* Invalidate slack and ask resources from parent */
+        JSON pao = NULL;
+        if ((lao) && (Jget_obj (lao, "-1", &pao))) {
+            send_cslack_invalid (ctx, pao);
+            resrc_mark_resources_asked (ctx->rctx.resrc_id_hash, pao);
+            resrc_mark_resources_to_be_returned (ctx->rctx.resrc_id_hash, pao);
+        } else {
+            send_cslack_invalid (ctx, NULL);
+        }
+    } else {
+        /* Just check if we need to ask anything to the parent */   
+        JSON pao = NULL;
+        if ((lao) && (Jget_obj (lao, "-1", &pao))) {
+            send_to_parent (ctx, pao, "askresources");
+            resrc_mark_resources_asked (ctx->rctx.resrc_id_hash, pao);
+            resrc_mark_resources_to_be_returned (ctx->rctx.resrc_id_hash, pao);
+        }
+    }
+
+    /* 5. ask rest of the resources */
+    json_object_iter i;
+    json_object_object_foreachC (lao, i) {
+        flux_log (h, LOG_DEBUG, "Dealing with resource from %s with %s", i.key, Jtostr (i.val));
+        if (!(strcmp (i.key, "-1")))
+            continue;    
+        
+        if (!(strcmp (i.key, "0"))) {
+            resrc_mark_resources_to_be_returned (ctx->rctx.resrc_id_hash, i.val);
+            continue;
+        }
+        
+        int64_t jobid = strtol (i.key, NULL, 10);
+        flux_lwj_t *job = q_find_job (ctx, jobid);
+        if (send_to_child (ctx, job, i.val, "askresources") < 0) {
+            flux_log (h, LOG_ERR, "Could not send askresources to %ld", jobid);
+        }
+        
+        resrc_mark_resources_asked (ctx->rctx.resrc_id_hash, i.val);
+        resrc_mark_resources_to_be_returned (ctx->rctx.resrc_id_hash, i.val); //i.val is json array
+    }    
+
+    /* 6. Return resources and set events to send other resources later */
+    return_idle_slack_resources (ctx);
+
+ret:
+    Jput (in);
+    Jput (lao);
+    return rc;
+}
+
+static int req_askresources_cb (flux_t h, int typemask, zmsg_t **zmsg, void *arg)
+{
+    int rc = -1;
+    int64_t jobid;
+    ssrvctx_t *ctx = getctx (h);
+    int len = 0, i = 0;
+
+    JSON in = Jnew ();
+    if (flux_json_request_decode (*zmsg, &in) < 0) {
+        flux_log (h, LOG_ERR, "Unable to decode message into json");
+        goto ret;
+    }
+    flux_log (h, LOG_DEBUG, "Message in req_askresources_cb decoded");    
+
+    if (!(Jget_int64 (in, "jobid", &jobid))) {
+        flux_log (h, LOG_ERR, "Could not fetch jobid on receiving askresources");
+        goto ret;
+    }
+    flux_log (h, LOG_DEBUG, "Ask resources from %"PRId64"\n", jobid);    
+    
+    JSON id_ar = NULL;
+    if (!(Jget_obj (in, "msg", &id_ar))) {
+        flux_log (h, LOG_ERR, "No message given in askresources");
+        goto ret;
+    }
+
+    if (!(Jget_ar_len (id_ar, &len))) {
+        flux_log (h, LOG_ERR, "Message received not valid uuid array. Could not retrieve length");
+        goto ret;
+    }
+    flux_log (h, LOG_DEBUG, "resources asked length = %d and resources = %s", len, Jtostr (id_ar));
+
+    resrc_mark_resources_to_be_returned (ctx->rctx.resrc_id_hash, id_ar);
+    flux_log (h, LOG_DEBUG, "all resources marked to be returned");
+
+    JSON juid = Jnew (); //jobid: uuidi_array, jobid:uuid_array
+
+    for (i = 0; i < len; i++) {
+        const char *uuid;
+        Jget_ar_str (id_ar, i, &uuid);
+        resrc_t *resrc = zhash_lookup (ctx->rctx.resrc_id_hash, uuid);
+        if (!resrc) {
+            flux_log (h, LOG_ERR, "FATAL: Obtained ask for resource that does not exist in my list");
+            goto ret;    
+        }
+        int64_t leasee = resrc_leasee (resrc);
+        if (leasee == jobid) {
+            flux_log (h, LOG_ERR, "FATAL: resource is leased to the instance that asked");
+            goto ret;
+        }
+        if (leasee != 0) {
+            char *leasee_str;
+            asprintf (&leasee_str, "%ld", leasee);
+            JSON da = NULL;
+            if (!(Jget_obj (juid, leasee_str, &da))) {
+                // add new entry
+                da = Jnew_ar ();
+                Jadd_ar_str (da, uuid);
+                Jadd_obj (juid, leasee_str, da);
+                Jput (da);
+            } else {
+                // append to entry
+                Jadd_ar_str (da, uuid);
+                Jadd_obj (juid, leasee_str, da);
+            }            
+        }
+    }
+
+    /* ask resources from others from the juid */
+    json_object_iter iter;
+    json_object_object_foreachC (juid, iter);
+    {
+        // i.key is the leasee_str and i.val is the uuid_array
+        int64_t jid = strtol (iter.key, NULL, 10);
+        flux_lwj_t *job;
+        if (jid != -1) {
+            // ask child
+            job = find_job_in_queue (ctx->i_queue, jid);
+            if (!job) {
+                flux_log (h, LOG_ERR, "FATAL: Could not find job in instance queue askresources");
+                goto ret;
+            }
+            if (send_to_child (ctx, job, iter.val, "askresources") < 0) {
+                flux_log (h, LOG_ERR, "Could not send askresources to child from askresources");
+                goto ret;
+            }
+            resrc_mark_resources_asked (ctx->rctx.resrc_id_hash, iter.val);
+        } else {
+            // ask parent: this should ideally not happen
+            if (send_to_parent (ctx, iter.val, "askresources") < 0) {
+                flux_log (h, LOG_ERR, "Could not send askresources to parent from askresources");
+                goto ret;
+            }
+            resrc_mark_resources_asked (ctx->rctx.resrc_id_hash, iter.val);
+        }    
+    }   
+    
+    return_idle_slack_resources (ctx);
+
+    rc = 0;
+ret:
+    return rc;
+}
+
+
 
 /******************************************************************************
  *                                                                            *
@@ -1303,11 +2671,26 @@ int mod_main (flux_t h, int argc, char **argv)
         goto done;
     }
     flux_log (h, LOG_INFO, "%s plugin loaded", schedplugin);
-    if (load_resources (ctx, path, uri) != 0) {
+    if (retrieve_instance_jobid (ctx, argc, argv) != 0) {
+        flux_log (h, LOG_ERR, "Instance has jobid, but could not retrieve");
+        goto done;
+    }
+    flux_log (h, LOG_INFO, "jobid retrieved");
+    if (send_childbirth_msg (ctx) != 0) {
+        flux_log (h, LOG_ERR, "Instance is child and sending childbirth message failed");
+        goto done;
+    }
+    flux_log (h, LOG_INFO, "Instance birth successful");
+    flux_log(h, LOG_INFO, " GOING TO LOAD RDL\n");
+ 
+   if (load_resources (ctx, path, uri) != 0) {
         flux_log (h, LOG_ERR, "failed to load resources");
         goto done;
     }
     flux_log (h, LOG_INFO, "resources loaded");
+
+    print_rdl (ctx); fflush(0);
+
     if ((sim) && setup_sim (ctx, sim) != 0) {
         flux_log (h, LOG_ERR, "failed to setup sim");
         goto done;
@@ -1325,6 +2708,14 @@ int mod_main (flux_t h, int argc, char **argv)
         }
         flux_log (h, LOG_INFO, "events registered");
     }
+    flux_log (h, LOG_INFO, "events registered");
+
+    if (reg_requests (ctx) != 0) {
+        flux_log (h, LOG_ERR, "failed to reg requests");
+        goto done;
+    }
+    flux_log (h, LOG_INFO, "requests registered");
+    
     if (flux_reactor_start (h) < 0) {
         flux_log (h, LOG_ERR, "flux_reactor_start: %s", strerror (errno));
         goto done;

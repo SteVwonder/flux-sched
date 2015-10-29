@@ -443,6 +443,7 @@ int resrc_tree_search (resrc_tree_list_t *resrcs_in, resrc_reqst_t *resrc_reqst,
     resrc_tree_t *resrc_tree;
 
     if (!resrcs_in || !found_trees || !resrc_reqst) {
+
         goto ret;
     }
 

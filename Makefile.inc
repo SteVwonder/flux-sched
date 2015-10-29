@@ -51,4 +51,4 @@ KVS_LIBS = -Wl,-rpath,$(FLUX_BUILDDIR)/src/modules/kvs/.libs \
 # When we invoke flux we need to provide additional LUA paths for RDL
 #
 FLUX = flux -C$(RDL_LUA_CPATH) -L$(RDL_LUA_PATH) -M$(SCHED_MODULE_PATH) -x$(SUBMIT_EXEC_PATH)
-COMMON_CFLAGS = -g -Wall -Werror -Wno-error=deprecated-declarations -fPIC -D_GNU_SOURCE=1
+COMMON_CFLAGS = -g -Wall -Wno-error=deprecated-declarations -fPIC -D_GNU_SOURCE=1 -Werror -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=unused-label
