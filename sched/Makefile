@@ -3,7 +3,7 @@ include ../Makefile.inc
 CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RESRC_CFLAGS)
 LIBS = $(FLUX_LIBS) $(RESRC_LIBS)
 
-CONF=../conf/hype.lua
+CONF=../conf/mini.lua
 
 BUILD = schedsrv.so schedplugin1.so backfillplugin1.so flux-waitjob
 

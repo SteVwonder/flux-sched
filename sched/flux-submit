@@ -52,8 +52,6 @@ wreck:add_options ({
         usage = "Is hierarchical job" },
     { name = "hfile", char = "F", arg = "F",
         usage = "Hierarchical file" },
-    { name = "walltime", char = "T", arg = "T",
-        usage = "Walltime" },
 })
 
 if not wreck:parse_cmdline (arg) then

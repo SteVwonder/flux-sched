@@ -81,13 +81,18 @@ int resrc_tree_add_child (resrc_tree_t *parent, resrc_tree_t *child)
 
 int resrc_tree_add_child_special (resrc_tree_t *parent, resrc_tree_t *child, zhash_t *hash_table, int64_t owner)
 {
-    int rc = -1;
+    printf("inside the function\n");fflush(0);
+    int rc = 0;
     if (parent) {
+        printf("came inside parent\n");fflush(0);
         resrc_t *resrc = resrc_tree_resrc (child);
         char uuid[40];
         resrc_uuid (resrc, uuid);
+        printf("got uuid\n");fflush(0);
         resrc_t *resrc_exist = zhash_lookup (hash_table, uuid);
+        printf ("checked for resource exist\n"); fflush(0); 
         if (resrc_exist) {
+            printf ("came inside resource exist\n"); fflush(0);
             if (resrc_tree_num_children (child)) {
                 resrc_tree_t *chtree = resrc_tree_list_first (child->children);
                 while (chtree) {
@@ -99,10 +104,12 @@ int resrc_tree_add_child_special (resrc_tree_t *parent, resrc_tree_t *child, zha
             }
             rc = 0;
         } else {
-        child->parent = parent;
-        rc = resrc_tree_list_append (parent->children, child);   
-        resrc_tree_set_owner (child, owner);
-        resrc_hash_by_uuid (child, hash_table);
+            child->parent = parent;
+            rc = resrc_tree_list_append (parent->children, child);   
+            resrc_tree_set_owner (child, owner);
+            printf ("set owner ok\n"); fflush(0);
+            resrc_hash_by_uuid (child, hash_table);
+            printf ("hash table add ok\n"); fflush(0);
         }
     }
 ret:
@@ -179,13 +186,25 @@ void resrc_tree_print (resrc_tree_t *resrc_tree)
     }
 }
 
-int resrc_tree_serialize (JSON o, resrc_tree_t *resrc_tree)
+void resrc_tree_list_print (resrc_tree_list_t *resrc_tree_list)
+{
+    if (resrc_tree_list) {
+        resrc_tree_t *child = resrc_tree_list_first (resrc_tree_list);
+        while (child) {
+            resrc_tree_print (child);
+            child = resrc_tree_list_next (resrc_tree_list);
+        }
+    }
+}
+
+
+int resrc_tree_serialize (JSON o, resrc_tree_t *resrc_tree, int64_t jobid)
 {
     JSON co = Jnew ();
     int rc = -1;
 
     if (o && resrc_tree) {
-        rc = resrc_to_json (co, resrc_tree->resrc);
+        rc = resrc_to_json (co, resrc_tree->resrc, jobid);
         json_object_array_add (o, co);
         if (!rc) {
             if (resrc_tree_num_children (resrc_tree)) {
@@ -195,7 +214,7 @@ int resrc_tree_serialize (JSON o, resrc_tree_t *resrc_tree)
                 json_object_object_add (co, "children", ja);
                 child = resrc_tree_list_first (resrc_tree->children);
                 while (!rc && child) {
-                    rc = resrc_tree_serialize (ja, child);
+                    rc = resrc_tree_serialize (ja, child, jobid);
                     child = resrc_tree_list_next (resrc_tree->children);
                 }
             }
@@ -211,7 +230,7 @@ resrc_tree_t *resrc_tree_deserialize (JSON o, resrc_tree_t *parent)
     resrc_t *resrc = NULL;
     resrc_tree_t *resrc_tree = NULL;
 
-    resrc = resrc_new_from_json (o, NULL, false);
+    resrc = resrc_new_from_json (o, NULL, true);
     if (resrc) {
         resrc_tree = resrc_tree_new (parent, resrc);
 
@@ -241,6 +260,24 @@ int resrc_tree_allocate (resrc_tree_t *resrc_tree, int64_t job_id,
             resrc_tree_t *child = resrc_tree_list_first (resrc_tree->children);
             while (!rc && child) {
                 rc = resrc_tree_allocate (child, job_id, starttime, endtime);
+                child = resrc_tree_list_next (resrc_tree->children);
+            }
+        }
+    }
+    return rc;
+}
+
+int resrc_tree_allocate_dynamic (resrc_tree_t *resrc_tree, int64_t job_id,
+                                 int64_t starttime, int64_t endtime)
+{
+    int rc = -1;
+    if (resrc_tree) {
+        rc = resrc_allocate_resource_in_time_dynamic (resrc_tree->resrc, job_id,
+                                                      starttime, endtime);
+        if (resrc_tree_num_children (resrc_tree)) {
+            resrc_tree_t *child = resrc_tree_list_first (resrc_tree->children);
+            while (!rc && child) {
+                rc = resrc_tree_allocate_dynamic (child, job_id, starttime, endtime);
                 child = resrc_tree_list_next (resrc_tree->children);
             }
         }
@@ -393,7 +430,7 @@ void resrc_tree_list_destroy (resrc_tree_list_t *resrc_tree_list,
     }
 }
 
-int resrc_tree_list_serialize (JSON o, resrc_tree_list_t *rtl)
+int resrc_tree_list_serialize (JSON o, resrc_tree_list_t *rtl, int64_t jobid)
 {
     resrc_tree_t *rt;
     int rc = -1;
@@ -402,7 +439,7 @@ int resrc_tree_list_serialize (JSON o, resrc_tree_list_t *rtl)
         rc = 0;
         rt = resrc_tree_list_first (rtl);
         while (rt) {
-            if ((rc = resrc_tree_serialize (o, rt)))
+            if ((rc = resrc_tree_serialize (o, rt, jobid)))
                 break;
             rt = resrc_tree_list_next (rtl);
         }
@@ -449,6 +486,25 @@ int resrc_tree_list_allocate (resrc_tree_list_t *rtl, int64_t job_id,
 
     return rc;
 }
+
+int resrc_tree_list_allocate_dynamic (resrc_tree_list_t *rtl, int64_t job_id,
+                                      int64_t starttime, int64_t endtime)
+{
+    resrc_tree_t *rt;
+    int rc = -1;
+
+    if (rtl) {
+        rc = 0;
+        rt = resrc_tree_list_first (rtl);
+        while (!rc && rt) {
+            rc = resrc_tree_allocate_dynamic (rt, job_id, starttime, endtime);
+            rt = resrc_tree_list_next (rtl);
+        }
+    }
+
+    return rc;
+}
+
 
 int resrc_tree_list_reserve (resrc_tree_list_t *rtl, int64_t job_id,
                              int64_t starttime, int64_t endtime)
@@ -589,18 +645,27 @@ int resrc_hash_by_uuid_list (resrc_tree_list_t *resrc_tree_list, zhash_t *hash_t
 
 int resrc_tree_set_owner (resrc_tree_t *resrc_tree, int64_t owner)
 {
+    //printf ("so entered in function\n");
     int rc = 0;
     resrc_t *resrc = NULL;
     if (resrc_tree) {
+        //printf ("so entered inside if\n");
         resrc = resrc_tree_resrc (resrc_tree);
+        //printf ("so obtained resrc\n");
         resrc_set_owner (resrc, owner);
+        //printf ("so set owner for this resource\n");
         if (resrc_tree_num_children (resrc_tree)) {
+            //printf ("so resrc has children\n");
             resrc_tree_t *child_tree = resrc_tree_list_first (resrc_tree->children);
+            //printf ("so obtained first tree\n");
             while (child_tree) {
-                resrc_tree_set_owner (resrc_tree, owner);
+                //printf ("so calling recursive call\n");
+                resrc_tree_set_owner (child_tree, owner);
                 child_tree = resrc_tree_list_next (resrc_tree->children);
+                //printf ("so obtained next list\n");
             }
         }
+        //printf("so everything ok\n");
     }
     return rc;
 }
@@ -618,23 +683,17 @@ int resrc_tree_destroy_returned_resources (resrc_tree_t *resrc_tree, zhash_t *ha
                 resrc_tree_destroy_returned_resources (child_tree, hash_table);
                 child_tree = resrc_tree_list_next (resrc_tree->children);
             }
-            if (!(resrc_tree_num_children (resrc_tree))) {
+            if ((!(resrc_tree_num_children (resrc_tree))) && (resrc_check_resource_destroy_ready (resrc))) {
                 // delete it
+                printf ("destroyreturnedresource: deleting a resource that just lost all its children\n");
                 char uuid[40];
                 resrc_uuid (resrc, uuid);
                 zhash_delete (hash_table, uuid);
                 resrc_tree_destroy (resrc_tree, true);
             }
         } else {
-            if (!(strncmp (resrc_type (resrc), "cores", 5))) {
-                if (resrc_check_resource_destroy_ready (resrc)) {
-                    char uuid[40];
-                    resrc_uuid (resrc, uuid);
-                    zhash_delete (hash_table, uuid);
-                    resrc_tree_destroy (resrc_tree, true);
-                }
-            } else {
-                // should not be reached: non core resource with no children here
+            if (resrc_check_resource_destroy_ready (resrc)) {
+                printf ("destroyreturnedresource: deleting resource ready for deletion\n");
                 char uuid[40];
                 resrc_uuid (resrc, uuid);
                 zhash_delete (hash_table, uuid);
@@ -644,6 +703,96 @@ int resrc_tree_destroy_returned_resources (resrc_tree_t *resrc_tree, zhash_t *ha
     }
     return rc;
 }
+
+resrc_tree_list_t* resrc_split_resources (resrc_tree_list_t *found_tree_list, resrc_tree_list_t *job_tree_list, JSON ret_array, int64_t jobid)
+{
+    int rc = -1;
+    int found = 0;
+
+    resrc_tree_list_t *to_serialize_tree_list = resrc_tree_list_new ();
+
+    resrc_tree_t *resrc_tree = resrc_tree_list_first (found_tree_list);
+    printf ("gogsladfjalskdfj\n"); fflush (0);
+    while (resrc_tree) {
+        resrc_t *new_resrc = resrc_tree_resrc (resrc_tree);
+        resrc_tree_t *job_tree = resrc_tree_list_first (job_tree_list);
+        printf ("okie doklaksdjfl asdlkjfas asd flkasjdf\n"); fflush (0);
+        while (job_tree) {
+            resrc_t *job_resrc = resrc_tree_resrc (job_tree);
+#if 1
+            if (new_resrc == job_resrc) {
+                // The new node and old node are same
+                found = 1;
+                int add = resrc_compare (resrc_tree, job_tree, ret_array);
+#if 1
+                if (add) {
+                    resrc_tree_list_append (to_serialize_tree_list, resrc_tree);
+                }
+#endif
+                break;
+            }
+#endif
+nextjobtree:
+            job_tree = resrc_tree_list_next (job_tree_list);
+        }
+    
+        if (to_serialize_tree_list == NULL) {
+            printf ("YESSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS\n");
+        }
+        fflush(0);
+#if 1
+        if (!found) {
+            // The new node was not found in any of the job tree
+            // This needs to be serialized
+            printf ("Going to appendddddddddddddd\n"); fflush(0);
+            resrc_tree_list_append (to_serialize_tree_list, resrc_tree);
+
+        }
+#endif
+next:
+        found = 0;
+        resrc_tree = resrc_tree_list_next (found_tree_list);
+    }
+
+    rc = 0;
+    return to_serialize_tree_list;
+}
+
+// dealing with cores here
+int resrc_compare (resrc_tree_t *new_tree, resrc_tree_t *job_tree, JSON ret_array)
+{
+    int rc = 0;
+    int found = 0;
+
+    resrc_tree_t *child = resrc_tree_list_first (new_tree->children);
+    while (child) {
+        resrc_t *child_resrc = resrc_tree_resrc (child);
+        resrc_tree_t *job_child = resrc_tree_list_first (job_tree->children);
+        while (job_child) {
+            resrc_t *job_child_resrc = resrc_tree_resrc (job_child);
+            if (child_resrc == job_child_resrc) {
+                found = 1;
+                char uuid[40] = {0};
+                resrc_uuid (child_resrc, uuid);
+                Jadd_ar_str (ret_array, uuid);
+                goto nextone;
+            }
+            job_child = resrc_tree_list_next (job_tree->children);
+        }
+
+        if (!found) {
+            rc = 1;
+        }
+nextone:
+        found = 0;
+        child = resrc_tree_list_next (new_tree->children);
+    }
+
+
+
+    return rc;
+}
+
 
 /*
  * vi: ts=4 sw=4 expandtab

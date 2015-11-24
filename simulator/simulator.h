@@ -29,6 +29,8 @@
 #include <flux/core.h>
 #include "src/common/libutil/shortjson.h"
 
+#define SCHED_INTERVAL 30
+
 typedef struct {
     double sim_time;
     zhash_t *timers;

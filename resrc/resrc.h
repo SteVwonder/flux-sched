@@ -8,7 +8,7 @@
 #include <uuid/uuid.h>
 #include "src/common/libutil/shortjson.h"
 
-#define TIME_MAX UINT64_MAX
+#define TIME_MAX INT64_MAX
 #define SLACK_BUFFER_TIME 30
 #define K_NEEDS 5
 #include <flux/core.h>
@@ -124,7 +124,7 @@ resrc_t *resrc_generate_xml_resources (resrc_t *host_resrc, const char *buf,
 /*
  * Add the input resource to the json object
  */
-int resrc_to_json (JSON o, resrc_t *resrc);
+int resrc_to_json (JSON o, resrc_t *resrc, int64_t jobid);
 
 /*
  * Print details of a specific resource
@@ -193,7 +193,7 @@ int64_t resrc_leasee (resrc_t *resrc);
 
 void resrc_set_owner (resrc_t *resrc, int64_t owner);
 bool resrc_check_resource_destroy_ready (resrc_t *resrc);
-int resrc_add_resources_from_json (resrc_t *resrc, zhash_t *hash_table, JSON o, bool new, int64_t owner);
+int resrc_add_resources_from_json (resrc_t *resrc, zhash_t *hash_table, JSON o, int64_t owner);
 
 bool resrc_check_slacksub_ready (resrc_t *resrc, int64_t *endtime);
 bool resrc_check_return_ready (resrc_t *resrc, int64_t *jobid);

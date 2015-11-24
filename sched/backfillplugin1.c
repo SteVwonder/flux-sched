@@ -41,6 +41,8 @@
 #include "schedsrv.h"
 
 #define EASY_BACKFILL 1
+//#undef LOG_DEBUG
+//#define LOG_DEBUG LOG_INFO
 
 static bool first_time_backfill = true;
 static zlist_t *completion_times = NULL;
@@ -93,11 +95,14 @@ resrc_tree_list_t *find_resources (flux_t h, resrc_t *resrc,
     resrc_tree_list_t *found_trees = NULL;
     resrc_tree_t *resrc_tree = NULL;
 
+    flux_log (h, LOG_DEBUG, "Going to find resources");
+
     if (!resrc || !resrc_reqst) {
         flux_log (h, LOG_ERR, "%s: invalid arguments", __FUNCTION__);
         goto ret;
     }
     resrc_tree = resrc_phys_tree (resrc);
+    flux_log (h, LOG_DEBUG, "Valid arguements");
 
     found_trees = resrc_tree_list_new ();
     if (!found_trees) {
@@ -107,6 +112,7 @@ resrc_tree_list_t *find_resources (flux_t h, resrc_t *resrc,
 
     nfound = resrc_tree_search (resrc_tree_children (resrc_tree), resrc_reqst,
                                 found_trees, true);
+    flux_log (h, LOG_DEBUG, "%s: nfound = %ld", __FUNCTION__, nfound);
 
     if (!nfound) {
         resrc_tree_list_destroy (found_trees, false);

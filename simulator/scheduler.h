@@ -33,7 +33,6 @@
 #include "simulator.h"
 
 #define MAX_STR_LEN 128
-#define SCHED_INTERVAL 30
 
 /**
  *  Enumerates lightweight-job and resource events

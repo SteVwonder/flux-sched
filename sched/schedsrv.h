@@ -60,8 +60,8 @@ typedef enum {
  *   */
 typedef struct slackstate {
 
-    bool      slack_state;    /*!< true if in slack, false otherwise */
-    JSON      need;           /*!< needs of the child upto some k */
+    slack_state_t   slack_state;    /*!< INVALID, SLACK or CSLACK */
+    JSON            need;           /*!< needs of the child upto some k */
 
 } flux_slackinfo_t;
 

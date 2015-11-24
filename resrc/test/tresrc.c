@@ -28,6 +28,7 @@
 #include <string.h>
 #include <sys/time.h>
 #include <czmq.h>
+#include <hwloc.h>
 
 #include "../resrc.h"
 #include "../resrc_tree.h"
@@ -92,18 +93,164 @@ static resrc_tree_list_t *test_select_resources (resrc_tree_list_t *found_trees,
     return selected_res;
 }
 
+// Contains 10 tests
+static int num_temporal_allocation_tests = 10;
+static void test_temporal_allocation ()
+{
+    int rc = 0;
+    size_t available;
+    resrc_t *resource = resrc_new_resource ("custom", "/test", "test", 1, 0, 10);
+
+    available = resrc_available_at_time (resource, 0);
+    rc = (rc || !(available == 10));
+    available = resrc_available_during_range (resource, 0, 1000);
+    rc = (rc || !(available == 10));
+    ok (!rc, "resrc_available...(time/range) on unallocated resource work");
+
+    // Setup the resource allocations for the rest of the tests
+    resrc_stage_resrc (resource, 5);
+    rc = (rc || resrc_allocate_resource (resource, 1, 1, 1000));
+    resrc_stage_resrc (resource, 10);
+    rc = (rc || resrc_allocate_resource (resource, 2, 2000, 3000));
+    ok (!rc, "Temporal allocation setup works");
+    if (rc) {
+        return;
+    }
+
+    // Start the actual testing
+    resrc_stage_resrc (resource, 1);
+    // This should fail
+    rc = (rc || !resrc_allocate_resource (resource, 3, 10, 3000));
+    // This should work
+    rc = (rc || resrc_allocate_resource (resource, 3, 10, 1999));
+    ok (!rc, "Overlapping temporal allocations work");
+    if (rc) {
+        return;
+    }
+
+    // Test "available at time"
+    // Job 1
+    available = resrc_available_at_time (resource, 1);
+    rc = (rc || !(available == 5));
+    // Jobs 1 & 3
+    available = resrc_available_at_time (resource, 10);
+    rc = (rc || !(available == 4));
+    available = resrc_available_at_time (resource, 500);
+    rc = (rc || !(available == 4));
+    available = resrc_available_at_time (resource, 1000);
+    rc = (rc || !(available == 4));
+    // Job 3
+    available = resrc_available_at_time (resource, 1500);
+    rc = (rc || !(available == 9));
+    available = resrc_available_at_time (resource, 1999);
+    rc = (rc || !(available == 9));
+    // Job 2
+    available = resrc_available_at_time (resource, 2000);
+    rc = (rc || !(available == 0));
+    available = resrc_available_at_time (resource, 2500);
+    rc = (rc || !(available == 0));
+    available = resrc_available_at_time (resource, 3000);
+    rc = (rc || !(available == 0));
+    // No Jobs
+    available = resrc_available_at_time (resource, 3001);
+    rc = (rc || !(available == 10));
+    ok (!rc, "resrc_available_at_time works");
+    if (rc) {
+        return;
+    }
+
+    // Test "available during range"
+
+    // Range == job window (both edges are the same)
+    available = resrc_available_during_range (resource, 2000, 3000);
+    rc = (rc || !(available == 0));
+    available = resrc_available_during_range (resource, 0, 1000);
+    rc = (rc || !(available == 4));
+    available = resrc_available_during_range (resource, 10, 1999);
+    rc = (rc || !(available == 4));
+    ok (!rc, "resrc_available_during_range: range == job window works");
+    rc = 0;
+
+    // Range is a subset of job window (no edges are the same)
+    available = resrc_available_during_range (resource, 4, 6);
+    rc = (rc || !(available == 5));
+    available = resrc_available_during_range (resource, 20, 999);
+    rc = (rc || !(available == 4));
+    available = resrc_available_during_range (resource, 1001, 1998);
+    rc = (rc || !(available == 9));
+    available = resrc_available_during_range (resource, 2500, 2600);
+    rc = (rc || !(available == 0));
+    ok (!rc, "resrc_available_during_range: range is a subset (no edges) works");
+    rc = 0;
+
+    // Range is a subset of a job window (one edge is the same)
+    available = resrc_available_during_range (resource, 0, 999);
+    rc = (rc || !(available == 4));
+    available = resrc_available_during_range (resource, 10, 999);
+    rc = (rc || !(available == 4));
+    available = resrc_available_during_range (resource, 20, 1000);
+    rc = (rc || !(available == 4));
+    available = resrc_available_during_range (resource, 1001, 1999);
+    rc = (rc || !(available == 9));
+    available = resrc_available_during_range (resource, 1001, 1999);
+    rc = (rc || !(available == 9));
+    ok (!rc, "resrc_available_during_range: range is a subset (1 edge) works");
+    rc = 0;
+
+    // Range overlaps 1 job window
+    //     (no edges are exactly equal)
+    available = resrc_available_during_range (resource, 2500, 4000);
+    rc = (rc || !(available == 0));
+    //     (1 edge is exactly equal)
+    available = resrc_available_during_range (resource, 3000, 5000);
+    rc = (rc || !(available == 0));
+    ok (!rc, "resrc_available_during_range: range overlaps 1 job works");
+    rc = 0;
+
+    // Range overlaps multiple job windows
+    //     (no edges are exactly equal)
+    available = resrc_available_during_range (resource, 100, 1500);
+    rc = (rc || !(available == 4));
+    available = resrc_available_during_range (resource, 1500, 2500);
+    rc = (rc || !(available == 0));
+    //     (some edges are exactly equal)
+    available = resrc_available_during_range (resource, 1000, 2000);
+    rc = (rc || !(available == 0));
+    ok (!rc, "resrc_available_during_range: range overlaps multiple job works");
+    rc = 0;
+
+    // Range overlaps all job windows (edges exactly equal)
+    available = resrc_available_during_range (resource, 0, 3000);
+    rc = (rc || !(available == 0));
+    available = resrc_available_during_range (resource, 0, 2000);
+    rc = (rc || !(available == 0));
+    // Range overlaps no job windows
+    available = resrc_available_during_range (resource, 3001, 5000);
+    rc = (rc || !(available == 10));
+    ok (!rc, "resrc_available_during_range: range overlaps all job works");
+
+    resrc_resource_destroy (resource);
+}
+
+/*
+ * The test supports two options.  If there is an argument, it is
+ * treated as an RDL-formatted resource file to load.  If there is no
+ * arguement, the test reads the hwloc info from the node it is
+ * running on and uses those resources.  The 'rdl' boolean is used to
+ * steer the construction of the resource request to correlate with
+ * the loaded resources.
+ */
 int main (int argc, char *argv[])
 {
-    const char *filename = argv[1];
+    bool rdl;
+    char *buffer = NULL;
+    hwloc_topology_t topology;
+    int buflen = 0;
     int found = 0;
     int rc = 0;
-    int verbose = 1;
-    JSON ja = NULL;
-    JSON jpropo = NULL; /* json property object */
-    /* JSON jtago = NULL;  /\* json tag object *\/ */
+    int verbose = 0;
+    int64_t nowtime = epochtime ();
     JSON child_core = NULL;
-    JSON child_sock = NULL;
-    JSON memory = NULL;
     JSON o = NULL;
     JSON req_res = NULL;
     resrc_t *resrc = NULL;
@@ -115,19 +262,35 @@ int main (int argc, char *argv[])
     resrc_tree_t *found_tree = NULL;
     resrc_tree_t *resrc_tree = NULL;
 
-    plan (13);
-    if (filename == NULL || *filename == '\0')
-        filename = getenv ("TESTRESRC_INPUT_FILE");
-
-    ok ((filename != NULL), "valid resource file name");
-    ok ((access (filename, F_OK) == 0), "resoure file exists");
-    ok ((access (filename, R_OK) == 0), "resoure file readable");
-
     init_time();
-    resrc = resrc_generate_resources (filename, "default");
+    if (argc > 1) {
+        const char *filename = argv[1];
+        plan (13 + num_temporal_allocation_tests);
+        rdl = true;
+        ok (!(filename == NULL || *filename == '\0'), "resoure file provided");
+        ok ((access (filename, F_OK) == 0), "resoure file exists");
+        ok ((access (filename, R_OK) == 0), "resoure file readable");
 
-    ok ((resrc != NULL), "resource generation took: %lf",
-        ((double)get_time())/1000000);
+        resrc = resrc_generate_rdl_resources (filename, "default");
+        ok ((resrc != NULL), "resource generation from config file took: %lf",
+            ((double)get_time())/1000000);
+    } else {
+        plan (14 + num_temporal_allocation_tests);
+        rdl = false;
+        ok ((hwloc_topology_init (&topology) == 0),
+            "hwloc topology init succeeded");
+        ok ((hwloc_topology_load (topology) == 0),
+            "hwloc topology load succeeded");
+        ok ((hwloc_topology_export_xmlbuffer (topology, &buffer, &buflen) == 0),
+            "hwloc topology export succeeded");
+        ok (((resrc = resrc_create_cluster ("cluster")) != 0),
+            "cluster resource creation succeeded");
+        ok ((resrc_generate_xml_resources (resrc, buffer, buflen) != 0),
+            "resource generation from hwloc took: %lf",
+            ((double)get_time())/1000000);
+        hwloc_free_xmlbuffer (topology, buffer);
+        hwloc_topology_destroy (topology);
+    }
     if (!resrc)
         goto ret;
 
@@ -136,46 +299,57 @@ int main (int argc, char *argv[])
     if (!resrc_tree)
         goto ret;
 
-    if (0 && verbose) {
+    if (verbose) {
         printf ("Listing resource tree\n");
         resrc_tree_print (resrc_tree);
         printf ("End of resource tree\n");
     }
 
-    /*
-     *  Build a resource composite to search for
-     */
-    jpropo = Jnew ();
-    Jadd_int (jpropo, "localid", 1);
+    test_temporal_allocation ();
 
+    /*
+     *  Build a resource composite to search for.  Two variants are
+     *  constructed depending on whether the loaded resources came
+     *  from the sample RDL file or from the hwloc.  The hwloc request
+     *  does not span multiple nodes or contain the localid property.
+     */
     child_core = Jnew ();
     Jadd_str (child_core, "type", "core");
-    Jadd_int (child_core, "req_qty", 1);
-    json_object_object_add (child_core, "properties", jpropo);
-
-    memory = Jnew ();
-    Jadd_str (memory, "type", "memory");
-    Jadd_int (memory, "req_qty", 1);
-    Jadd_int (memory, "size", 100);
-
-    ja = Jnew_ar ();
-    json_object_array_add (ja, child_core);
-    json_object_array_add (ja, memory);
-
-    child_sock = Jnew ();
-    Jadd_str (child_sock, "type", "socket");
-    Jadd_int (child_sock, "req_qty", 1);
-    json_object_object_add (child_sock, "req_children", ja);
-
-    /* jtago = Jnew (); */
-    /* Jadd_bool (jtago, "maytag", true); */
-    /* Jadd_bool (jtago, "yourtag", true); */
-
     req_res = Jnew ();
     Jadd_str (req_res, "type", "node");
-    /* json_object_object_add (req_res, "tags", jtago); */
-    Jadd_int (req_res, "req_qty", 1);
-    json_object_object_add (req_res, "req_child", child_sock);
+
+    if (rdl) {
+        JSON child_sock = Jnew ();
+        JSON ja = Jnew_ar ();
+        JSON jpropo = Jnew (); /* json property object */
+        JSON memory = Jnew ();
+
+        /* JSON jtago = Jnew ();  /\* json tag object *\/ */
+        /* Jadd_bool (jtago, "maytag", true); */
+        /* Jadd_bool (jtago, "yourtag", true); */
+
+        Jadd_str (memory, "type", "memory");
+        Jadd_int (memory, "req_qty", 1);
+        Jadd_int (memory, "size", 100);
+        json_object_array_add (ja, memory);
+
+        Jadd_int (child_core, "req_qty", 6);
+        Jadd_int (jpropo, "localid", 1);
+        json_object_object_add (child_core, "properties", jpropo);
+        json_object_array_add (ja, child_core);
+
+        Jadd_str (child_sock, "type", "socket");
+        Jadd_int (child_sock, "req_qty", 2);
+        json_object_object_add (child_sock, "req_children", ja);
+
+        Jadd_int (req_res, "req_qty", 2);
+        /* json_object_object_add (req_res, "tags", jtago); */
+        json_object_object_add (req_res, "req_child", child_sock);
+    } else {
+        Jadd_int (child_core, "req_qty", 2);
+        Jadd_int (req_res, "req_qty", 1);
+        json_object_object_add (req_res, "req_child", child_core);
+    }
 
     resrc_reqst = resrc_reqst_from_json (req_res, NULL);
     Jput (req_res);
@@ -183,18 +357,18 @@ int main (int argc, char *argv[])
     if (!resrc_reqst)
         goto ret;
 
-    if (0 && verbose) {
+    if (verbose) {
         printf ("Listing resource request tree\n");
         resrc_reqst_print (resrc_reqst);
         printf ("End of resource request tree\n");
     }
 
-    init_time();
+    init_time ();
     found = resrc_tree_search (resrc_tree_children (resrc_tree), resrc_reqst,
                                found_trees, false);
 
     ok (found, "found %d composite resources in %lf", found,
-        ((double)get_time())/1000000);
+        ((double)get_time ())/1000000);
     if (!found)
         goto ret;
 
@@ -209,10 +383,10 @@ int main (int argc, char *argv[])
     }
 
     o = Jnew_ar ();
-    init_time();
-    rc = resrc_tree_list_serialize (o, found_trees);
+    init_time ();
+    rc = resrc_tree_list_serialize (o, found_trees, 0);
     ok (!rc, "found resource serialization took: %lf",
-        ((double)get_time())/1000000);
+        ((double)get_time ())/1000000);
 
     if (verbose) {
         printf ("The found resources serialized: %s\n", Jtostr (o));
@@ -230,51 +404,51 @@ int main (int argc, char *argv[])
     }
     Jput (o);
 
-    init_time();
+    init_time ();
 
     selected_trees = test_select_resources (found_trees, 1);
-    rc = resrc_tree_list_allocate (selected_trees, 1, 3600);
+    rc = resrc_tree_list_allocate (selected_trees, 1, nowtime, nowtime + 3600);
     ok (!rc, "successfully allocated resources for job 1");
     resrc_tree_list_free (selected_trees);
 
     selected_trees = test_select_resources (found_trees, 2);
-    rc = resrc_tree_list_allocate (selected_trees, 2, 3600);
+    rc = resrc_tree_list_allocate (selected_trees, 2, nowtime, nowtime + 3600);
     ok (!rc, "successfully allocated resources for job 2");
     resrc_tree_list_free (selected_trees);
 
     selected_trees = test_select_resources (found_trees, 3);
-    rc = resrc_tree_list_allocate (selected_trees, 3, 3600);
+    rc = resrc_tree_list_allocate (selected_trees, 3, nowtime, nowtime + 3600);
     ok (!rc, "successfully allocated resources for job 3");
     resrc_tree_list_free (selected_trees);
 
     selected_trees = test_select_resources (found_trees, 4);
-    rc = resrc_tree_list_reserve (selected_trees, 4);
+    rc = resrc_tree_list_reserve (selected_trees, 4, nowtime, nowtime + 3600);
     ok (!rc, "successfully reserved resources for job 4");
     resrc_tree_list_free (selected_trees);
 
-    printf ("allocate and reserve took: %lf\n", ((double)get_time())/1000000);
+    printf ("allocate and reserve took: %lf\n", ((double)get_time ())/1000000);
 
-    if (0 & verbose) {
+    if (verbose) {
         printf ("Allocated and reserved resources\n");
         resrc_tree_print (resrc_tree);
     }
 
-    init_time();
+    init_time ();
     rc = resrc_tree_list_release (found_trees, 1);
     ok (!rc, "resource release of job 1 took: %lf",
-        ((double)get_time())/1000000);
+        ((double)get_time ())/1000000);
 
-    if (0 & verbose) {
+    if (verbose) {
         printf ("Same resources without job 1\n");
         resrc_tree_print (resrc_tree);
     }
 
-    init_time();
+    init_time ();
     resrc_reqst_destroy (resrc_reqst);
     resrc_tree_list_destroy (deserialized_trees, true);
     resrc_tree_list_destroy (found_trees, false);
     resrc_tree_destroy (resrc_tree, true);
-    printf("destroy took: %lf\n", ((double)get_time())/1000000);
+    printf ("destroy took: %lf\n", ((double)get_time ())/1000000);
 ret:
     done_testing ();
 }
