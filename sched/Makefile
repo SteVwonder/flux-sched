@@ -5,7 +5,7 @@ LIBS = $(FLUX_LIBS) $(RESRC_LIBS)
 
 CONF=../conf/hype.lua
 
-BUILD = schedsrv.so schedplugin1.so flux-waitjob schedplugin-io.so
+BUILD = schedsrv.so schedplugin1.so flux-waitjob
 
 all: $(BUILD)
 

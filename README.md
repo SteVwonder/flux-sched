@@ -1,3 +1,7 @@
+This is a snapshot of the version of flux-sched used for the CCGrid
+2016 paper.  This was compiled against
+flux-core:b6c5d5648ac78fbef2a658e649ca6ea2025d4ed3.
+
 *NOTE: The interfaces of flux-sched are being actively developed and
 are not yet stable.* The github issue tracker is the primary way to
 communicate with the developers.
