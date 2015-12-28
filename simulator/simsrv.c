@@ -410,11 +410,31 @@ static void alive_cb (flux_t h,
     flux_log (h, LOG_DEBUG, "sending start event again");
 }
 
+static void sim_end_cb (flux_t h,
+                      flux_msg_handler_t *w,
+                      const flux_msg_t *msg,
+                      void *arg)
+{
+    const char *json_str;
+
+    if (flux_msg_get_payload_json (msg, &json_str) < 0) {
+        flux_log (h, LOG_ERR, "%s: bad reply message", __FUNCTION__);
+        return;
+    }
+
+    if (json_str) {
+        msg_exit (json_str);
+    } else {
+        msg_exit ("sim.end event received. Exiting.");
+    }
+}
+
 static struct flux_msg_handler_spec htab[] = {
     {FLUX_MSGTYPE_REQUEST, "sim.join", join_cb},
     {FLUX_MSGTYPE_REQUEST, "sim.reply", reply_cb},
     {FLUX_MSGTYPE_REQUEST, "sim.alive", alive_cb},
     {FLUX_MSGTYPE_EVENT, "rdl.update", rdl_update_cb},
+    {FLUX_MSGTYPE_EVENT, "sim.end", sim_end_cb},
     FLUX_MSGHANDLER_TABLE_END,
 };
 const int htablen = sizeof (htab) / sizeof (htab[0]);
@@ -445,6 +465,10 @@ int mod_main (flux_t h, int argc, char **argv)
     ctx = getctx (h, exit_on_complete);
 
     if (flux_event_subscribe (h, "rdl.update") < 0) {
+        flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
+        return -1;
+    }
+    if (flux_event_subscribe (h, "sim.end") < 0) {
         flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
         return -1;
     }

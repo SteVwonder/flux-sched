@@ -143,14 +143,14 @@ void resrc_tree_destroy (resrc_tree_t *resrc_tree, bool destroy_resrc)
     }
 }
 
-void resrc_tree_print (resrc_tree_t *resrc_tree)
+void resrc_tree_print (resrc_tree_t *resrc_tree, int64_t time_now)
 {
     if (resrc_tree) {
-        resrc_print_resource (resrc_tree->resrc);
+        resrc_print_resource (resrc_tree->resrc, time_now);
         if (resrc_tree_num_children (resrc_tree)) {
             resrc_tree_t *child = resrc_tree_list_first (resrc_tree->children);
             while (child) {
-                resrc_tree_print (child);
+                resrc_tree_print (child, time_now);
                 child = resrc_tree_list_next (resrc_tree->children);
             }
         }
@@ -428,13 +428,13 @@ int resrc_tree_list_release (resrc_tree_list_t *rtl, int64_t job_id)
     return rc;
 }
 
-void resrc_tree_list_print (resrc_tree_list_t *resrc_tree_list)
+void resrc_tree_list_print (resrc_tree_list_t *resrc_tree_list, int64_t time_now)
 {
         resrc_tree_t *curr_tree;
         for (curr_tree = resrc_tree_list_first (resrc_tree_list);
              curr_tree;
              curr_tree = resrc_tree_list_next (resrc_tree_list)) {
-            resrc_tree_print (curr_tree);
+            resrc_tree_print (curr_tree, time_now);
         }
 }
 

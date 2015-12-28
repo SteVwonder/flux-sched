@@ -53,6 +53,7 @@ typedef struct {
 
 static double determine_io_penalty (size_t job_bandwidth, size_t min_bandwidth);
 static size_t *get_job_min_from_hash (zhash_t *job_hash, int job_id);
+static resrc_t* get_io_resrc (resrc_tree_t *resrc_tree);
 
 static void freectx (void *arg)
 {
@@ -203,7 +204,7 @@ static void release_job_tree_from_resrcs (resources_t *resrcs,
 {
     resrc_t *job_resrc = resrc_tree_resrc (job_tree);
     char* job_resrc_path = resrc_path (job_resrc);
-    resrc_t *resrc = resrc_lookup(resrcs, job_resrc_path);
+    resrc_t *resrc = resrc_lookup (resrcs, job_resrc_path);
     resrc_release_resource (resrc, job->id);
 
     resrc_tree_t *curr_child = NULL;
@@ -215,6 +216,23 @@ static void release_job_tree_from_resrcs (resources_t *resrcs,
     }
 }
 
+static void release_job_io_from_resrcs (resources_t *resrcs,
+                                        resrc_tree_t *job_tree,
+                                        job_t *job)
+{
+    resrc_t *job_resrc = resrc_tree_resrc (job_tree);
+    char* job_resrc_path = resrc_path (job_resrc);
+    resrc_t *resrc = resrc_lookup (resrcs, job_resrc_path);
+    resrc_tree_t *curr_ancestor = NULL;
+    resrc_t *io_resrc = NULL;
+    for (curr_ancestor = resrc_phys_tree (resrc);
+         curr_ancestor;
+         curr_ancestor = resrc_tree_parent (curr_ancestor)) {
+        io_resrc = get_io_resrc (curr_ancestor);
+        resrc_release_resource (io_resrc, job->id);
+    }
+}
+
 static void release_job_from_resrcs (resources_t *resrcs, job_t *job)
 {
     resrc_tree_t *curr_tree = NULL;
@@ -222,8 +240,27 @@ static void release_job_from_resrcs (resources_t *resrcs, job_t *job)
          curr_tree;
          curr_tree = resrc_tree_list_next (job->resrc_trees)) {
         release_job_tree_from_resrcs (resrcs, curr_tree, job);
+        release_job_io_from_resrcs (resrcs, curr_tree, job);
     }
 }
+
+/*
+static bool compare_jobs (void *item1, void* item2)
+{
+    int int1 = ((job_t*)item1)->id;
+    int int2 = ((job_t*)item2)->id;
+
+    return int1 > int2;
+}
+
+static bool compare_int_strs (void *item1, void* item2)
+{
+    int int1 = atoi((char*)item1);
+    int int2 = atoi((char*)item2);
+
+    return int1 > int2;
+}
+*/
 
 // Update sched timer as necessary (to trigger an event in sched)
 // Also change the state of the job in the KVS
@@ -238,7 +275,6 @@ static int complete_job (ctx_t *ctx, job_t *job, double completion_time)
     kvsdir_put_double (job->kvs_dir, "complete_time", completion_time);
     kvsdir_put_double (job->kvs_dir, "io_time", job->io_time);
     release_job_from_resrcs(ctx->resrcs, job);
-
     kvs_commit (h);
     free_job (job);
 
@@ -548,6 +584,7 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
 
     JSON job_stat = NULL;
     JSON job_stats = NULL;
+    JSON exec_stats = NULL;
     char stats_kvs_key[100];
 
     while (curr_time < sim_time) {
@@ -561,6 +598,7 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
         next_event = ((sim_time < next_termination) || (next_termination < 0))
                          ? sim_time
                          : next_termination;  // min of the two
+        exec_stats = Jnew ();
         job_stats = Jnew_ar ();
         while (num_jobs > 0) {
             job = zlist_pop (running_jobs);
@@ -576,7 +614,6 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
                 curr_progress = calc_curr_progress (job, next_event);
 
                 // Add job stats to JSON array for logging to KVS
-                flux_log (ctx->h, LOG_DEBUG, "%s: job id: %d", __FUNCTION__, job->id);
                 job_stat = Jnew ();
                 Jadd_int (job_stat, "jobid", job->id);
                 Jadd_double (job_stat, "io_penalty", io_penalty);
@@ -596,9 +633,16 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
             }
             num_jobs--;
         }
+        int64_t pfs_io_available = -1;
+        resrc_t *pfs_io = resrc_lookup (ctx->resrcs, "/pfs/io");
+        pfs_io_available = (int64_t) resrc_available_at_time (pfs_io, curr_time);
+
+        json_object_object_add (exec_stats, "job_stats", job_stats);
+        Jadd_int64 (exec_stats, "pfs_io_available", pfs_io_available);
+
         sprintf (stats_kvs_key, "sim_exec.%d-%d", (int) curr_time, (int) next_event);
-        kvs_put_string (ctx->h, stats_kvs_key, Jtostr (job_stats));
-        Jput (job_stats);
+        kvs_put_string (ctx->h, stats_kvs_key, Jtostr (exec_stats));
+        Jput (exec_stats);
         curr_time = next_event;
     }
 
@@ -619,7 +663,7 @@ static int allocate_io (ctx_t *ctx, resrc_tree_t *resrc_tree, job_t *job)
         io_resrc = get_io_resrc (curr_resrc_tree);
         resrc_stage_resrc (io_resrc, size);
         rc = resrc_allocate_resource_unchecked (io_resrc, job->id,
-                                                starttime, -1);
+                                                starttime, job->walltime);
     }
 
     return rc;
@@ -653,9 +697,9 @@ static int add_job_tree_to_resrcs (ctx_t *ctx,
         resrc_stage_resrc (resrc, alloc_size);
         if (resrc_allocate_resource (resrc, job->id,
                                      ctx->sim_state->sim_time,
-                                     -1)) {
-            flux_log (ctx->h, LOG_ERR, "%s: Failed to alloc resrc",
-                      __FUNCTION__);
+                                     job->walltime)) {
+            flux_log (ctx->h, LOG_ERR, "%s: Failed to alloc resrc (%s) for job %d",
+                      __FUNCTION__, resrc_path (resrc), job->id);
             return -1;
         }
     }
@@ -734,7 +778,7 @@ static int handle_queued_events (ctx_t *ctx)
                   LOG_INFO,
                   "%s: job %d's state to starting then running",
                   __FUNCTION__, *jobid);
-        job->start_time = ctx->sim_state->sim_time;
+        job->start_time = sim_time;
         zlist_append (running_jobs, job);
     }
 

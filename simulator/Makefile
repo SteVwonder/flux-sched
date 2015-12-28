@@ -5,8 +5,8 @@ CFLAGS = $(COMMON_CFLAGS) $(FLUX_CFLAGS) $(RDL_CFLAGS) $(RESRC_CFLAGS)
 LIBS = $(FLUX_LIBS) $(RDL_LIBS) $(KVS_LIBS) $(RESRC_LIBS)
 ALL_LIBS=$(LIBS) $(SIM_LIBS)
 
-CONF=../conf/hype-io.lua
-JOBDATA=job_data/hype.csv
+CONF=../conf/cts-io-noswitch.lua
+JOBDATA=job_data/cts_0.csv
 
 COMMON_OBJS = xzmalloc.o log.o jsonutil.o
 
@@ -28,12 +28,14 @@ sim_sched_%.so: sim_sched_%.c $(COMMON_OBJS) $(SCHEDULER_OBJS) libsim.so
 %srv.so : %srv.o $(COMMON_OBJS) libsim.so
 	$(CC) $(CFLAGS) -shared -o $@ $^ $(ALL_LIBS)
 
+#	HEAPPROFILE=/p/lscratchf/herbein1/flux-profile
 start:
-	$(FLUX) -B ../.build/src/broker/flux-broker start -o -l 7
+	 $(FLUX) -B ../.build/src/broker/flux-broker start -o -l 7
 load:
 	$(FLUX) module load ./simsrv.so exit-on-complete=false
 	$(FLUX) module load ./submitsrv.so job-csv=$(JOBDATA)
 	$(FLUX) module load ./sim_execsrv.so
+	$(FLUX) module load pymod -v --path=/g/g17/herbein1/Repositories/LLNL/src/testing/submit_scripts complete
 unload:
 	$(FLUX) module remove sim_exec
 	$(FLUX) module remove submit
@@ -42,7 +44,7 @@ unload:
 sim_sched_%: sim_sched_%.so load
 	$(FLUX) module load ./$@.so rdl-conf=$(CONF)
 sched: load
-	$(FLUX) module load ../sched/schedsrv.so rdl-conf=$(CONF) in-sim=true plugin=sched.plugin1 backfill=easy
+	$(FLUX) module load ../sched/schedsrv.so rdl-conf=$(CONF) in-sim=true backfill=easy #io=true
 
 check: all
 	for subdir in $(SUBDIRS); do make -C $$subdir $@; done
@@ -54,10 +56,10 @@ clean:
 ## Debugging convienences
 SCHED=../sched/schedsrv.so
 EXEC_MOD=--module ./sim_execsrv.so
-SIM_MOD=--module ./simsrv.so --modopt sim:save-path=${SAVEPATH}
+SIM_MOD=--module ./simsrv.so
 SUBMIT_MOD=--module ./submitsrv.so --modopt submit:job-csv=${JOBDATA}
 #SCHED_MOD=--module ./${SCHED} --modopt sim_sched:rdl-conf=${CONF}
-SCHED_MOD=--module ./${SCHED} --modopt sched:rdl-conf=${CONF} --modopt sched:in-sim=true --modopt sched:plugin=sched.plugin1 --modopt sched:backfill=easy
+SCHED_MOD=--module ./${SCHED} --modopt sched:rdl-conf=${CONF} --modopt sched:in-sim=true --modopt sched:io=true --modopt sched:backfill=easy
 BROKER_OPTS=-Lstderr ${EXEC_MOD} ${SIM_MOD} ${SUBMIT_MOD} ${SCHED_MOD} --boot-method=SINGLE -l 7
 BROKER=$(FLUX_BUILDDIR)/src/broker/.libs/flux-broker
 

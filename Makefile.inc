@@ -12,10 +12,10 @@ include $(FLUX_BUILDDIR)/etc/Makefile.inc
 PATH := $(FLUX_BUILDDIR)/src/cmd:$(PATH)
 FLUX_LIBS := -Wl,-rpath,$(FLUX_BUILDDIR)/src/modules/libjsc/.libs \
             -L$(FLUX_BUILDDIR)/src/modules/libjsc/.libs -ljsc \
-            $(FLUX_LIBS)
+            $(FLUX_LIBS) -ltcmalloc
 else
 FLUX_CFLAGS := $(shell pkg-config --cflags flux-core)
-FLUX_LIBS := $(shell pkg-config --libs flux-core)
+FLUX_LIBS := $(shell pkg-config --libs flux-core) -ltcmalloc
 #FIXME: Need a way to pick up module interface libs from pkg-config? 
 endif
 
@@ -51,4 +51,4 @@ KVS_LIBS = -Wl,-rpath,$(FLUX_BUILDDIR)/src/modules/kvs/.libs \
 # When we invoke flux we need to provide additional LUA paths for RDL
 #
 FLUX = flux -C$(RDL_LUA_CPATH) -L$(RDL_LUA_PATH) -M$(SCHED_MODULE_PATH) -x$(SUBMIT_EXEC_PATH)
-COMMON_CFLAGS = -g -Wall -Werror -Wno-error=deprecated-declarations -fPIC -D_GNU_SOURCE=1
+COMMON_CFLAGS = -O2 -Wall -Werror -Wno-error=deprecated-declarations -fPIC -D_GNU_SOURCE=1 -Wno-deprecated-declarations

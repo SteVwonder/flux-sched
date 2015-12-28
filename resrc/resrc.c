@@ -68,6 +68,11 @@ char *resrc_type (resrc_t *resrc)
     return NULL;
 }
 
+zhash_t *resrc_allocs (resrc_t *resrc)
+{
+    return resrc->allocs;
+}
+
 char *resrc_path (resrc_t *resrc)
 {
     if (resrc)
@@ -148,8 +153,8 @@ zlist_t *resrc_curr_job_ids (resrc_t *resrc, int64_t time)
 
 size_t resrc_available_at_time (resrc_t *resrc, int64_t time)
 {
-    int64_t start_time;
-    int64_t end_time;
+    int64_t start_time = 0;
+    int64_t end_time = 0;
 
     const char *curr_job_id = NULL;
     const char *window_json_str = NULL;
@@ -202,7 +207,7 @@ size_t resrc_available_at_time (resrc_t *resrc, int64_t time)
 #if CZMQ_VERSION < CZMQ_MAKE_VERSION(3, 0, 1)
 static bool compare_windows_starttime (void *item1, void *item2)
 {
-    int64_t starttime1, starttime2;
+    int64_t starttime1 = 0, starttime2 = 0;
     JSON json1 = (JSON) item1;
     JSON json2 = (JSON) item2;
 
@@ -214,7 +219,7 @@ static bool compare_windows_starttime (void *item1, void *item2)
 #else
 static int compare_windows_starttime (void *item1, void *item2)
 {
-    int64_t starttime1, starttime2;
+    int64_t starttime1 = 0, starttime2 = 0;
     JSON json1 = (JSON) item1;
     JSON json2 = (JSON) item2;
 
@@ -229,7 +234,7 @@ static int compare_windows_starttime (void *item1, void *item2)
 #if CZMQ_VERSION < CZMQ_MAKE_VERSION(3, 0, 1)
 static bool compare_windows_endtime (void *item1, void *item2)
 {
-    int64_t endtime1, endtime2;
+    int64_t endtime1 = 0, endtime2 = 0;
     JSON json1 = (JSON) item1;
     JSON json2 = (JSON) item2;
 
@@ -241,7 +246,7 @@ static bool compare_windows_endtime (void *item1, void *item2)
 #else
 static int compare_windows_endtime (void *item1, void *item2)
 {
-    int64_t endtime1, endtime2;
+    int64_t endtime1 = 0, endtime2 = 0;
     JSON json1 = (JSON) item1;
     JSON json2 = (JSON) item2;
 
@@ -267,8 +272,8 @@ size_t resrc_available_during_range (resrc_t *resrc,
         return resrc_available_at_time (resrc, range_start_time);
     }
 
-    int64_t curr_start_time;
-    int64_t curr_end_time;
+    int64_t curr_start_time = 0;
+    int64_t curr_end_time = 0;
 
     const char *window_key = NULL;
     const char *window_json_str = NULL;
@@ -299,7 +304,7 @@ size_t resrc_available_during_range (resrc_t *resrc,
     // job id to the JSON obj and insert the JSON obj into the
     // "matching windows" list.
     window_keys = zhash_keys (resrc->twindow);
-    window_key = (const char *) zlist_next (window_keys);
+    window_key = (const char *) zlist_first (window_keys);
     while (window_key) {
         window_json_str = (const char*) zhash_lookup (resrc->twindow, window_key);
         window_json = Jfromstr (window_json_str);
@@ -356,7 +361,7 @@ size_t resrc_available_during_range (resrc_t *resrc,
     // this optimziation is correct/safe.
     while (curr_start_window) {
         if ((curr_start_window) &&
-            (curr_start_time < curr_end_time)) {
+            (curr_start_time <= curr_end_time)) {
             // New range is starting, get its size and subtract it
             // from current available
             Jget_str (curr_start_window, "key", &window_key);
@@ -391,8 +396,9 @@ size_t resrc_available_during_range (resrc_t *resrc,
             }
         } else {
             fprintf (stderr,
-                     "%s - ERR: Both start/end windows are empty\n",
-                     __FUNCTION__);
+                     "%s - ERR: Both start/end windows are empty for %s\n",
+                     __FUNCTION__, resrc->path);
+            return -1;
         }
         min_available = (curr_available < min_available) ? curr_available : min_available;
     }
@@ -666,19 +672,25 @@ int resrc_to_json (JSON o, resrc_t *resrc)
     return rc;
 }
 
-void resrc_print_resource (resrc_t *resrc)
+void resrc_print_resource (resrc_t *resrc, int64_t time_now)
 {
     char uuid[40];
     char *property;
     char *tag;
     size_t *size_ptr;
+    int64_t available = 0;
+
+    if (time_now < 0) {
+        time_now = epochtime ();
+    }
 
     if (resrc) {
+        available = resrc_available_at_time (resrc, time_now);
         uuid_unparse (resrc->uuid, uuid);
         printf ("resrc type: %s, path: %s, name: %s, id: %"PRId64", state: %s, "
-                "uuid: %s, size: %"PRIu64"",
+                "uuid: %s, size: %"PRIu64", available: %"PRId64"",
                 resrc->type, resrc->path, resrc->name, resrc->id,
-                resrc_state (resrc), uuid, resrc->size);
+                resrc_state (resrc), uuid, resrc->size, available);
         if (zhash_size (resrc->properties)) {
             printf (", properties:");
             property = zhash_first (resrc->properties);
@@ -729,10 +741,10 @@ bool resrc_walltime_match (resrc_t *resrc, resrc_t *sample)
 {
     bool rc = false;
 
-    int64_t jstarttime; // Job start time
-    int64_t jendtime; // Job end time
-    int64_t jwalltime; // Job walltime
-    int64_t lendtime; // Resource lifetime end time
+    int64_t jstarttime = 0; // Job start time
+    int64_t jendtime = 0; // Job end time
+    int64_t jwalltime = 0; // Job walltime
+    int64_t lendtime = 0; // Resource lifetime end time
 
     char *json_str_window = NULL;
 

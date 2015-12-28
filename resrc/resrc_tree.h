@@ -61,7 +61,7 @@ void resrc_tree_destroy (resrc_tree_t *resrc_tree, bool destroy_resrc);
 /*
  * Print the resources in a resrc_tree_t object
  */
-void resrc_tree_print (resrc_tree_t *resrc_tree);
+void resrc_tree_print (resrc_tree_t *resrc_tree, int64_t time_now);
 
 /*
  * Add the input resource tree to the json object
@@ -166,7 +166,7 @@ int resrc_tree_list_reserve (resrc_tree_list_t *rtl, int64_t job_id,
  */
 int resrc_tree_list_release (resrc_tree_list_t *rtl, int64_t job_id);
 
-void resrc_tree_list_print (resrc_tree_list_t *resrc_tree_list);
+void resrc_tree_list_print (resrc_tree_list_t *resrc_tree_list, int64_t time_now);
 
 resources_t *resrc_new_resources_from_tree_list (resrc_tree_list_t *resrc_tree_list);
 

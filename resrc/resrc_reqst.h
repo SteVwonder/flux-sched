@@ -79,7 +79,7 @@ void resrc_reqst_destroy (resrc_reqst_t *resrc_reqst);
 /*
  * Print the resources in a resrc_reqst_t object
  */
-void resrc_reqst_print (resrc_reqst_t *resrc_reqst);
+void resrc_reqst_print (resrc_reqst_t *resrc_reqst, int64_t time_now);
 
 /***********************************************************************
  * Resource request list

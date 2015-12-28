@@ -277,7 +277,7 @@ int main (int argc, char *argv[])
 
     if (verbose) {
         printf ("Listing resource tree\n");
-        resrc_tree_print (resrc_tree);
+        resrc_tree_print (resrc_tree, -1);
         printf ("End of resource tree\n");
     }
 
@@ -326,7 +326,7 @@ int main (int argc, char *argv[])
 
     if (verbose) {
         printf ("Listing resource request tree\n");
-        resrc_reqst_print (resrc_reqst);
+        resrc_reqst_print (resrc_reqst, -1);
         printf ("End of resource request tree\n");
     }
 
@@ -343,7 +343,7 @@ int main (int argc, char *argv[])
         printf ("Listing found trees\n");
         found_tree = resrc_tree_list_first (found_trees);
         while (found_tree) {
-            resrc_tree_print (found_tree);
+            resrc_tree_print (found_tree, -1);
             found_tree = resrc_tree_list_next (found_trees);
         }
         printf ("End of found trees\n");
@@ -364,7 +364,7 @@ int main (int argc, char *argv[])
         printf ("Listing deserialized trees\n");
         deserialized_tree = resrc_tree_list_first (deserialized_trees);
         while (deserialized_tree) {
-            resrc_tree_print (deserialized_tree);
+            resrc_tree_print (deserialized_tree, -1);
             deserialized_tree = resrc_tree_list_next (deserialized_trees);
        }
         printf ("End of deserialized trees\n");
@@ -397,7 +397,7 @@ int main (int argc, char *argv[])
 
     if (verbose) {
         printf ("Allocated and reserved resources\n");
-        resrc_tree_print (resrc_tree);
+        resrc_tree_print (resrc_tree, -1);
     }
 
     init_time ();
@@ -407,7 +407,7 @@ int main (int argc, char *argv[])
 
     if (verbose) {
         printf ("Same resources without job 1\n");
-        resrc_tree_print (resrc_tree);
+        resrc_tree_print (resrc_tree, -1);
     }
 
     init_time ();

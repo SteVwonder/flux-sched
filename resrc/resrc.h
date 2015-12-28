@@ -26,6 +26,8 @@ typedef enum {
 } resource_state_t;
 
 
+zhash_t *resrc_allocs (resrc_t *resrc);
+
 /*
  * Return the type of the resouce
  */
@@ -116,7 +118,7 @@ int resrc_to_json (JSON o, resrc_t *resrc);
 /*
  * Print details of a specific resource
  */
-void resrc_print_resource (resrc_t *resrc);
+void resrc_print_resource (resrc_t *resrc, int64_t time_now);
 
 /*
  * Determine whether a specific resource has the required characteristics
