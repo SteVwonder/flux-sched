@@ -132,7 +132,7 @@ zlist_t *resrc_curr_job_ids (resrc_t *resrc, int64_t time)
 
         // Does time intersect with window?
         if (time >= start_time && time <= end_time) {
-            zlist_append (matching_jobs, strdup (window_key));
+            zlist_append (matching_jobs, window_key);
         }
 
         Jput (window_json);
@@ -321,6 +321,8 @@ size_t resrc_available_during_range (resrc_t *resrc,
                 zlist_append (matching_windows, window_json);
                 zlist_freefn (matching_windows, window_json, myJput, true);
             }
+        } else {
+            Jput (window_json);
         }
 
         window_key = zlist_next (window_keys);
@@ -460,7 +462,6 @@ resrc_t *resrc_new_resource (const char *type, const char *path,
         resrc->properties = zhash_new ();
         resrc->tags = zhash_new ();
         resrc->twindow = zhash_new ();
-        zhash_autofree (resrc->twindow);
     }
 
     return resrc;
@@ -523,6 +524,7 @@ resrc_t *resrc_new_from_json (JSON o, resrc_t *parent, bool physical)
     const char *path = NULL;
     const char *tmp = NULL;
     const char *type = NULL;
+    char * json_str = NULL;
     int64_t id;
     int64_t ssize;
     json_object_iter iter;
@@ -592,16 +594,18 @@ resrc_t *resrc_new_from_json (JSON o, resrc_t *parent, bool physical)
         if (Jget_int64 (o, "walltime", &job_time)) {
             JSON w = Jnew ();
             Jadd_int64 (w, "walltime", job_time);
-            char *json_str = strdup (Jtostr (w));
-            zhash_insert (resrc->twindow, "0", (void *) json_str);
+            json_str = strdup (Jtostr (w));
+            zhash_insert (resrc->twindow, "0", (void*) json_str);
+            zhash_freefn (resrc->twindow, "0", free);
             Jput (w);
         } else if (Jget_int64 (o, "starttime", &job_time)) {
             JSON w = Jnew ();
             Jadd_int64 (w, "starttime", job_time);
             Jget_int64 (o, "endtime", &job_time);
             Jadd_int64 (w, "endtime", job_time);
-            char *json_str = strdup (Jtostr (w));
-            zhash_insert (resrc->twindow, "0", (void *)json_str);
+            json_str = strdup (Jtostr (w));
+            zhash_insert (resrc->twindow, "0", (void*) json_str);
+            zhash_freefn (resrc->twindow, "0", free);
             Jput (w);
         }
     }
@@ -883,7 +887,8 @@ int resrc_allocate_resource (resrc_t *resrc, int64_t job_id, int64_t time_now, i
             Jadd_int64 (j, "starttime", time_now);
             Jadd_int64 (j, "endtime", end_time);
             json_str = strdup (Jtostr (j));
-            zhash_insert (resrc->twindow, id_ptr, (void *)json_str);
+            zhash_insert (resrc->twindow, id_ptr, (void*) json_str);
+            zhash_freefn (resrc->twindow, id_ptr, free);
             Jput (j);
         }
         resrc->staged = 0;
@@ -932,7 +937,8 @@ int resrc_allocate_resource_unchecked (resrc_t *resrc, int64_t job_id,
             Jadd_int64 (j, "starttime", time_now);
             Jadd_int64 (j, "endtime", end_time);
             json_str = strdup (Jtostr (j));
-            zhash_insert (resrc->twindow, id_ptr, (void *)json_str);
+            zhash_insert (resrc->twindow, id_ptr, (void*) json_str);
+            zhash_freefn (resrc->twindow, id_ptr, free);
             Jput (j);
         }
         resrc->staged = 0;
@@ -999,7 +1005,8 @@ int resrc_reserve_resource (resrc_t *resrc, int64_t job_id,
             Jadd_int64 (j, "starttime", time_now);
             Jadd_int64 (j, "endtime", end_time);
             json_str = strdup (Jtostr (j));
-            zhash_insert (resrc->twindow, id_ptr, (void *)json_str);
+            zhash_insert (resrc->twindow, id_ptr, (void*)json_str);
+            zhash_freefn (resrc->twindow, id_ptr, free);
             Jput (j);
         }
         resrc->staged = 0;
