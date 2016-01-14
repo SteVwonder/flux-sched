@@ -236,7 +236,6 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
     resrc_tree_list_t *selected_res = NULL;
     resrc_tree_t *new_tree = NULL;
     resrc_tree_t *rt;
-    int should_break = false;
 
     if (!resrc_reqst) {
         flux_log (h, LOG_ERR, "%s: called with empty request", __FUNCTION__);
@@ -249,9 +248,6 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
     rt = resrc_tree_list_first (found_trees);
     while (reqrd && rt) {
         resrc = resrc_tree_resrc (rt);
-        if (!strcmp (resrc_path (resrc), "/pfs/gateway_node_pool/core_switch_pool/edge_switch48/cts-1857")) {
-            should_break = true;
-        }
         if (resrc_match_resource (resrc, resrc_reqst_resrc (resrc_reqst),
                                   true)) {
 
