@@ -53,8 +53,6 @@ int64_t resrc_id (resrc_t *resrc);
  */
 size_t resrc_size (resrc_t *resrc);
 
-zhash_t *resrc_twindow (resrc_t *resrc);
-
 /*
  * Get a list of jobs with an allocation on this resource at time
  */

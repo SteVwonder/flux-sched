@@ -101,14 +101,6 @@ size_t resrc_size (resrc_t *resrc)
     return 0;
 }
 
-// TODO: don't expose zhash_t in API
-zhash_t *resrc_twindow (resrc_t *resrc)
-{
-    if (resrc)
-        return resrc->twindow;
-    return NULL;
-}
-
 // TODO: don't expose zlist_t in API
 zlist_t *resrc_curr_job_ids (resrc_t *resrc, int64_t time)
 {
@@ -1026,6 +1018,7 @@ int resrc_release_resource (resrc_t *resrc, int64_t rel_job)
     int rc = 0;
 
     if (!resrc || !rel_job) {
+        fprintf(stderr, "%s: called on junk\n", __FUNCTION__);
         rc = -1;
         goto ret;
     }
