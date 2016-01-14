@@ -650,6 +650,16 @@ static void trigger_cb (flux_t h,
     Jput (o);
 }
 
+static void shutdown_cb (flux_t h,
+                             flux_msg_handler_t *w,
+                             const flux_msg_t *msg,
+                             void *arg)
+{
+    flux_log (h, LOG_DEBUG, "Shutting down schedsrv");
+    flux_reactor_stop (flux_get_reactor (h));
+}
+
+
 /*
 static void sim_rdl_cb (flux_t h, flux_msg_handler_t *w,
                               const flux_msg_t *msg, void *arg)
@@ -677,6 +687,7 @@ static void sim_rdl_cb (flux_t h, flux_msg_handler_t *w,
  */
 
 static struct flux_msg_handler_spec sim_htab[] = {
+    {FLUX_MSGTYPE_EVENT, "shutdown", shutdown_cb},
     {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
     {FLUX_MSGTYPE_REQUEST, "sched.trigger", trigger_cb},
     {FLUX_MSGTYPE_EVENT, "sched.res.*", sim_res_event_cb},
@@ -688,6 +699,10 @@ static int reg_sim_events (ssrvctx_t *ctx)
     int rc = -1;
     flux_t h = ctx->h;
 
+    if (flux_event_subscribe (h, "shutdown") < 0) {
+        flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
+        return -1;
+    }
     if (flux_event_subscribe (ctx->h, "sim.start") < 0) {
         flux_log (ctx->h, LOG_ERR, "subscribing to event: %s", strerror (errno));
         goto done;

@@ -929,7 +929,17 @@ static void rdl_cb (flux_t h,
 }
 */
 
+static void shutdown_cb (flux_t h,
+                             flux_msg_handler_t *w,
+                             const flux_msg_t *msg,
+                             void *arg)
+{
+    flux_log (h, LOG_DEBUG, "Shutting down %s", module_name);
+    flux_reactor_stop (flux_get_reactor (h));
+}
+
 static struct flux_msg_handler_spec htab[] = {
+    {FLUX_MSGTYPE_EVENT, "shutdown", shutdown_cb},
     {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
     {FLUX_MSGTYPE_REQUEST, "sim_exec.trigger", trigger_cb},
     {FLUX_MSGTYPE_REQUEST, "sim_exec.run.*", run_cb},
@@ -945,6 +955,10 @@ int mod_main (flux_t h, int argc, char **argv)
     }
     flux_log (h, LOG_INFO, "module starting");
 
+    if (flux_event_subscribe (h, "shutdown") < 0) {
+        flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
+        return -1;
+    }
     if (flux_event_subscribe (h, "sim.start") < 0) {
         flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
         return -1;

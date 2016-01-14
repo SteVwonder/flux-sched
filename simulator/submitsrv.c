@@ -337,7 +337,17 @@ static void trigger_cb (flux_t h,
     Jput (o);
 }
 
+static void shutdown_cb (flux_t h,
+                             flux_msg_handler_t *w,
+                             const flux_msg_t *msg,
+                             void *arg)
+{
+    flux_log (h, LOG_DEBUG, "Shutting down %s", module_name);
+    flux_reactor_stop (flux_get_reactor (h));
+}
+
 static struct flux_msg_handler_spec htab[] = {
+    {FLUX_MSGTYPE_EVENT, "shutdown", shutdown_cb},
     {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
     {FLUX_MSGTYPE_REQUEST, "submit.trigger", trigger_cb},
     FLUX_MSGHANDLER_TABLE_END,
@@ -364,6 +374,10 @@ int mod_main (flux_t h, int argc, char **argv)
     parse_job_csv (h, csv_filename, jobs);
     flux_log (h, LOG_INFO, "submit comms module finished parsing job data");
 
+    if (flux_event_subscribe (h, "shutdown") < 0) {
+        flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
+        return -1;
+    }
     if (flux_event_subscribe (h, "sim.start") < 0) {
         flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
         return -1;
