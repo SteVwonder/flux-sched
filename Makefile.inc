@@ -12,10 +12,10 @@ include $(FLUX_BUILDDIR)/etc/Makefile.inc
 PATH := $(FLUX_BUILDDIR)/src/cmd:$(PATH)
 FLUX_LIBS := -Wl,-rpath,$(FLUX_BUILDDIR)/src/modules/libjsc/.libs \
             -L$(FLUX_BUILDDIR)/src/modules/libjsc/.libs -ljsc \
-            $(FLUX_LIBS) -ltcmalloc
+            $(FLUX_LIBS)
 else
 FLUX_CFLAGS := $(shell pkg-config --cflags flux-core)
-FLUX_LIBS := $(shell pkg-config --libs flux-core) -ltcmalloc
+FLUX_LIBS := $(shell pkg-config --libs flux-core)
 #FIXME: Need a way to pick up module interface libs from pkg-config? 
 endif
 
