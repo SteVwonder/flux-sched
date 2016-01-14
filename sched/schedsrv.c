@@ -198,7 +198,7 @@ static inline int fill_resource_req (flux_t h, flux_lwj_t *j)
     j->req = (flux_res_t *) xzmalloc (sizeof (flux_res_t));
     if ((rc = jsc_query_jcb_obj (h, j->lwj_id, JSC_RDESC, &jcb)) != 0) {
         flux_log (h, LOG_ERR, "error in jsc_query_job.");
-        goto done;
+        goto jsc_error;
     }
     if (!Jget_obj (jcb, JSC_RDESC, &o)) goto done;
     if (!Jget_int64 (o, JSC_RDESC_NNODES, &nn)) goto done;
@@ -215,15 +215,18 @@ static inline int fill_resource_req (flux_t h, flux_lwj_t *j)
     int64_t io_rate = 0;
     if (kvs_get_int64 (h, kvs_key, &io_rate)) {
         flux_log (h, LOG_ERR, "%s: err=%s", __FUNCTION__, strerror(errno));
-        goto done;
+        goto kvs_error;
     }
     j->req->io_rate = (uint64_t) io_rate;
     free (kvs_key);
 
-    rc = 0;
 done:
-    if (jcb)
+    rc = 0;
+kvs_error:
+    if (jcb) {
         Jput (jcb);
+    }
+jsc_error:
     return rc;
 }
 
@@ -291,15 +294,18 @@ static flux_lwj_t *q_find_job (ssrvctx_t *ctx, int64_t id)
     /* NOTE: performance issue when we have
      * large numbers of jobs in the system?
      */
-    for (j = zlist_first (ctx->p_queue); j; j = zlist_next (ctx->p_queue))
+    for (j = zlist_first (ctx->p_queue); j; j = zlist_next (ctx->p_queue)) {
         if (j->lwj_id == id)
             return j;
-    for (j = zlist_first (ctx->r_queue); j; j = zlist_next (ctx->r_queue))
+    }
+    for (j = zlist_first (ctx->r_queue); j; j = zlist_next (ctx->r_queue)) {
         if (j->lwj_id == id)
             return j;
-    for (j = zlist_first (ctx->c_queue); j; j = zlist_next (ctx->c_queue))
+    }
+    for (j = zlist_first (ctx->c_queue); j; j = zlist_next (ctx->c_queue)) {
         if (j->lwj_id == id)
             return j;
+    }
     return NULL;
 }
 
@@ -618,16 +624,6 @@ static void trigger_cb (flux_t h,
     handle_res_queue (ctx);
 
     sched_loop = true;
-    /*
-    if ((sched_loop =
-             should_run_schedule_loop (ctx, (int)sim_state->sim_time))) {
-        flux_log (h, LOG_DEBUG, "Running the schedule loop");
-        if (schedule_jobs (ctx, sim_state->sim_time) > 0) {
-            queue_timer_change (ctx, module_name);
-        }
-        end_schedule_loop (ctx);
-    }
-    */
 
     diff = clock () - start;
     seconds = ((double)diff) / CLOCKS_PER_SEC;
@@ -1248,7 +1244,7 @@ static resrc_tree_list_t *io_select_resources (ssrvctx_t *ctx, flux_lwj_t *job,
         for (curr_tree = resrc_tree_list_first (selected_res);
              curr_tree;
              curr_tree = resrc_tree_list_next (selected_res)) {
-            phys_tree_ptr = resrc_phys_tree(resrc_tree_resrc(curr_tree));
+            phys_tree_ptr = resrc_phys_tree (resrc_tree_resrc (curr_tree));
             deallocate_io (phys_tree_ptr, job);
         }
     }
@@ -1473,7 +1469,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t time_now)
     resrc_t *pfs_io = resrc_lookup (ctx->rctx.root_resrcs, "/pfs/io");
     int64_t pfs_io_avail_before = (int64_t) resrc_available_at_time (pfs_io, time_now);
 
-    if (ctx->io) {
+    if (ctx->io && !strncmp (ctx->io, "true", 5)) {
         rc = schedule_io_job (ctx, job, time_now);
     } else {
         rc = schedule_noio_job (ctx, job, time_now);
@@ -1841,7 +1837,7 @@ static int schedule_jobs (ssrvctx_t *ctx, bool res_changed)
 {
     int rc = -1;
 
-    if (ctx->backfill) {
+    if (ctx->backfill && !strncmp(ctx->backfill, "easy", 5)) {
       rc = easy_backfill (ctx, res_changed);
     } else {
         rc = fcfs (ctx, res_changed);
