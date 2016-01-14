@@ -44,6 +44,8 @@ typedef struct {
     bool exit_on_complete;
 } ctx_t;
 
+static const char *module_name = "simsrv";
+
 static void freectx (void *arg)
 {
     ctx_t *ctx = arg;
@@ -54,7 +56,7 @@ static void freectx (void *arg)
 
 static ctx_t *getctx (flux_t h, bool exit_on_complete)
 {
-    ctx_t *ctx = (ctx_t *)flux_aux_get (h, "simsrv");
+    ctx_t *ctx = (ctx_t *)flux_aux_get (h, module_name);
 
     if (!ctx) {
         ctx = xzmalloc (sizeof (*ctx));
@@ -63,7 +65,7 @@ static ctx_t *getctx (flux_t h, bool exit_on_complete)
         ctx->rdl_string = NULL;
         ctx->rdl_changed = false;
         ctx->exit_on_complete = exit_on_complete;
-        flux_aux_set (h, "simsrv", ctx, freectx);
+        flux_aux_set (h, module_name, ctx, freectx);
     }
 
     return ctx;
@@ -91,6 +93,7 @@ static int send_trigger (flux_t h, char *mod_name, sim_state_t *sim_state)
 
     Jput (o);
     free (topic);
+    flux_msg_destroy (msg);
     return rc;
 }
 
@@ -122,6 +125,7 @@ int send_complete_event (flux_t h)
     int rc = 0;
     flux_msg_t *msg = NULL;
 
+    flux_log (h, LOG_DEBUG, "Sending sim.complete event");
     if (!(msg = flux_event_encode ("sim.complete", NULL))
         || flux_send (h, msg, 0) < 0) {
         rc = -1;
@@ -143,7 +147,8 @@ static int handle_next_event (ctx_t *ctx)
     timers = sim_state->timers;
     if (zhash_size (timers) < 1) {
         flux_log (ctx->h, LOG_ERR, "timer hashtable has no elements");
-        return -1;
+        rc = -1;
+        goto done;
     }
     keys = zhash_keys (timers);
 
@@ -151,28 +156,24 @@ static int handle_next_event (ctx_t *ctx)
     double *min_event_time = NULL, *curr_event_time = NULL;
     char *mod_name = NULL, *curr_name = NULL;
 
-    while (min_event_time == NULL && zlist_size (keys) > 0) {
-        mod_name = zlist_pop (keys);
-        min_event_time = (double *)zhash_lookup (timers, mod_name);
-        if (*min_event_time < 0) {
-            min_event_time = NULL;
-            free (mod_name);
+    for (curr_name = zlist_first (keys);
+         curr_name;
+         curr_name = zlist_next (keys))
+        {
+            curr_event_time = (double *)zhash_lookup (timers, curr_name);
+            if (*curr_event_time > 0 &&
+                (min_event_time == NULL ||
+                ((*curr_event_time < *min_event_time) ||
+                 (*curr_event_time == *min_event_time &&
+                  !strcmp (curr_name, "sched"))))) {
+                mod_name = curr_name;
+                min_event_time = curr_event_time;
+            }
         }
-    }
-    if (min_event_time == NULL) {
-        return -1;
-    }
-    while (zlist_size (keys) > 0) {
-        curr_name = zlist_pop (keys);
-        curr_event_time = (double *)zhash_lookup (timers, curr_name);
-        if (*curr_event_time > 0
-            && ((*curr_event_time < *min_event_time)
-                || (*curr_event_time == *min_event_time
-                    && !strcmp (curr_name, "sched")))) {
-            free (mod_name);
-            mod_name = curr_name;
-            min_event_time = curr_event_time;
-        }
+    if (min_event_time == NULL || mod_name == NULL) {
+        zlist_destroy (&keys);
+        rc = -1;
+        goto done;
     }
 
     // advance time then send the trigger to the module with the next event
@@ -195,7 +196,7 @@ static int handle_next_event (ctx_t *ctx)
     rc = send_trigger (ctx->h, mod_name, sim_state);
 
     // clean up
-    free (mod_name);
+done:
     zlist_destroy (&keys);
     return rc;
 }
@@ -219,13 +220,11 @@ static void join_cb (flux_t h,
         || !Jget_int (request, "rank", &mod_rank)
         || !Jget_double (request, "next_event", next_event)) {
         flux_log (h, LOG_ERR, "%s: bad join message", __FUNCTION__);
-        Jput (request);
-        return;
+        goto done;
     }
     if (mod_rank < 0 || mod_rank >= flux_size (h)) {
-        Jput (request);
         flux_log (h, LOG_ERR, "%s: bad rank in join message", __FUNCTION__);
-        return;
+        goto done;
     }
 
     flux_log (h,
@@ -243,8 +242,10 @@ static void join_cb (flux_t h,
                   "duplicate join request from %s, module already exists in "
                   "sim_state",
                   mod_name);
-        return;
+        free (next_event);
+        goto done;
     }
+    zhash_freefn (timers, mod_name, free);
 
     // TODO: this is horribly hackish, improve the handshake to avoid
     // this hardcoded # of modules. maybe use a timeout?  ZMQ provides
@@ -254,10 +255,11 @@ static void join_cb (flux_t h,
     if (num_modules <= 0) {
         if (handle_next_event (ctx) < 0) {
             flux_log (h, LOG_ERR, "failure while handling next event");
-            return;
+            goto done;
         }
     }
 
+ done:
     Jput (request);
 }
 

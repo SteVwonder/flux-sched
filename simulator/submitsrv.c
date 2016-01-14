@@ -245,6 +245,7 @@ int schedule_next_job (flux_t h, sim_state_t *sim_state)
     job->kvs_dir = dir;
     put_job_in_kvs (job);
     kvs_commit (h);
+    kvsdir_destroy (dir);
 
     // Send "submitted" event
     event_json = Jnew();
@@ -277,6 +278,7 @@ int schedule_next_job (flux_t h, sim_state_t *sim_state)
 
     // Cleanup
     free_job (job);
+    flux_rpc_destroy (rpc);
     return 0;
 }
 

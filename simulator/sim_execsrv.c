@@ -58,18 +58,15 @@ static resrc_t* get_io_resrc (resrc_tree_t *resrc_tree);
 static void freectx (void *arg)
 {
     ctx_t *ctx = arg;
-    free_simstate (ctx->sim_state);
 
-    while (zlist_size (ctx->queued_events) > 0)
-        free (zlist_pop (ctx->queued_events));
     zlist_destroy (&ctx->queued_events);
 
     while (zlist_size (ctx->running_jobs) > 0)
         free_job (zlist_pop (ctx->running_jobs));
     zlist_destroy (&ctx->running_jobs);
 
-    resrc_tree_destroy (ctx->resrc_tree, true);
     resrc_destroy_resources (ctx->resrcs);
+    resrc_tree_destroy (ctx->resrc_tree, true);
 
     free (ctx);
 }
@@ -86,7 +83,7 @@ static ctx_t *getctx (flux_t h)
         ctx->running_jobs = zlist_new ();
         ctx->prev_sim_time = 0;
         ctx->resrc_tree = NULL;
-        flux_aux_set (h, "simsrv", ctx, freectx);
+        flux_aux_set (h, "sim_exec", ctx, freectx);
     }
 
     return ctx;
@@ -274,7 +271,7 @@ static int complete_job (ctx_t *ctx, job_t *job, double completion_time)
     set_event_timer (ctx, "sched", ctx->sim_state->sim_time + .00001);
     kvsdir_put_double (job->kvs_dir, "complete_time", completion_time);
     kvsdir_put_double (job->kvs_dir, "io_time", job->io_time);
-    release_job_from_resrcs(ctx->resrcs, job);
+    release_job_from_resrcs (ctx->resrcs, job);
     kvs_commit (h);
     free_job (job);
 
@@ -780,6 +777,7 @@ static int handle_queued_events (ctx_t *ctx)
                   __FUNCTION__, *jobid);
         job->start_time = sim_time;
         zlist_append (running_jobs, job);
+        free (jobid);
     }
 
     return 0;
@@ -902,6 +900,7 @@ static void run_cb (flux_t h,
     // Handle Request
     sscanf (topic, "sim_exec.run.%d", jobid);
     zlist_append (ctx->queued_events, jobid);
+    zlist_freefn (ctx->queued_events, jobid, free, true);
     flux_log (h, LOG_DEBUG, "queued the running of jobid %d", *jobid);
 }
 

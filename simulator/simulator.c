@@ -117,6 +117,7 @@ static void add_timers_to_hash (JSON o, zhash_t *hash)
 
         // Insert key,value pair into sim_state hashtable
         zhash_insert (hash, key, event_time);
+        zhash_freefn (hash, key, free);
 
         json_object_iter_next (&iter);
     }
@@ -222,6 +223,7 @@ job_t *pull_job_from_kvs (flux_t h, kvsdir_t *kvsdir)
 
     job->execution_time = (job->walltime < job->execution_time) ? job->walltime : job->execution_time;
 
+    Jput (jcb);
     if (jsc_query_jcb_obj (h, job->id, JSC_RDL, &jcb) != 0) {
         goto error;
     }
@@ -235,6 +237,7 @@ job_t *pull_job_from_kvs (flux_t h, kvsdir_t *kvsdir)
     }
     job->resrc_trees = resrc_tree_list_deserialize (o);
     Jput (o);
+    Jput (jcb);
 
     return job;
 
@@ -260,6 +263,7 @@ int send_alive_request (flux_t h, const char *module_name)
     }
 
     Jput (o);
+    flux_msg_destroy (msg);
     return rc;
 }
 
@@ -284,6 +288,7 @@ int send_reply_request (flux_t h,
 
     flux_log (h, LOG_DEBUG, "sent a reply request: %s", Jtostr (o));
     Jput (o);
+    flux_msg_destroy (msg);
     return rc;
 }
 
@@ -306,6 +311,7 @@ int send_join_request (flux_t h, const char *module_name, double next_event)
     }
 
     Jput (o);
+    flux_msg_destroy (msg);
     return rc;
 }
 
