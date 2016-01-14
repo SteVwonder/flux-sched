@@ -131,15 +131,16 @@ static void freectx (void *arg)
     zlist_destroy (&(ctx->p_queue));
     zlist_destroy (&(ctx->r_queue));
     zlist_destroy (&(ctx->c_queue));
+    resrc_destroy_resources (ctx->rctx.root_resrcs);
     resrc_tree_destroy (resrc_phys_tree (ctx->rctx.root_resrc), true);
     free (ctx->backfill);
     free (ctx->io);
     free (ctx->rctx.root_uri);
-    free (ctx->sctx.sim_state);
     zlist_destroy (&(ctx->sctx.res_queue));
     zlist_destroy (&(ctx->sctx.jsc_queue));
     zlist_destroy (&(ctx->sctx.timer_queue));
     dlclose (ctx->sops.dso);
+    free (ctx);
 }
 
 static ssrvctx_t *getctx (flux_t h)
@@ -404,6 +405,7 @@ static int load_sched_plugin (ssrvctx_t *ctx, const char *pin)
     rc = resolve_functions (ctx);
 
 done:
+    free (path);
     return rc;
 }
 
@@ -870,7 +872,6 @@ static int req_tpexec_allocate (ssrvctx_t *ctx, flux_lwj_t *job)
         flux_log (h, LOG_ERR, "error updating jcb");
         goto done;
     }
-    Jput (arr);
     if ((update_state (h, job->lwj_id, job->state, J_ALLOCATED)) != 0) {
         flux_log (h, LOG_ERR, "failed to update the state of job %"PRId64"",
                   job->lwj_id);
@@ -1330,6 +1331,7 @@ static int schedule_io_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t time_now)
                     {
                         resrc_tree_list_release (selected_trees, job->lwj_id);
                         unstage_tree_list (selected_trees);
+                        resrc_tree_list_destroy (selected_trees, false);
                         goto done;
                     }
                 /* Scheduler specific job transition */
@@ -1344,6 +1346,8 @@ static int schedule_io_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t time_now)
                     goto done;
                 }
                 rc = 0;
+            } else {
+                resrc_tree_list_destroy (selected_trees, false);
             }
         }
     }
@@ -1557,11 +1561,16 @@ static int reserve_io_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t time_now)
                     {
                         resrc_tree_list_release (selected_trees, job->lwj_id);
                         unstage_tree_list (selected_trees);
+                        resrc_tree_list_destroy (selected_trees, false);
                         goto done;
                     }
                 job->resrc_trees = selected_trees;
                 rc = 0;
+            } else {
+                resrc_tree_list_destroy (selected_trees, false);
             }
+        } else {
+            flux_log (h, LOG_ERR, "io_select_resources returned NULL");
         }
     }
 done:
@@ -1652,6 +1661,8 @@ static int reserve_noio_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t time_now)
                     }
                 job->resrc_trees = selected_trees;
                 rc = 0;
+            } else {
+                resrc_tree_list_destroy (selected_trees, false);
             }
         }
     }
@@ -1744,7 +1755,7 @@ static int easy_backfill (ssrvctx_t *ctx, bool res_changed)
                 //resrc_tree_release (resrc_phys_tree (ctx->rctx.root_resrc), job->lwj_id);
                 deallocate_job_io (job);
                 resrc_tree_list_release (job->resrc_trees, job->lwj_id);
-                //resrc_tree_list_destroy (job->resrc_trees, false);
+                resrc_tree_list_destroy (job->resrc_trees, false);
             }
         }
     }
@@ -1768,6 +1779,7 @@ static int easy_backfill (ssrvctx_t *ctx, bool res_changed)
     }
 
     if (!job) { //No jobs remaining to backfill
+        zlist_destroy (&completion_times);
         return rc;
     }
 
@@ -1929,32 +1941,30 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
 
         deallocate_job_io (job);
 
-        if ((resrc_tree_list_release (job->resrc_trees, job->lwj_id))) {
-            flux_log (h, LOG_ERR, "%s: failed to release resources for job "
-                      "%"PRId64"", __FUNCTION__, job->lwj_id);
-        } else {
-            flux_msg_t *msg = flux_event_encode ("sched.res.freed", NULL);
+        flux_msg_t *msg = flux_event_encode ("sched.res.freed", NULL);
+        if (!msg || flux_send (h, msg, 0) < 0) {
+            flux_log (h, LOG_ERR, "%s: error sending event: %s",
+                      __FUNCTION__, strerror (errno));
+        } else
+            flux_msg_destroy (msg);
+        queue_timer_change (ctx, "sched");
 
-            if (!msg || flux_send (h, msg, 0) < 0) {
-                flux_log (h, LOG_ERR, "%s: error sending event: %s",
-                          __FUNCTION__, strerror (errno));
-            } else
-                flux_msg_destroy (msg);
-            queue_timer_change (ctx, "sched");
-        }
     case J_CANCELLED:
       //VERIFY (trans (J_REAPED, newstate, &(job->state)));
         zlist_remove (ctx->c_queue, job);
         if (job->req)
             free (job->req);
         if (job->resrc_trees) {
-          resrc_tree_list_destroy (job->resrc_trees, false);
+            if (resrc_tree_list_release (job->resrc_trees, job->lwj_id)) {
+                flux_log (h, LOG_ERR, "%s: failed to release resources for job "
+                          "%"PRId64"", __FUNCTION__, job->lwj_id);
+            }
+            resrc_tree_list_destroy (job->resrc_trees, false);
         }
         free (job);
         break;
     case J_COMPLETE:
         VERIFY (trans (J_REAPED, newstate, &(job->state)));
-        zlist_remove (ctx->c_queue, job);
         if (job->req)
             free (job->req);
         free (job);
