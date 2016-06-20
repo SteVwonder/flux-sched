@@ -49,6 +49,8 @@ typedef struct {
     int nnodes;
     int ncpus;
     int64_t io_rate;
+    int ish;
+    char *hfile;
     kvsdir_t *kvs_dir;
 } job_t;
 
@@ -62,11 +64,11 @@ int put_job_in_kvs (job_t *job);
 job_t *pull_job_from_kvs (kvsdir_t *kvs_dir);
 void free_job (job_t *job);
 job_t *blank_job ();
-int send_alive_request (flux_t h, const char *module_name);
-int send_reply_request (flux_t h,
-                        const char *module_name,
-                        sim_state_t *sim_state);
-int send_join_request (flux_t h, const char *module_name, double next_event);
+
+int send_alive_request (flux_t h, flux_t remote_h, const char *module_name);
+int send_reply_request (flux_t h, flux_t remote_h, const char *module_name, sim_state_t *sim_state);
+int send_join_request (flux_t h, flux_t remote_h, const char *module_name, double next_event);
+int send_leave_request (flux_t h, flux_t remote_h, const char *module_name);
 
 zhash_t *zhash_fromargv (int argc, char **argv);
 

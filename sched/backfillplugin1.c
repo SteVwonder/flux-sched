@@ -95,14 +95,12 @@ resrc_tree_list_t *find_resources (flux_t h, resrc_t *resrc,
     resrc_tree_list_t *found_trees = NULL;
     resrc_tree_t *resrc_tree = NULL;
 
-    flux_log (h, LOG_DEBUG, "Going to find resources");
 
     if (!resrc || !resrc_reqst) {
         flux_log (h, LOG_ERR, "%s: invalid arguments", __FUNCTION__);
         goto ret;
     }
     resrc_tree = resrc_phys_tree (resrc);
-    flux_log (h, LOG_DEBUG, "Valid arguements");
 
     found_trees = resrc_tree_list_new ();
     if (!found_trees) {
@@ -112,7 +110,6 @@ resrc_tree_list_t *find_resources (flux_t h, resrc_t *resrc,
 
     nfound = resrc_tree_search (resrc_tree_children (resrc_tree), resrc_reqst,
                                 found_trees, true);
-    flux_log (h, LOG_DEBUG, "%s: nfound = %ld", __FUNCTION__, nfound);
 
     if (!nfound) {
         resrc_tree_list_destroy (found_trees, false);
@@ -259,8 +256,6 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
                                          new_tree)) {
                         resrc_tree_list_append (selected_res, new_tree);
                         resrc_stage_resrc (resrc, 1);
-                        flux_log (h, LOG_DEBUG, "selected %s%"PRId64"",
-                                  resrc_name (resrc), resrc_id (resrc));
                         reqrd--;
                     } else {
                         resrc_tree_destroy (new_tree, false);
@@ -269,8 +264,6 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
             } else {
                 resrc_tree_list_append (selected_res, new_tree);
                 resrc_stage_resrc (resrc, 1);
-                flux_log (h, LOG_DEBUG, "selected %s%"PRId64"",
-                          resrc_name (resrc), resrc_id (resrc));
                 reqrd--;
             }
         }
@@ -297,8 +290,8 @@ int allocate_resources (flux_t h, resrc_tree_list_t *rtl, int64_t job_id,
         *completion_time = endtime;
         rc = zlist_append (completion_times, completion_time);
         zlist_freefn (completion_times, completion_time, free, true);
-        flux_log (h, LOG_DEBUG, "Allocated job %"PRId64" from %"PRId64" to "
-                  "%"PRId64"", job_id, starttime, *completion_time);
+        //flux_log (h, LOG_DEBUG, "Allocated job %"PRId64" from %"PRId64" to "
+          //        "%"PRId64"", job_id, starttime, *completion_time);
     }
 
     return rc;
@@ -341,9 +334,9 @@ int reserve_resources (flux_t h, resrc_tree_list_t *rtl, int64_t job_id,
         found_trees = resrc_tree_list_new ();
         resrc_reqst_set_starttime (resrc_reqst, *completion_time + 1);
         resrc_reqst_set_endtime (resrc_reqst, *completion_time + 1 + walltime);
-        flux_log (h, LOG_DEBUG, "Attempting to reserve %"PRId64" nodes for job "
-                  "%"PRId64" at time %"PRId64"", resrc_reqst_reqrd (resrc_reqst),
-                  job_id, *completion_time + 1);
+        //flux_log (h, LOG_DEBUG, "Attempting to reserve %"PRId64" nodes for job "
+          //        "%"PRId64" at time %"PRId64"", resrc_reqst_reqrd (resrc_reqst),
+          //        job_id, *completion_time + 1);
 
         nfound = resrc_tree_search (resrc_tree_children (resrc_tree),
                                     resrc_reqst, found_trees, true);
@@ -354,10 +347,10 @@ int reserve_resources (flux_t h, resrc_tree_list_t *rtl, int64_t job_id,
                                               *completion_time + 1,
                                               *completion_time + 1 + walltime);
                 first_time_backfill = false;
-                flux_log (h, LOG_DEBUG, "Reserved %"PRId64" nodes for job "
-                          "%"PRId64" from %"PRId64" to %"PRId64"",
-                          resrc_reqst_reqrd (resrc_reqst), job_id,
-                          *completion_time + 1, *completion_time + 1 + walltime);
+                //flux_log (h, LOG_DEBUG, "Reserved %"PRId64" nodes for job "
+                  //        "%"PRId64" from %"PRId64" to %"PRId64"",
+                  //        resrc_reqst_reqrd (resrc_reqst), job_id,
+                  //        *completion_time + 1, *completion_time + 1 + walltime);
                 break;
             }
         }

@@ -38,6 +38,13 @@
 #include "rdl.h"
 
 static const char *module_name = "sim_exec";
+static char *final_name;
+static char *prefix;
+static char *my_sim_id;
+static char *my_sched_module;
+static char *my_simexec_module;
+static char *sim_uri = NULL;
+static flux_t sim_h = NULL;
 
 typedef struct {
     sim_state_t *sim_state;
@@ -47,6 +54,8 @@ typedef struct {
     double prev_sim_time;
     struct rdllib *rdllib;
     struct rdl *rdl;
+    int64_t my_job_id;
+    char    *prefix; 
 } ctx_t;
 
 #if SIMEXEC_IO
@@ -85,7 +94,9 @@ static ctx_t *getctx (flux_t h)
         ctx->prev_sim_time = 0;
         ctx->rdllib = rdllib_open ();
         ctx->rdl = NULL;
-        flux_aux_set (h, "simsrv", ctx, freectx);
+        ctx->my_job_id = 0;
+        flux_aux_set (h, "sim_exec", ctx, freectx);
+        ctx->prefix = NULL;
     }
 
     return ctx;
@@ -198,7 +209,7 @@ static int complete_job (ctx_t *ctx, job_t *job, double completion_time)
     flux_log (h, LOG_INFO, "Job %d completed", job->id);
 
     update_job_state (ctx, job->id, job->kvs_dir, J_COMPLETE, completion_time);
-    set_event_timer (ctx, "sched", ctx->sim_state->sim_time + .00001);
+    set_event_timer (ctx, my_sched_module, ctx->sim_state->sim_time + .00001);
     kvsdir_put_double (job->kvs_dir, "complete_time", completion_time);
     kvsdir_put_double (job->kvs_dir, "io_time", job->io_time);
 
@@ -548,8 +559,9 @@ static void start_cb (flux_t h,
                       const flux_msg_t *msg,
                       void *arg)
 {
-    flux_log (h, LOG_DEBUG, "received a start event");
-    if (send_join_request (h, module_name, -1) < 0) {
+    flux_log (h, LOG_DEBUG, "received a start event 1");
+    ctx_t *ctx = getctx (h);
+    if (send_join_request (h, sim_h, final_name, -1) < 0) {
         flux_log (h, LOG_ERR, "failed to register with sim module");
         return;
     }
@@ -572,7 +584,7 @@ static void trigger_cb (flux_t h,
     const char *json_str = NULL;
     double next_termination = -1;
     zhash_t *job_hash = NULL;
-    ctx_t *ctx = (ctx_t *)arg;
+    ctx_t *ctx = getctx (h);
 
     if (flux_msg_get_payload_json (msg, &json_str) < 0 || json_str == NULL
         || !(o = Jfromstr (json_str))) {
@@ -596,8 +608,9 @@ static void trigger_cb (flux_t h,
     handle_completed_jobs (ctx);
     next_termination =
         determine_next_termination (ctx, ctx->sim_state->sim_time, job_hash);
-    set_event_timer (ctx, "sim_exec", next_termination);
-    send_reply_request (h, module_name, ctx->sim_state);
+
+    set_event_timer (ctx, final_name, next_termination);
+    send_reply_request (h, sim_h, final_name, ctx->sim_state);
 
     // Cleanup
     free_simstate (ctx->sim_state);
@@ -611,9 +624,10 @@ static void run_cb (flux_t h,
                     void *arg)
 {
     const char *topic;
-    ctx_t *ctx = (ctx_t *)arg;
+    //ctx_t *ctx = (ctx_t *)arg;
+    ctx_t *ctx = getctx (h);
     int *jobid = (int *)malloc (sizeof (int));
-
+    
     if (flux_msg_get_topic (msg, &topic) < 0) {
         flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
         return;
@@ -621,22 +635,28 @@ static void run_cb (flux_t h,
 
     // Logging
     flux_log (h, LOG_DEBUG, "received a request (%s)", topic);
-
+    
     // Handle Request
-    sscanf (topic, "sim_exec.run.%d", jobid);
+    //sscanf (topic, "%s.run.%d", final_name, jobid); 
+    int i;
+    for (i = strlen(topic) - 1; topic[i] != '.'; i--);
+    *jobid = atoi (&topic[i+1]);
     zlist_append (ctx->queued_events, jobid);
+ 
     flux_log (h, LOG_DEBUG, "queued the running of jobid %d", *jobid);
 }
-
+/*
 static struct flux_msg_handler_spec htab[] = {
     {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
-    {FLUX_MSGTYPE_REQUEST, "sim_exec.trigger", trigger_cb},
-    {FLUX_MSGTYPE_REQUEST, "sim_exec.run.*", run_cb},
+    {FLUX_MSGTYPE_REQUEST, "sim_exec.0.trigger", trigger_cb},
+    {FLUX_MSGTYPE_REQUEST, "sim_exec.0.run.*", run_cb},
     FLUX_MSGHANDLER_TABLE_END,
 };
-
+*/
 int mod_main (flux_t h, int argc, char **argv)
 {
+    int i;
+
     ctx_t *ctx = getctx (h);
     if (flux_rank (h) != 0) {
         flux_log (h, LOG_ERR, "this module must only run on rank 0");
@@ -644,16 +664,77 @@ int mod_main (flux_t h, int argc, char **argv)
     }
     flux_log (h, LOG_INFO, "module starting");
 
+    for (i = 0; i < argc; i++) {
+        if (!strncmp ("jobid=", argv[i], sizeof ("jobid"))) {
+            char *jobid_str = xstrdup (strstr (argv[i], "=") + 1);
+            ctx->my_job_id = strtol (jobid_str, NULL, 10);
+        } else if (!strncmp ("prefix=", argv[i], sizeof ("prefix"))) {
+            ctx->prefix = xstrdup (strstr (argv[i], "=") + 1);
+        } else if (!strncmp ("sim_uri=", argv[i], sizeof ("sim_uri"))) {
+            sim_uri = xstrdup (strstr (argv[i], "=") + 1);
+        }
+    }
+    flux_log (h, LOG_DEBUG, "jobid and prefix have been read\n");   
+ 
     if (flux_event_subscribe (h, "sim.start") < 0) {
         flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
         return -1;
     }
+
+    if (ctx->prefix) {
+        asprintf (&final_name, "%s.%s.%ld", module_name, ctx->prefix, ctx->my_job_id);
+        asprintf (&my_sim_id, "%s.%ld", ctx->prefix, ctx->my_job_id);
+    } else {
+        asprintf (&final_name, "%s.%ld", module_name, ctx->my_job_id);
+        asprintf (&my_sim_id, "%ld", ctx->my_job_id);
+    }
+
+    asprintf (&my_sched_module, "sched.%s", my_sim_id);
+
+    char *sim_exec_trigger = NULL, *sim_exec_run_star = NULL;
+    asprintf (&sim_exec_trigger, "sim_exec.%s.trigger", my_sim_id);
+    asprintf (&sim_exec_run_star, "sim_exec.%s.run.*", my_sim_id);
+
+    struct flux_msg_handler_spec htab[] = {
+        {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
+        {FLUX_MSGTYPE_REQUEST, sim_exec_trigger, trigger_cb},
+        {FLUX_MSGTYPE_REQUEST, sim_exec_run_star, run_cb},
+        FLUX_MSGHANDLER_TABLE_END,
+    };
+
     if (flux_msg_handler_addvec (h, htab, ctx) < 0) {
         flux_log (h, LOG_ERR, "flux_msg_handler_add: %s", strerror (errno));
         return -1;
     }
 
-    send_alive_request (h, module_name);
+    free (sim_exec_trigger);
+    free (sim_exec_run_star);
+
+    if (sim_uri) {
+        sim_h = flux_open (sim_uri, 0);
+        if (!sim_h) {
+            flux_log (h, LOG_ERR, "Could not open handle to sim");
+            err_exit ("error on getting sim handle");        
+        }
+    } else {
+        sim_h = h;
+    }
+
+    if (!ctx->prefix) {
+        send_alive_request (h, sim_h, final_name);
+    } else {
+        if (send_join_request (h, sim_h, final_name, -1) < 0) {
+            flux_log (h, LOG_ERR, "failed to register with sim module");
+            return -1;
+        }
+        flux_log (h, LOG_DEBUG, "sent a join request");
+
+        if (flux_event_unsubscribe (h, "sim.start") < 0) {
+            flux_log (h, LOG_ERR, "failed to unsubscribe from \"sim.start\"");
+        } else {
+            flux_log (h, LOG_DEBUG, "unsubscribed from \"sim.start\"");
+        }
+    }
 
     if (flux_reactor_start (h) < 0) {
         flux_log (h, LOG_ERR, "flux_reactor_start: %s", strerror (errno));

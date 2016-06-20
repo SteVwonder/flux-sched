@@ -14,7 +14,7 @@ SCHEDULERS_C = $(wildcard sim_sched_*.c)
 SCHEDULERS_SO = $(SCHEDULERS_C:sim_sched_%.c=sim_sched_%.so)
 SCHEDULER_OBJS = scheduler.o
 
-BUILD = simsrv.so submitsrv.so sim_execsrv.so $(SCHEDULERS_SO) libsim.so
+BUILD = simsrv.so submitsrv.so sim_execsrv.so $(SCHEDULERS_SO) sim_timersrv.so libsim.so
 
 all:  $(BUILD)
 	for subdir in $(SUBDIRS); do make -C $$subdir $@; done

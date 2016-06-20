@@ -9,7 +9,7 @@
 #include "src/common/libutil/shortjson.h"
 
 #define TIME_MAX INT64_MAX
-#define SLACK_BUFFER_TIME 30
+#define SLACK_BUFFER_TIME 0
 #define K_NEEDS 5
 #include <flux/core.h>
 #include "src/common/libutil/log.h"
@@ -27,7 +27,6 @@ typedef enum {
     RESOURCE_UNKNOWN,
     RESOURCE_END
 } resource_state_t;
-
 
 void resrc_set_state (resrc_t *resrc, resource_state_t state);
 int resrc_generate_as_child (resrc_t *resrc, JSON o);
@@ -183,10 +182,16 @@ int resrc_release_all_reservations (resrc_t *resrc);
 /*
  * Get epoch time
  */
-static inline int64_t epochtime ()
+int64_t epochtime ();
+int64_t resrc_epochtime ();
+#if 0
 {
+    fprintf (stdout, "sim_mode = %d\n", sim_mode); fflush(0);
+    if (sim_mode)
+        return sim_time_now;
     return (int64_t)time (NULL);
 }
+#endif
 
 int64_t resrc_owner (resrc_t *resrc);
 int64_t resrc_leasee (resrc_t *resrc);
@@ -205,5 +210,9 @@ int resrc_mark_resources_asked (zhash_t *hash_table, JSON ro_array);
 int resrc_mark_resources_slacksub_or_returned (zhash_t *hash_table, JSON o);
 int resrc_mark_resource_slack (resrc_t *resrc, int64_t jobid, int64_t endtime);
 int resrc_mark_resources_to_be_returned (zhash_t *hash_table, JSON ro_array);
+int resrc_allocate_resource_in_time_dynamic (resrc_t *resrc, int64_t job_id, int64_t starttime, int64_t endtime);
+
+void resrc_set_sim_mode ();
+void resrc_set_sim_time (uint64_t t);
 
 #endif /* !FLUX_RESRC_H */

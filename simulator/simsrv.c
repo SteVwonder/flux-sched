@@ -42,7 +42,10 @@ typedef struct {
     bool rdl_changed;
     char *rdl_string;
     bool exit_on_complete;
+    zhash_t *handle_hash;
 } ctx_t;
+
+static char *sim_uri = NULL;
 
 static void freectx (void *arg)
 {
@@ -63,6 +66,7 @@ static ctx_t *getctx (flux_t h, bool exit_on_complete)
         ctx->rdl_string = NULL;
         ctx->rdl_changed = false;
         ctx->exit_on_complete = exit_on_complete;
+        ctx->handle_hash = zhash_new ();
         flux_aux_set (h, "simsrv", ctx, freectx);
     }
 
@@ -77,6 +81,7 @@ static int send_trigger (flux_t h, char *mod_name, sim_state_t *sim_state)
     flux_msg_t *msg = NULL;
     JSON o = NULL;
     char *topic = NULL;
+    ctx_t *ctx = getctx (h, 0);
 
     o = sim_state_to_json (sim_state);
 
@@ -84,13 +89,31 @@ static int send_trigger (flux_t h, char *mod_name, sim_state_t *sim_state)
     topic = xasprintf ("%s.trigger", mod_name);
     flux_msg_set_topic (msg, topic);
     flux_msg_set_payload_json (msg, Jtostr (o));
-    if (flux_send (h, msg, 0) < 0) {
+
+//    const char *uri = zhash_lookup (ctx->handle_hash, mod_name);
+//    flux_t mod_h = flux_open (uri, 0);
+    flux_t mod_h = zhash_lookup (ctx->handle_hash, mod_name);
+    if (!mod_h) {
+        flux_log (h, LOG_ERR, "ERROR: could not get handle from hash for module %s", mod_name);
+        err_exit ("zhash lookup module name to send trigger");
+    }
+#if 0
+    if (flux_send (mod_h, msg, 0) < 0) {
         flux_log (h, LOG_ERR, "failed to send trigger to %s", mod_name);
         rc = -1;
     }
+#else
+    if (!flux_rpc (mod_h, topic, Jtostr (o), FLUX_NODEID_ANY, 0)) {
+        flux_log (h, LOG_ERR, "Could not send rpc trigger");
+        rc = -1; 
+    }
+#endif
+
+    flux_log (h, LOG_DEBUG, "Sent trigger to module %s with topic %s", mod_name, topic);
 
     Jput (o);
     free (topic);
+
     return rc;
 }
 
@@ -98,6 +121,7 @@ static int send_trigger (flux_t h, char *mod_name, sim_state_t *sim_state)
 // and that they should join
 int send_start_event (flux_t h)
 {
+    flux_log (h, LOG_DEBUG, "sending out sim.start call");
     int rc = 0;
     flux_msg_t *msg = NULL;
 
@@ -168,13 +192,12 @@ static int handle_next_event (ctx_t *ctx)
         if (*curr_event_time > 0
             && ((*curr_event_time < *min_event_time)
                 || (*curr_event_time == *min_event_time
-                    && !strcmp (curr_name, "sched")))) {
+                    && !strncmp (curr_name, "sched", 5)))) {
             free (mod_name);
             mod_name = curr_name;
             min_event_time = curr_event_time;
         }
     }
-
     // advance time then send the trigger to the module with the next event
     if (*min_event_time > sim_state->sim_time) {
         // flux_log (ctx->h, LOG_DEBUG, "Time was advanced from %f to %f while
@@ -185,6 +208,7 @@ static int handle_next_event (ctx_t *ctx)
         // flux_log (ctx->h, LOG_DEBUG, "Time was not advanced while triggering
         // the next event for %s", mod_name);
     }
+
     flux_log (ctx->h,
               LOG_DEBUG,
               "Triggering %s.  Curr sim time: %f",
@@ -212,21 +236,27 @@ static void join_cb (flux_t h,
     double *next_event = (double *)malloc (sizeof (double));
     ctx_t *ctx = arg;
     sim_state_t *sim_state = ctx->sim_state;
+    const char *uri = NULL;
+    static int started = 0;
 
     if (flux_msg_get_payload_json (msg, &json_str) < 0 || json_str == NULL
         || !(request = Jfromstr (json_str))
         || !Jget_str (request, "mod_name", &mod_name)
         || !Jget_int (request, "rank", &mod_rank)
-        || !Jget_double (request, "next_event", next_event)) {
+        || !Jget_double (request, "next_event", next_event)
+        || !Jget_str (request, "uri", &uri)){
         flux_log (h, LOG_ERR, "%s: bad join message", __FUNCTION__);
         Jput (request);
         return;
     }
+
+#if 0
     if (mod_rank < 0 || mod_rank >= flux_size (h)) {
         Jput (request);
         flux_log (h, LOG_ERR, "%s: bad rank in join message", __FUNCTION__);
         return;
     }
+#endif
 
     flux_log (h,
               LOG_DEBUG,
@@ -235,12 +265,32 @@ static void join_cb (flux_t h,
               mod_rank,
               *next_event);
 
-    zhash_t *timers = sim_state->timers;
-    if (zhash_insert (timers, mod_name, next_event) < 0) {  // key already
+//    if (!started) {
+        zhash_t *timers = sim_state->timers;
+        if (zhash_insert (timers, mod_name, next_event) < 0) {  // key already
                                                             // exists
+            flux_log (h,
+                      LOG_ERR,
+                      "duplicate join request from %s, module already exists in "
+                      "sim_state",
+                      mod_name);
+            return;
+        }
+//    }
+
+    /* add handle to hash */
+    flux_t mod_h = flux_open (uri, 0);
+    if (!mod_h) {
+        flux_log (h, LOG_ERR, "Could not open handle to mod name: %s", mod_name);
+        err_exit ("flux_open error");
+    }
+   
+    sim_uri = xstrdup (uri); 
+    if (zhash_insert (ctx->handle_hash, mod_name, mod_h) < 0) { // key already exists
+        
         flux_log (h,
                   LOG_ERR,
-                  "duplicate join request from %s, module already exists in "
+                  "duplicate entry tried into handle_hash from %s, module already exists in "
                   "sim_state",
                   mod_name);
         return;
@@ -249,17 +299,77 @@ static void join_cb (flux_t h,
     // TODO: this is horribly hackish, improve the handshake to avoid
     // this hardcoded # of modules. maybe use a timeout?  ZMQ provides
     // support for polling etc with timeouts, should try that
+/*
     static int num_modules = 3;
     num_modules--;
-    if (num_modules <= 0) {
+    if (num_modules == 0) {
+        started = 1;
+    }
+    if (started == 1) {
+        started = 2;
         if (handle_next_event (ctx) < 0) {
             flux_log (h, LOG_ERR, "failure while handling next event");
             return;
         }
     }
+*/
+//    if (started == 2) {
+        if (!strncmp (mod_name, "sim_timer", 9)) {
+            if (zhash_insert (timers, mod_name, next_event) < 0) {
+                
+            }
+        }
+//    }
 
     Jput (request);
 }
+
+static void start_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg)
+{
+
+    flux_log (h, LOG_DEBUG, "Received sim.starttoken message");
+    ctx_t *ctx = getctx(h, 0);
+    if (handle_next_event (ctx) < 0) {
+        flux_log (h, LOG_ERR, "failure to start handling next event");
+        return;
+    }
+}
+
+static void leave_cb (flux_t h,
+                      flux_msg_handler_t *w,
+                      const flux_msg_t *msg,
+                      void *arg)
+{
+    JSON request = NULL;
+    const char *mod_name = NULL, *json_str = NULL;
+    ctx_t *ctx = getctx (h, 0);
+    sim_state_t *sim_state = ctx->sim_state;
+
+    if (flux_msg_get_payload_json (msg, &json_str) < 0 || json_str == NULL
+        || !(request = Jfromstr (json_str))
+        || !Jget_str (request, "mod_name", &mod_name)) {
+        flux_log (h, LOG_ERR, "%s: bad join message", __FUNCTION__);
+        Jput (request);
+        return;
+    }
+
+    flux_log (h,
+              LOG_DEBUG,
+              "leave rcvd from module %s",
+              mod_name);
+
+    zhash_t *timers = sim_state->timers;
+    zhash_delete (timers, mod_name);
+    
+    flux_t mod_h = zhash_lookup (ctx->handle_hash, mod_name);
+    if (mod_h) {
+        flux_close (mod_h);
+    }
+    zhash_delete (ctx->handle_hash, mod_name);
+
+    Jput (request);
+}
+
 
 // Based on the simulation time, the previous timer value, and the
 // reply timer value, try and determine what the new timer value
@@ -279,6 +389,9 @@ static int check_for_new_timers (const char *key, void *item, void *argument)
     double *reply_event_time = (double *)item;
     double *curr_event_time =
         (double *)zhash_lookup (curr_sim_state->timers, key);
+
+    if (!curr_event_time)
+        return 0;
 
     if (*curr_event_time < 0 && *reply_event_time < 0) {
         // flux_log (ctx->h, LOG_DEBUG, "no timers found for %s, doing nothing",
@@ -361,7 +474,8 @@ static void reply_cb (flux_t h,
 {
     const char *json_str = NULL;
     JSON request = NULL;
-    ctx_t *ctx = arg;
+    //ctx_t *ctx = arg;
+    ctx_t *ctx = getctx (h, 0);
     sim_state_t *curr_sim_state = ctx->sim_state;
     sim_state_t *reply_sim_state;
 
@@ -371,13 +485,15 @@ static void reply_cb (flux_t h,
         Jput (request);
         return;
     }
+    
+    flux_log (h, LOG_INFO, json_str);
 
     // De-serialize and get new info
     reply_sim_state = json_to_sim_state (request);
     copy_new_state_data (ctx, curr_sim_state, reply_sim_state);
 
     if (handle_next_event (ctx) < 0) {
-        flux_log (h, LOG_DEBUG, "No events remaining");
+        flux_log (h, LOG_INFO, "No events remaining");
         if (ctx->exit_on_complete) {
             msg_exit ("exit_on_complete is set. Exiting now.");
         } else {
@@ -415,6 +531,8 @@ static struct flux_msg_handler_spec htab[] = {
     {FLUX_MSGTYPE_REQUEST, "sim.reply", reply_cb},
     {FLUX_MSGTYPE_REQUEST, "sim.alive", alive_cb},
     {FLUX_MSGTYPE_EVENT, "rdl.update", rdl_update_cb},
+    {FLUX_MSGTYPE_REQUEST, "sim.leave", leave_cb},
+    {FLUX_MSGTYPE_REQUEST, "sim.starttoken", start_cb},
     FLUX_MSGHANDLER_TABLE_END,
 };
 const int htablen = sizeof (htab) / sizeof (htab[0]);
@@ -425,7 +543,7 @@ int mod_main (flux_t h, int argc, char **argv)
     ctx_t *ctx;
     char *eoc_str;
     bool exit_on_complete;
-
+#if 1
     if (flux_rank (h) != 0) {
         flux_log (h, LOG_ERR, "sim module must only run on rank 0");
         return -1;
@@ -459,7 +577,7 @@ int mod_main (flux_t h, int argc, char **argv)
         return -1;
     }
     flux_log (h, LOG_DEBUG, "sim sent start event");
-
+#endif
     if (flux_reactor_start (h) < 0) {
         flux_log (h, LOG_ERR, "flux_reactor_start: %s", strerror (errno));
         return -1;

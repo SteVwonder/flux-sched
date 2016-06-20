@@ -224,7 +224,7 @@ void trigger_cb (flux_t h,
     handle_timer_queue (ctx, sim_state);
 
     send_rdl_update (h, ctx->rdl);
-    send_reply_request (h, module_name, sim_state);
+    send_reply_request (h, h, module_name, sim_state);
 
     free_simstate (sim_state);
     Jput (o);
@@ -1675,7 +1675,7 @@ void start_cb (flux_t h,
     ctx_t *ctx = getctx (h);
 
     flux_log (h, LOG_DEBUG, "received a start event");
-    if (send_join_request (h, module_name, -1) < 0) {
+    if (send_join_request (h, h, module_name, -1) < 0) {
         flux_log (h,
                   LOG_ERR,
                   "submit module failed to register with sim module");
@@ -1793,7 +1793,7 @@ int init_and_start_scheduler (flux_t h,
     }
 
 skip_for_sim:
-    send_alive_request (h, module_name);
+    send_alive_request (h, h, module_name);
     flux_log (h, LOG_DEBUG, "sent alive request");
 
     if (flux_reactor_start (h) < 0) {

@@ -37,9 +37,9 @@
 #include "src/common/libutil/jsonutil.h"
 #include "src/common/libutil/xzmalloc.h"
 
-
 #include <flux/core.h>
 #include "src/common/libutil/log.h"
+#define printf(...)
 
 typedef struct resrc_slack_info {
     uint64_t owner;             /* 0 = self, -1 = parent, other = children */ 
@@ -68,6 +68,29 @@ struct resrc {
     zhash_t *twindow;
     resrc_slinfo_t slinfo;
 };
+
+int sim_mode = 0;
+uint64_t sim_time;
+
+void resrc_set_sim_mode () {
+    sim_mode = 1;
+}
+
+void resrc_set_sim_time (uint64_t st) {
+    sim_time = st;
+}
+
+int64_t epochtime ()
+{
+    //fprintf (stdout, "sim_mode = %d\n", sim_mode); fflush(0);
+    if (sim_mode)
+        return sim_time;
+    return (int64_t)time (NULL);
+}
+int64_t resrc_epochtime ()
+{
+    return epochtime ();
+}
 
 /***************************************************************************
  *  API
@@ -574,7 +597,7 @@ void resrc_resource_destroy (void *object)
 void resrc_resource_destroy_special (void *object, zhash_t *hash_table)
 {
     resrc_t *resrc = (resrc_t *) object;
-    zhash_delete (hash_table, resrc->uuid);
+    zhash_delete (hash_table, (const char *)resrc->uuid);
     resrc_resource_destroy (resrc);    
 }
 
@@ -1065,7 +1088,7 @@ static bool resrc_walltime_match (resrc_t *resrc, resrc_t *sample,
         Jget_int64 (lt, "endtime", &lendtime);
         Jput (lt);
         printf("Retrieved lendtime = %ld\n", lendtime);
-        if (endtime > (lendtime - 10)) {
+        if (endtime > (lendtime - SLACK_BUFFER_TIME)) {
             return false;
         }
     }
@@ -1124,7 +1147,18 @@ bool resrc_match_resource (resrc_t *resrc, resrc_t *sample, bool available,
              * expensive.
              */
 
-#if 1 
+#if 1
+            if (!strcmp (resrc->type, "core")) {
+                if ((resrc->slinfo.to_be_returned != 1) && (resrc->slinfo.returned != 1)) {
+                    rc = resrc_walltime_match (resrc, sample, starttime, endtime);
+                } else {
+                    rc = false;
+                }
+            } else {
+                rc = true;
+            } 
+
+#if 0
             if ((resrc->slinfo.to_be_returned != 1) && (resrc->slinfo.returned != 1) && (!strcmp (resrc->type, "core"))) {
                 printf ("inside the condition before walltime match\n");
                 rc = resrc_walltime_match (resrc, sample, starttime, endtime);
@@ -1138,6 +1172,7 @@ bool resrc_match_resource (resrc_t *resrc, resrc_t *sample, bool available,
                 printf ("resrc_match_resource: not checking for walltime\n");
                 rc = true;
             }
+#endif
 #endif
 
 #if 0
@@ -1256,8 +1291,8 @@ ret:
     return rc;
 }
 
-static int resrc_allocate_resource_in_time_dynamic (resrc_t *resrc, int64_t job_id,
-                                                    int64_t starttime, int64_t endtime)
+int resrc_allocate_resource_in_time_dynamic (resrc_t *resrc, int64_t job_id,
+                                             int64_t starttime, int64_t endtime)
 {
     JSON j;
     int rc = -1;
@@ -1472,11 +1507,11 @@ int resrc_release_allocation (resrc_t *resrc, int64_t rel_job)
         if (slacksubstr) {
             resrc->state = RESOURCE_SLACKSUB;
         } else {
-            if (zhash_size (resrc->twindow) > 1) {
-                resrc->state = RESOURCE_ALLOCATED;
-            } else {
+//            if (zhash_size (resrc->twindow) > 1) {
+//                resrc->state = RESOURCE_ALLOCATED;
+//            } else {
                 resrc->state = RESOURCE_IDLE;
-            }
+//            }
         }
     }
 

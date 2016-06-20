@@ -249,7 +249,7 @@ int main (int argc, char *argv[])
     int found = 0;
     int rc = 0;
     int verbose = 0;
-    int64_t nowtime = epochtime ();
+    int64_t nowtime = (int64_t)time (NULL);
     JSON child_core = NULL;
     JSON o = NULL;
     JSON req_res = NULL;
