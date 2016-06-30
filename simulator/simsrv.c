@@ -152,44 +152,45 @@ static int handle_next_event (ctx_t *ctx)
     }
     keys = zhash_keys (timers);
 
-    // Get the next occuring event time/module
     double *min_event_time = NULL, *curr_event_time = NULL;
     char *mod_name = NULL, *curr_name = NULL;
 
+    // Get a non-negative event time
     while (min_event_time == NULL && zlist_size (keys) > 0) {
         mod_name = zlist_pop (keys);
         min_event_time = (double *)zhash_lookup (timers, mod_name);
+        flux_log (ctx->h, LOG_DEBUG, "name: %s, time: %f", mod_name, *min_event_time);
         if (*min_event_time < 0) {
             min_event_time = NULL;
             free (mod_name);
         }
     }
+    // If only negative event times were found, return -1
     if (min_event_time == NULL) {
         return -1;
     }
+    // Get the next occuring event time/module (i.e., smallest, positive time)
     while (zlist_size (keys) > 0) {
         curr_name = zlist_pop (keys);
         curr_event_time = (double *)zhash_lookup (timers, curr_name);
+        // Non-negative
         if (*curr_event_time > 0
+            // Smaller than our current time
             && ((*curr_event_time < *min_event_time)
+                // OR equal to our current time (tie break goes to sched module)
                 || (*curr_event_time == *min_event_time
-                    && !strcmp (curr_name, "sched")))) {
+                    && !strncmp (curr_name, "sched", 5)))) {
             free (mod_name);
             mod_name = curr_name;
             min_event_time = curr_event_time;
         }
     }
-
     // advance time then send the trigger to the module with the next event
+    // (Time should be non-decreasing)
     if (*min_event_time > sim_state->sim_time) {
-        // flux_log (ctx->h, LOG_DEBUG, "Time was advanced from %f to %f while
-        // triggering the next event for %s",
-        //		  sim_state->sim_time, *min_event_time, mod_name);
         sim_state->sim_time = *min_event_time;
-    } else {
-        // flux_log (ctx->h, LOG_DEBUG, "Time was not advanced while triggering
-        // the next event for %s", mod_name);
     }
+
     flux_log (ctx->h,
               LOG_DEBUG,
               "Triggering %s.  Curr sim time: %f",
@@ -279,24 +280,37 @@ static void join_cb (flux_t h,
 // those cases are checked for and logged.
 
 // TODO: verify all of this logic is correct, bugs could easily creep up here
-static int check_for_new_timers (const char *key, void *item, void *argument)
+static int check_for_new_timers (ctx_t *ctx, const char *key, double *value)
 {
-    ctx_t *ctx = (ctx_t *)argument;
     sim_state_t *curr_sim_state = ctx->sim_state;
     double sim_time = curr_sim_state->sim_time;
-    double *reply_event_time = (double *)item;
+    double *reply_event_time = value;
     double *curr_event_time =
-        (double *)zhash_lookup (curr_sim_state->timers, key);
+        (double *) zhash_lookup (curr_sim_state->timers, key);
+
+    if (!curr_event_time) {
+        if (*reply_event_time < 0) {
+            // Reply contained unknown mod_name, but the next event was < 0,
+            // so we ignore the problem for now
+            flux_log (ctx->h, LOG_DEBUG, "Unknown mod_name in timers: %s", key);
+            return 0;
+        } else {
+            // Reply contained unknown mod_name, but the next event was > 0.
+            // We can't trigger a module that is unknown, so error out.
+            flux_log (ctx->h, LOG_DEBUG,
+                      "Unknown mod_name in timers (%s) with non-negative next event time (%f)",
+                      key, *value);
+            return -1;
+        }
+    }
 
     if (*curr_event_time < 0 && *reply_event_time < 0) {
-        // flux_log (ctx->h, LOG_DEBUG, "no timers found for %s, doing nothing",
-        // key);
+        // flux_log (ctx->h, LOG_DEBUG, "no timers found for %s, doing nothing", key);
         return 0;
     } else if (*curr_event_time < 0) {
         if (*reply_event_time >= sim_time) {
             *curr_event_time = *reply_event_time;
-            // flux_log (ctx->h, LOG_DEBUG, "change in timer accepted for %s",
-            // key);
+            // flux_log (ctx->h, LOG_DEBUG, "change in timer accepted for %s", key);
             return 0;
         } else {
             flux_log (ctx->h, LOG_ERR, "bad reply timer for %s", key);
@@ -307,10 +321,8 @@ static int check_for_new_timers (const char *key, void *item, void *argument)
         return -1;
     } else if (*reply_event_time < sim_time
                && *curr_event_time != *reply_event_time) {
-        flux_log (ctx->h,
-                  LOG_ERR,
-                  "incoming modified time is before sim time for %s",
-                  key);
+        flux_log (ctx->h, LOG_ERR,
+                  "incoming modified time is before sim time for %s", key);
         return -1;
     } else if (*reply_event_time >= sim_time
                && *reply_event_time < *curr_event_time) {
@@ -324,15 +336,26 @@ static int check_for_new_timers (const char *key, void *item, void *argument)
     }
 }
 
-static void copy_new_state_data (ctx_t *ctx,
-                                 sim_state_t *curr_sim_state,
-                                 sim_state_t *reply_sim_state)
+static int copy_new_state_data (ctx_t *ctx,
+                                sim_state_t *curr_sim_state,
+                                sim_state_t *reply_sim_state)
 {
     if (reply_sim_state->sim_time > curr_sim_state->sim_time) {
         curr_sim_state->sim_time = reply_sim_state->sim_time;
     }
 
-    zhash_foreach (reply_sim_state->timers, check_for_new_timers, ctx);
+    int rc = 0;
+    const char *key = NULL;
+    double *value = NULL;
+    for (value = zhash_first (reply_sim_state->timers);
+         value != NULL && rc >= 0;
+         value = zhash_next (reply_sim_state->timers)) {
+
+        key = zhash_cursor (reply_sim_state->timers);
+        rc = check_for_new_timers (ctx, key, value);
+    }
+
+    return rc;
 }
 
 static void rdl_update_cb (flux_t h,
@@ -380,9 +403,13 @@ static void reply_cb (flux_t h,
         return;
     }
 
+    flux_log (h, LOG_INFO, "Received reply: %s", json_str);
+
     // De-serialize and get new info
     reply_sim_state = json_to_sim_state (request);
-    copy_new_state_data (ctx, curr_sim_state, reply_sim_state);
+    if (copy_new_state_data (ctx, curr_sim_state, reply_sim_state) < 0) {
+        flux_log (h, LOG_ERR, "%s: Error copying state data", __FUNCTION__);
+    }
 
     if (handle_next_event (ctx) < 0) {
         flux_log (h, LOG_DEBUG, "No events remaining");
