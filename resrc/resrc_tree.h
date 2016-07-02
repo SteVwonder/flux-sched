@@ -51,11 +51,11 @@ void resrc_tree_destroy (resrc_tree_t *resrc_tree, bool destroy_resrc);
  * Print the resources in a resrc_tree_t object
  */
 void resrc_tree_print (resrc_tree_t *resrc_tree);
-
+void resrc_tree_list_print (resrc_tree_list_t *resrc_tree_list);
 /*
  * Add the input resource tree to the json object
  */
-int resrc_tree_serialize (json_object *o, resrc_tree_t *resrc_tree);
+int resrc_tree_serialize (json_object *o, resrc_tree_t *resrc_tree, int64_t jobid);
 
 /*
  * Create a resource tree from a json object
@@ -136,7 +136,7 @@ void resrc_tree_list_destroy (resrc_tree_list_t *rtl, bool destroy_resrc);
 /*
  * Add the input list of resource trees to the json array object
  */
-int resrc_tree_list_serialize (json_object *o, resrc_tree_list_t *rtl);
+int resrc_tree_list_serialize (json_object *o, resrc_tree_list_t *rtl, int64_t serialize);
 
 /*
  * Create a resource tree list from a json object
@@ -170,5 +170,20 @@ int resrc_tree_list_release_all_reservations (resrc_tree_list_t *rtl);
  */
 void resrc_tree_list_unstage_resources (resrc_tree_list_t *rtl);
 
+resrc_t *resrc_find_by_id_tree (resrc_tree_t *resrc_tree, int64_t id);
+resrc_t *resrc_find_by_id_tree_list (resrc_tree_list_t *resrc_tree_list, int64_t id);
+int resrc_hash_by_uuid (resrc_tree_t *resrc_tree, zhash_t *hash_table);
+int resrc_hash_by_uuid_list (resrc_tree_list_t *resrc_tree_list, zhash_t *hash_table);
+
+int resrc_tree_add_child_special (resrc_tree_t *parent, resrc_tree_t *child, zhash_t *hash_table, int64_t owner);
+int resrc_tree_set_owner (resrc_tree_t *resrc_tree, int64_t owner);
+int resrc_tree_destroy_returned_resources (resrc_tree_t *resrc_tree, zhash_t *hash_table);
+
+int resrc_compare (resrc_tree_t *new_tree, resrc_tree_t *job_tree, JSON ret_array);
+resrc_tree_list_t* resrc_split_resources (resrc_tree_list_t *found_tree_list, resrc_tree_list_t *job_tree_list, JSON ret_array, int64_t jobid);
+
+
+int resrc_tree_allocate_dynamic (resrc_tree_t *resrc_tree, int64_t job_id, int64_t starttime, int64_t endtime);
+int resrc_tree_list_allocate_dynamic (resrc_tree_list_t *rtl, int64_t job_id, int64_t starttime, int64_t endtime);
 
 #endif /* !FLUX_RESRC_TREE_H */

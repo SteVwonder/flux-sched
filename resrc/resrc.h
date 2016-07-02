@@ -6,8 +6,11 @@
  */
 
 #include <uuid/uuid.h>
+#include <czmq.h>
 
 #define TIME_MAX INT64_MAX
+#define SLACK_BUFFER_TIME 0
+#define K_NEEDS 5
 
 typedef struct hwloc_topology * TOPOLOGY;
 typedef struct resrc resrc_t;
@@ -20,10 +23,15 @@ typedef enum {
     RESOURCE_ALLOCATED,
     RESOURCE_RESERVED,
     RESOURCE_DOWN,
+    RESOURCE_SLACKSUB,
     RESOURCE_UNKNOWN,
     RESOURCE_END
 } resource_state_t;
 
+void resrc_set_state (resrc_t *resrc, resource_state_t state);
+int resrc_generate_as_child (resrc_t *resrc, json_object *o);
+int resrc_update_reservations (resrc_t *resrc, int64_t jobid, char *ustarttime_str);
+int64_t resrc_find_ustart (resrc_t *resrc);
 
 /*
  * Return the type of the resouce
@@ -61,6 +69,11 @@ char *resrc_set_digest (resrc_t *resrc, char *digest);
  * Return the id of the resouce
  */
 int64_t resrc_id (resrc_t *resrc);
+
+/*
+ * Retunr the uuid of resource
+ */
+void resrc_uuid (resrc_t *resrc, char *uuid);
 
 /*
  * Return the size of the resource
@@ -130,7 +143,7 @@ resrc_t *resrc_generate_hwloc_resources (resrc_t *host_resrc, TOPOLOGY topo,
 /*
  * Add the input resource to the json object
  */
-int resrc_to_json (json_object *o, resrc_t *resrc);
+int resrc_to_json (json_object *o, resrc_t *resrc, int64_t jobid);
 
 /*
  * Print details of a specific resource to a string buffer
@@ -190,10 +203,29 @@ int resrc_release_all_reservations (resrc_t *resrc);
 /*
  * Get epoch time
  */
-static inline int64_t epochtime ()
-{
-    return (int64_t) time (NULL);
-}
+int64_t epochtime ();
+int64_t resrc_epochtime ();
 
+int64_t resrc_owner (resrc_t *resrc);
+int64_t resrc_leasee (resrc_t *resrc);
+
+void resrc_set_owner (resrc_t *resrc, int64_t owner);
+bool resrc_check_resource_destroy_ready (resrc_t *resrc);
+int resrc_add_resources_from_json (resrc_t *resrc, zhash_t *hash_table, json_object *o, int64_t owner);
+
+bool resrc_check_slacksub_ready (resrc_t *resrc, int64_t *endtime);
+bool resrc_check_return_ready (resrc_t *resrc, int64_t *jobid);
+int resrc_collect_own_resources_unasked (zhash_t *hash_table, json_object *ro_array);
+int resrc_retrieve_lease_information (zhash_t *hash_table, json_object *ro_array, json_object *ut);
+int resrc_mark_resource_return_received (resrc_t *resrc, int64_t jobid);
+int resrc_mark_resources_returned (zhash_t *hash_table, json_object *ro_array);
+int resrc_mark_resources_asked (zhash_t *hash_table, json_object *ro_array);
+int resrc_mark_resources_slacksub_or_returned (zhash_t *hash_table, json_object *);
+int resrc_mark_resource_slack (resrc_t *resrc, int64_t jobid, int64_t endtime);
+int resrc_mark_resources_to_be_returned (zhash_t *hash_table, json_object *ro_array);
+int resrc_allocate_resource_in_time_dynamic (resrc_t *resrc, int64_t job_id, int64_t starttime, int64_t endtime);
+
+void resrc_set_sim_mode ();
+void resrc_set_sim_time (uint64_t t);
 
 #endif /* !FLUX_RESRC_H */

@@ -294,7 +294,7 @@ static void start_cb (flux_t h,
                       void *arg)
 {
     flux_log (h, LOG_DEBUG, "received a start event");
-    if (send_join_request (h, module_name, get_next_submit_time ()) < 0) {
+    if (send_join_request (h, h, module_name, get_next_submit_time ()) < 0) {
         flux_log (h,
                   LOG_ERR,
                   "submit module failed to register with sim module");
@@ -335,7 +335,7 @@ static void trigger_cb (flux_t h,
     // Handle the trigger
     sim_state = json_to_sim_state (o);
     schedule_next_job (h, sim_state);
-    send_reply_request (h, module_name, sim_state);
+    send_reply_request (h, h, module_name, sim_state);
 
     // Cleanup
     free_simstate (sim_state);
@@ -382,7 +382,7 @@ int mod_main (flux_t h, int argc, char **argv)
         return -1;
     }
 
-    send_alive_request (h, module_name);
+    send_alive_request (h, h, module_name);
 
     if (flux_reactor_run (flux_get_reactor (h), 0) < 0) {
         flux_log (h, LOG_ERR, "flux_reactor_run: %s", strerror (errno));

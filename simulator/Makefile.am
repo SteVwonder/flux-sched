@@ -8,7 +8,8 @@ CONF = $(top_srcdir)/conf/hype.lua
 JOBDATA=job_data/hype.csv
 
 noinst_LTLIBRARIES = libflux-sim.la \
-    simsrv.la sim_execsrv.la submitsrv.la
+    simsrv.la sim_execsrv.la submitsrv.la \
+	sim_timersrv.la
 
 noinst_HEADERS = simulator.h
 
@@ -37,5 +38,11 @@ submitsrv_la_CFLAGS = $(AM_CFLAGS)
 submitsrv_la_LIBADD = $(top_builddir)/resrc/libflux-resrc.la libflux-sim.la \
     $(FLUX_CORE_LIBS) $(JSON_LIBS) $(CZMQ_LIBS)
 submitsrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module -rpath /nowhere
+
+sim_timersrv_la_SOURCES = sim_timersrv.c
+sim_timersrv_la_CFLAGS = $(AM_CFLAGS)
+sim_timersrv_la_LIBADD = $(top_builddir)/resrc/libflux-resrc.la libflux-sim.la \
+    $(FLUX_CORE_LIBS) $(JSON_LIBS) $(CZMQ_LIBS)
+sim_timersrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module -rpath /nowhere
 
 EXTRA_DIST = sim_version.map

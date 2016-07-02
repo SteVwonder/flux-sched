@@ -37,8 +37,7 @@
 #include <flux/core.h>
 
 #include "resrc.h"
-
-
+#include "resrc_tree.h"
 /**
  *  Defines resource request info block.
  *  This needs to be expanded as Flux resources evolve.
@@ -51,6 +50,21 @@ typedef struct flux_resources {
     bool     node_exclusive; /*!< job requires exclusive use of node if true */
 } flux_res_t;
 
+typedef enum {
+    INVALID = 0,
+    SLACK,
+    CSLACK
+}slack_state_t; 
+
+/**
+ *  * Defines the required information during slackstate
+ *   */
+typedef struct slackstate {
+
+    slack_state_t   slack_state;    /*!< INVALID, SLACK or CSLACK */
+    JSON            need;           /*!< needs of the child upto some k */
+
+} flux_slackinfo_t;
 
 /**
  *  Defines LWJ info block (this needs to be expanded of course)
@@ -61,6 +75,13 @@ typedef struct {
     flux_res_t *req;     /*!< resources requested by this LWJ */
     resrc_tree_list_t *resrc_trees; /*!< resources allocated to this LWJ */
     int64_t starttime;
+
+    int32_t     is_hierarchical; /*!< is job hierarchical */
+    char        *hfile; /*!< file pointer to hierarchical jobs */
+    char        *contact; /*!< Contact information when it is an instance */
+
+    flux_slackinfo_t   *slackinfo; /*!< hierarchical job slack state information */
+
 } flux_lwj_t;
 
 #endif /* SCHEDULER_H */

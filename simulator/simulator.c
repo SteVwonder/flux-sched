@@ -139,7 +139,10 @@ job_t *blank_job ()
     job->time_limit = 0;
     job->nnodes = 0;
     job->ncpus = 0;
+    job->io_rate = 0;
     job->kvs_dir = NULL;
+    job->hfile = NULL;
+    job->ish = 0;
     return job;
 }
 
@@ -158,14 +161,18 @@ int put_job_in_kvs (job_t *job)
         kvsdir_put_double (job->kvs_dir, "submit_time", job->submit_time);
     if (!kvsdir_exists (job->kvs_dir, "execution_time"))
         kvsdir_put_double (job->kvs_dir, "execution_time", job->execution_time);
-    if (!kvsdir_exists (job->kvs_dir, "time_limit"))
-        kvsdir_put_double (job->kvs_dir, "time_limit", job->time_limit);
+    if (!kvsdir_exists (job->kvs_dir, "walltime"))
+        kvsdir_put_double (job->kvs_dir, "walltime", job->time_limit);
     if (!kvsdir_exists (job->kvs_dir, "nnodes"))
         kvsdir_put_int (job->kvs_dir, "nnodes", job->nnodes);
     if (!kvsdir_exists (job->kvs_dir, "ncpus"))
         kvsdir_put_int (job->kvs_dir, "ncpus", job->ncpus);
     if (!kvsdir_exists (job->kvs_dir, "io_rate"))
         kvsdir_put_int64 (job->kvs_dir, "io_rate", job->io_rate);
+    if (!kvsdir_exists (job->kvs_dir, "is_hierarchical"))
+        kvsdir_put_int (job->kvs_dir, "is_hierarchical", job->ish);
+    if (!kvsdir_exists (job->kvs_dir, "hfile"))
+        kvsdir_put_string (job->kvs_dir, "hfile", job->hfile);
 
     flux_t h = kvsdir_handle (job->kvs_dir);
     kvs_commit (h);
@@ -173,7 +180,7 @@ int put_job_in_kvs (job_t *job)
     // TODO: Check to see if this is necessary, i assume the kvsdir becomes
     // stale after a commit
     char *dir_key;
-    dir_key = xasprintf ("%s", kvsdir_key (job->kvs_dir));
+    asprintf (&dir_key, "%s", kvsdir_key (job->kvs_dir));
     kvsdir_destroy (job->kvs_dir);
     kvs_get_dir (h, &job->kvs_dir, dir_key);
     free (dir_key);
@@ -196,9 +203,11 @@ job_t *pull_job_from_kvs (kvsdir_t *kvsdir)
     kvsdir_get_string (job->kvs_dir, "account", &job->account);
     kvsdir_get_double (job->kvs_dir, "submit_time", &job->submit_time);
     kvsdir_get_double (job->kvs_dir, "starting_time", &job->start_time);
-    kvsdir_get_double (job->kvs_dir, "execution_time", &job->execution_time);
+    int et;
+    kvsdir_get_int (job->kvs_dir, "execution_time", &et);
+    job->execution_time = (double) et;
     kvsdir_get_double (job->kvs_dir, "io_time", &job->io_time);
-    kvsdir_get_double (job->kvs_dir, "time_limit", &job->time_limit);
+    kvsdir_get_double (job->kvs_dir, "walltime", &job->time_limit);
     kvsdir_get_int (job->kvs_dir, "nnodes", &job->nnodes);
     kvsdir_get_int (job->kvs_dir, "ncpus", &job->ncpus);
     kvsdir_get_int64 (job->kvs_dir, "io_rate", &job->io_rate);
@@ -206,10 +215,9 @@ job_t *pull_job_from_kvs (kvsdir_t *kvsdir)
     return job;
 }
 
-int send_alive_request (flux_t h, const char *module_name)
+int send_alive_request (flux_t h, flux_t remote_h, const char *module_name)
 {
     int rc = 0;
-    flux_msg_t *msg = NULL;
     JSON o = Jnew ();
     uint32_t rank;
 
@@ -219,10 +227,29 @@ int send_alive_request (flux_t h, const char *module_name)
     Jadd_str (o, "mod_name", module_name);
     Jadd_int (o, "rank", rank);
 
-    msg = flux_msg_create (FLUX_MSGTYPE_REQUEST);
-    flux_msg_set_topic (msg, "sim.alive");
-    flux_msg_set_payload_json (msg, Jtostr (o));
-    if (flux_send (h, msg, 0) < 0) {
+    if (!flux_rpc (remote_h, "sim.alive", Jtostr (o), FLUX_NODEID_ANY, 0)) {
+        flux_log (h, LOG_ERR, "Could not send rpc alive");
+        rc = -1; 
+    }
+    Jput (o);
+    return rc;
+}
+
+int send_leave_request (flux_t h, flux_t remote_h, const char *module_name)
+{
+    int rc = 0;
+    JSON o = Jnew ();
+    uint32_t rank;
+
+    if (flux_get_rank (h, &rank) < 0 || rank >= INT_MAX) {
+        errno = ERANGE;
+        return -1;
+    }
+    Jadd_str (o, "mod_name", module_name);
+    Jadd_int (o, "rank", rank);
+
+    if (!flux_rpc (remote_h, "sim.leave", Jtostr (o), FLUX_NODEID_ANY, 0)) {
+        flux_log (h, LOG_ERR, "Could not send rpc leave");
         rc = -1;
     }
 
@@ -230,35 +257,34 @@ int send_alive_request (flux_t h, const char *module_name)
     return rc;
 }
 
+
 // Reply back to the sim module with the updated sim state (in JSON form)
 int send_reply_request (flux_t h,
+                        flux_t remote_h,
                         const char *module_name,
                         sim_state_t *sim_state)
 {
     int rc = 0;
-    flux_msg_t *msg = NULL;
     JSON o = NULL;
 
     o = sim_state_to_json (sim_state);
     Jadd_str (o, "mod_name", module_name);
 
-    msg = flux_msg_create (FLUX_MSGTYPE_REQUEST);
-    flux_msg_set_topic (msg, "sim.reply");
-    flux_msg_set_payload_json (msg, Jtostr (o));
-    if (flux_send (h, msg, 0) < 0) {
+    if (!flux_rpc (remote_h, "sim.reply", Jtostr (o), FLUX_NODEID_ANY, 0)) {
+        flux_log (h, LOG_ERR, "Could not send rpc reply");
         rc = -1;
     }
 
-    flux_log (h, LOG_DEBUG, "sent a reply request: %s", Jtostr (o));
+    flux_log (h, LOG_DEBUG, "Sent reply request from module_name :%s", module_name);
+
     Jput (o);
     return rc;
 }
 
 // Request to join the simulation
-int send_join_request (flux_t h, const char *module_name, double next_event)
+int send_join_request (flux_t h, flux_t remote_h, const char *module_name, double next_event)
 {
     int rc = 0;
-    flux_msg_t *msg = NULL;
     JSON o = Jnew ();
     uint32_t rank;
 
@@ -269,10 +295,14 @@ int send_join_request (flux_t h, const char *module_name, double next_event)
     Jadd_int (o, "rank", rank);
     Jadd_double (o, "next_event", next_event);
 
-    msg = flux_msg_create (FLUX_MSGTYPE_REQUEST);
-    flux_msg_set_topic (msg, "sim.join");
-    flux_msg_set_payload_json (msg, Jtostr (o));
-    if (flux_send (h, msg, 0) < 0) {
+    const char *uri = flux_attr_get (h, "local-uri", NULL);
+    if (uri)
+        Jadd_str (o, "uri", uri);
+    else
+        flux_log (h, LOG_ERR, "ERROR: Could not get local uri when sending join request");
+
+    if (!flux_rpc (remote_h, "sim.join", Jtostr (o), FLUX_NODEID_ANY, 0)) {
+        flux_log (h, LOG_ERR, "Could not send rpc join");
         rc = -1;
     }
 

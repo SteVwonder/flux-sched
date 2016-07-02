@@ -242,7 +242,7 @@ static int test_a_resrc (resrc_t *resrc, bool rdl)
     int found = 0;
     int rc = 0;
     int verbose = 0;
-    int64_t nowtime = epochtime ();
+    int64_t nowtime = (int64_t)time (NULL);
     JSON child_core = NULL;
     JSON o = NULL;
     JSON req_res = NULL;
@@ -342,7 +342,7 @@ static int test_a_resrc (resrc_t *resrc, bool rdl)
 
     o = Jnew_ar ();
     init_time ();
-    rc = resrc_tree_list_serialize (o, found_trees);
+    rc = resrc_tree_list_serialize (o, found_trees, 0);
     ok (!rc, "found resource serialization took: %lf",
         ((double)get_time ())/1000000);
 

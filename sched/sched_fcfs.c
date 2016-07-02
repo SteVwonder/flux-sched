@@ -80,6 +80,9 @@ resrc_tree_list_t *find_resources (flux_t h, resrc_t *resrc,
         flux_log (h, LOG_ERR, "%s: new tree list failed", __FUNCTION__);
         goto ret;
     }
+    if (!(resrc_tree_children (resrc_tree))) {
+        flux_log (h, LOG_DEBUG, "children fail");
+    }
 
     if (resrc_reqst_set_starttime (resrc_reqst, 0) ||
         resrc_reqst_set_endtime (resrc_reqst, 0))
@@ -87,7 +90,6 @@ resrc_tree_list_t *find_resources (flux_t h, resrc_t *resrc,
 
     nfound = resrc_tree_search (resrc_tree_children (resrc_tree), resrc_reqst,
                                 found_trees, true);
-
     if (!nfound) {
         resrc_tree_list_destroy (found_trees, false);
         found_trees = NULL;
