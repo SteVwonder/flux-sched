@@ -37,6 +37,8 @@
 #include "resrc_reqst.h"
 #include "src/common/libutil/xzmalloc.h"
 
+#define fprintf(stderr, ...)
+
 struct resrc_reqst_list {
     zlist_t *list;
 };
@@ -314,7 +316,7 @@ void resrc_reqst_print (resrc_reqst_t *resrc_reqst)
     if (resrc_reqst) {
         char *shared = resrc_reqst->exclusive ? "exclusive" : "shared";
 
-        printf ("%"PRId64" of %"PRId64" %s ", resrc_reqst->nfound,
+        printf ("%"PRId64" of %"PRId64" %s\n", resrc_reqst->nfound,
                 resrc_reqst->reqrd_qty, shared);
         resrc_print_resource (resrc_reqst->resrc);
         if (resrc_reqst_num_children (resrc_reqst)) {
@@ -399,23 +401,30 @@ static bool match_child (resrc_tree_list_t *r_trees, resrc_reqst_t *resrc_reqst,
     resrc_tree = resrc_tree_list_first (r_trees);
     while (resrc_tree) {
         found = false;
+        fprintf (stderr, "Checking if child resrc matches request: ");
+        resrc_print_resource (resrc_tree_resrc (resrc_tree));
         if (resrc_match_resource (resrc_tree_resrc (resrc_tree), resrc_reqst,
                                   available)) {
+            fprintf (stderr, "It does match");
             if (resrc_reqst_num_children (resrc_reqst)) {
+                fprintf (stderr, ", checking children\n");
                 if (resrc_tree_num_children (resrc_tree)) {
                     child_tree = resrc_tree_new (parent_tree,
                                                  resrc_tree_resrc (resrc_tree));
                     if (match_children (resrc_tree_children (resrc_tree),
                                         resrc_reqst_children (resrc_reqst),
                                         child_tree, available)) {
+                        fprintf (stderr, "children match, appending tree\n");
                         resrc_reqst->nfound++;
                         found = true;
                         success = true;
                     } else {
+                        fprintf (stderr, "children don't match, skipping\n");
                         resrc_tree_destroy (child_tree, false);
                     }
                 }
             } else {
+                fprintf (stderr, ", no children to check\n");
                 (void) resrc_tree_new (parent_tree,
                                        resrc_tree_resrc (resrc_tree));
                 resrc_reqst->nfound++;
@@ -429,15 +438,21 @@ static bool match_child (resrc_tree_list_t *r_trees, resrc_reqst_t *resrc_reqst,
          * with 4 cores and omit the intervening socket.
          */
         if (!found) {
+            fprintf (stderr, "It doesn't match");
             if (resrc_tree_num_children (resrc_tree)) {
+                fprintf (stderr, ", checking descendants\n");
                 child_tree = resrc_tree_new (parent_tree,
                                              resrc_tree_resrc (resrc_tree));
                 if (match_child (resrc_tree_children (resrc_tree), resrc_reqst,
                                  child_tree, available)) {
+                    fprintf (stderr, "A descendant matched\n");
                     success = true;
                 } else {
+                    fprintf (stderr, "No descendants matched\n");
                     resrc_tree_destroy (child_tree, false);
                 }
+            } else {
+                fprintf (stderr, ", no descendants to check, failed\n");
             }
         }
         resrc_tree = resrc_tree_list_next (r_trees);
@@ -486,29 +501,38 @@ int resrc_tree_search (resrc_tree_list_t *resrcs_in, resrc_reqst_t *resrc_reqst,
         goto ret;
     }
 
+    char *resrc_buffer = NULL;
     resrc_tree = resrc_tree_list_first (resrcs_in);
     while (resrc_tree) {
+        fprintf (stderr, "Checking if resrc matches request: ");
+        //resrc_print_resource (resrc_tree_resrc (resrc_tree));
         if (resrc_match_resource (resrc_tree_resrc (resrc_tree), resrc_reqst,
                                   available)) {
+            fprintf (stderr, "It does match");
             if (resrc_reqst_num_children (resrc_reqst)) {
+                fprintf (stderr, ", checking children\n");
                 if (resrc_tree_num_children (resrc_tree)) {
                     new_tree = resrc_tree_new (NULL,
                                                resrc_tree_resrc (resrc_tree));
                     if (match_children (resrc_tree_children (resrc_tree),
                                         resrc_reqst->children, new_tree,
                                         available)) {
+                        fprintf (stderr, "children match, appending tree\n");
                         resrc_tree_list_append (found_trees, new_tree);
                         nfound++;
                     } else {
+                        fprintf (stderr, "children don't match, skipping\n");
                         resrc_tree_destroy (new_tree, false);
                     }
                 }
             } else {
+                fprintf (stderr, ", no children to check\n");
                 new_tree = resrc_tree_new (NULL, resrc_tree_resrc (resrc_tree));
                 resrc_tree_list_append (found_trees, new_tree);
                 nfound++;
             }
         } else if (resrc_tree_num_children (resrc_tree)) {
+            fprintf (stderr, "It doesn't match, checking children\n");
             nfound += resrc_tree_search (resrc_tree_children (resrc_tree),
                                          resrc_reqst, found_trees, available);
         }

@@ -40,7 +40,7 @@ submitsrv_la_LIBADD = $(top_builddir)/resrc/libflux-resrc.la libflux-sim.la \
 submitsrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module -rpath /nowhere
 
 sim_timersrv_la_SOURCES = sim_timersrv.c
-sim_timersrv_la_CFLAGS = $(AM_CFLAGS)
+sim_timersrv_la_CFLAGS = $(AM_CFLAGS) -I${top_srcdir}/sched
 sim_timersrv_la_LIBADD = $(top_builddir)/resrc/libflux-resrc.la libflux-sim.la \
     $(FLUX_CORE_LIBS) $(JSON_LIBS) $(CZMQ_LIBS)
 sim_timersrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module -rpath /nowhere

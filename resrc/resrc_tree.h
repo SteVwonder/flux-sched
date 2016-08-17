@@ -172,18 +172,23 @@ void resrc_tree_list_unstage_resources (resrc_tree_list_t *rtl);
 
 resrc_t *resrc_find_by_id_tree (resrc_tree_t *resrc_tree, int64_t id);
 resrc_t *resrc_find_by_id_tree_list (resrc_tree_list_t *resrc_tree_list, int64_t id);
-int resrc_hash_by_uuid (resrc_tree_t *resrc_tree, zhash_t *hash_table);
-int resrc_hash_by_uuid_list (resrc_tree_list_t *resrc_tree_list, zhash_t *hash_table);
+int resrc_tree_hash_by_uuid (resrc_tree_t *resrc_tree, zhash_t *hash_table);
+int resrc_tree_list_hash_by_uuid (resrc_tree_list_t *resrc_tree_list, zhash_t *hash_table);
 
-int resrc_tree_add_child_special (resrc_tree_t *parent, resrc_tree_t *child, zhash_t *hash_table, int64_t owner);
+int resrc_tree_add_child_special (flux_t h, resrc_tree_t *parent, resrc_tree_t *child, zhash_t *hash_table, int64_t owner);
 int resrc_tree_set_owner (resrc_tree_t *resrc_tree, int64_t owner);
 int resrc_tree_destroy_returned_resources (resrc_tree_t *resrc_tree, zhash_t *hash_table);
 
 int resrc_compare (resrc_tree_t *new_tree, resrc_tree_t *job_tree, JSON ret_array);
-resrc_tree_list_t* resrc_split_resources (resrc_tree_list_t *found_tree_list, resrc_tree_list_t *job_tree_list, JSON ret_array, int64_t jobid);
-
+resrc_tree_list_t* resrc_tree_split_resources (flux_t h, resrc_tree_list_t *found_tree_list, resrc_tree_list_t *job_tree_list, JSON ret_array, int64_t jobid);
 
 int resrc_tree_allocate_dynamic (resrc_tree_t *resrc_tree, int64_t job_id, int64_t starttime, int64_t endtime);
 int resrc_tree_list_allocate_dynamic (resrc_tree_list_t *rtl, int64_t job_id, int64_t starttime, int64_t endtime);
+
+void resrc_tree_flux_log (flux_t h, resrc_tree_t *rt);
+void resrc_tree_list_flux_log (flux_t h, resrc_tree_list_t *tree_list);
+
+void resrc_tree_idle_resources (resrc_tree_t *resrc_tree);
+void resrc_tree_list_idle_resources (resrc_tree_list_t *rtl);
 
 #endif /* !FLUX_RESRC_TREE_H */

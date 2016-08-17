@@ -25,6 +25,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
@@ -36,21 +37,50 @@
 #include "src/common/libutil/xzmalloc.h"
 #include "simulator.h"
 
-static char *module_name;
+// TODO: grab the actual enum in the scheduler.h header
+typedef enum {
+    INVALID = 0,
+    SLACK,
+    CSLACK
+} slack_state_t;
 
-// Set to -2 for static scheduling
-// Set to positive integer for dynamic scheduling
+typedef struct {
+    flux_t h;
+    flux_t sim_h;
+    char *sim_uri;
+    char *my_sim_id;
+    char *module_name;
+    char *sched_timer_topic;
+    int timer_interval;
+    bool should_trigger_sched;
+    bool is_root;
+} ctx_t;
+
+static ctx_t *getctx (flux_t h)
+{
+    ctx_t *ctx = (ctx_t *)flux_aux_get (h, "timer");
+    if (!ctx) {
+        ctx = xzmalloc(sizeof(ctx_t));
+        ctx->h = h;
+        ctx->sim_h = NULL;
+        ctx->sim_uri = NULL;
+        ctx->my_sim_id = NULL;
+        ctx->module_name = NULL;
+        ctx->sched_timer_topic = NULL;
+        ctx->should_trigger_sched = false;
+        ctx->is_root = false;
+        // Set to -2 for static scheduling
+        // Set to positive integer for dynamic scheduling
 #ifdef DYNAMIC_SCHEDULING
-static int timer_interval = 1000;
-//static int timer_interval = 30;
+        ctx->timer_interval = 100;
+        //ctx->timer_interval = 30;
 #else
-static int timer_interval = -2;
+        ctx->timer_interval = -2;
 #endif
+    }
 
-static char *my_sim_id;
-static char *sim_uri;
-static flux_t sim_h = NULL;
-static char *sched_timer_topic = NULL;
+    return ctx;
+}
 
 // Received an event that a simulation is starting
 static void start_cb (flux_t h,
@@ -58,8 +88,16 @@ static void start_cb (flux_t h,
                       const flux_msg_t *msg,
                       void *arg)
 {
+    ctx_t *ctx = (ctx_t*) arg;
+    int next_event = -1;
+
+    if (ctx->is_root) {
+        next_event = 1;
+    }
+
     flux_log (h, LOG_DEBUG, "received a start event");
-    if (send_join_request (h, sim_h, module_name, timer_interval+1) < 0) {
+
+    if (send_join_request (h, ctx->sim_h, ctx->module_name, next_event) < 0) {
         flux_log (h,
                   LOG_ERR,
                   "timer module failed to register with sim module");
@@ -79,10 +117,12 @@ static void trigger_cb (flux_t h,
                         const flux_msg_t *msg,
                         void *arg)
 {
+    ctx_t *ctx = (ctx_t*) arg;
     JSON o = NULL;
     const char *json_str = NULL;
     const char *json_out = NULL;
     sim_state_t *sim_state = NULL;
+    int slack_state = 0;
 
     flux_log (h, LOG_DEBUG, "received a trigger");
 
@@ -92,7 +132,6 @@ static void trigger_cb (flux_t h,
         Jput (o);
         return;
     }
-    Jput (o);
 
     // Logging
     flux_log (h,
@@ -100,26 +139,37 @@ static void trigger_cb (flux_t h,
               "received a trigger (timer.trigger): %s",
               json_str);
 
-    // invoke timer event in sched
-    flux_log (h, LOG_DEBUG, "sched timer topic: %s", sched_timer_topic);
-    flux_rpc_t *rpc = flux_rpc (h, sched_timer_topic, json_str, FLUX_NODEID_ANY, 0);
-    if (flux_rpc_get (rpc, NULL, &json_out) < 0 || !json_out) {
-        flux_log (h, LOG_ERR, "%s: failed to extract payload from sched response", __FUNCTION__);
-        return;
-    }
-
-    if (!(o = Jfromstr (json_out))) {
-        flux_log (h, LOG_ERR, "%s: bad message has been given by the sched module to timer", __FUNCTION__);
-        return;
+    if (ctx->should_trigger_sched) {
+        // invoke timer event in sched
+        Jput (o);
+        flux_log (h, LOG_DEBUG, "sched timer topic: %s", ctx->sched_timer_topic);
+        flux_rpc_t *rpc = flux_rpc (h, ctx->sched_timer_topic, json_str, FLUX_NODEID_ANY, 0);
+        if (flux_rpc_get (rpc, NULL, &json_out) < 0 || !json_out) {
+            flux_log (h, LOG_ERR, "%s: failed to extract payload from sched response", __FUNCTION__);
+            return;
+        }
+        if (!(o = Jfromstr (json_out))) {
+            flux_log (h, LOG_ERR, "%s: bad message has been given by the sched module to timer", __FUNCTION__);
+            return;
+        }
+    } else {
+        ctx->should_trigger_sched = true;
     }
 
     sim_state = json_to_sim_state (o);
+    Jget_int (o, "slack_state", &slack_state);
 
-    double *new_time = (double *)zhash_lookup (sim_state->timers, module_name);
-    if (new_time)
-        *new_time = sim_state->sim_time + timer_interval;
+    if (slack_state == 0) {
+        double *new_time = (double *)zhash_lookup (sim_state->timers, ctx->module_name);
+        if (new_time && ctx->timer_interval > 0) {
+            *new_time = sim_state->sim_time + ctx->timer_interval;
+        } // else: dynamic scheduling is turned off or the timer module isn't in the zhash
+    } else {
+        flux_log (h, LOG_DEBUG, "%s: sched is in a slack state, not setting the timer", __FUNCTION__);
+        ctx->should_trigger_sched = false;
+    }
 
-    send_reply_request (h, sim_h, module_name, sim_state);
+    send_reply_request (h, ctx->sim_h, ctx->module_name, sim_state);
 
     // Cleanup
     free_simstate (sim_state);
@@ -132,6 +182,7 @@ int mod_main (flux_t h, int argc, char **argv)
     char *prefix = NULL;
     int i;
 
+    ctx_t *ctx = getctx (h);
     zhash_t *args = zhash_fromargv (argc, argv);
     if (!args)
         oom ();
@@ -146,30 +197,37 @@ int mod_main (flux_t h, int argc, char **argv)
         }
         if (!strncmp ("time=", argv[i], sizeof ("time"))) {
             char *time_str = xstrdup (strstr (argv[i], "=") + 1);
-            timer_interval = strtol (time_str, NULL, 10);      
+            ctx->timer_interval = strtol (time_str, NULL, 10);
             free (time_str);
         }
         if (!strncmp ("prefix=", argv[i], sizeof ("prefix"))) {
-            prefix = xstrdup (strstr (argv[i], "=") + 1);       
+            prefix = xstrdup (strstr (argv[i], "=") + 1);
         }
         if (!strncmp ("sim_uri=", argv[i], sizeof ("sim_uri"))) {
-            sim_uri = xstrdup (strstr (argv[i], "=") + 1);
+            ctx->sim_uri = xstrdup (strstr (argv[i], "=") + 1);
         }
     }
 
+    ctx->is_root = (prefix == NULL);
+
     if (prefix) {
-        asprintf (&module_name, "sim_timer.%s.%ld", prefix, jobid);
-        asprintf (&my_sim_id, "%s.%ld", prefix, jobid);
-        asprintf (&sched_timer_topic, "sched.%s.%ld.timer", prefix, jobid);
+        asprintf (&ctx->module_name, "sim_timer.%s.%ld", prefix, jobid);
+        asprintf (&ctx->my_sim_id, "%s.%ld", prefix, jobid);
+        asprintf (&ctx->sched_timer_topic, "sched.%s.%ld.timer", prefix, jobid);
         free (prefix);
     } else {
-        asprintf (&module_name, "sim_timer.%ld", jobid);
-        asprintf (&my_sim_id, "%ld", jobid);
-        asprintf (&sched_timer_topic, "sched.%ld.timer", jobid);
+        asprintf (&ctx->module_name, "sim_timer.%ld", jobid);
+        asprintf (&ctx->my_sim_id, "%ld", jobid);
+        asprintf (&ctx->sched_timer_topic, "sched.%ld.timer", jobid);
+    }
+
+    if (flux_event_subscribe (h, "sim.start") < 0) {
+        flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
+        return -1;
     }
 
     char *timertrigger;
-    asprintf (&timertrigger, "%s.trigger", module_name);
+    asprintf (&timertrigger, "%s.trigger", ctx->module_name);
     flux_log (h, LOG_DEBUG, "trigger function : %s", timertrigger);
 
     struct flux_msg_handler_spec htab1[] = {
@@ -178,30 +236,26 @@ int mod_main (flux_t h, int argc, char **argv)
         FLUX_MSGHANDLER_TABLE_END,
     };
 
-    if (flux_event_subscribe (h, "sim.start") < 0) {
-        flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
-        return -1;
-    }
-
-
-    if (flux_msg_handler_addvec (h, htab1, NULL) < 0) {
+    if (flux_msg_handler_addvec (h, htab1, ctx) < 0) {
         flux_log (h, LOG_ERR, "flux_msg_handler_addvec: %s", strerror (errno));
         return -1;
     }
 
-    if (sim_uri) {
-        sim_h = flux_open (sim_uri, 0);
-        if (!sim_h) {
+    free (timertrigger);
+
+    if (ctx->sim_uri) {
+        ctx->sim_h = flux_open (ctx->sim_uri, 0);
+        if (!ctx->sim_h) {
             flux_log (h, LOG_ERR, "Could not open handle to sim");
             return -1;
         }
     } else {
-        sim_h = h;
+        ctx->sim_h = h;
     }
-    if (!jobid) {
-        send_alive_request (h, sim_h, module_name);
+    if (ctx->is_root) {
+        send_alive_request (h, ctx->sim_h, ctx->module_name);
     } else {
-        if (send_join_request (h, sim_h, module_name, -1) < 0) {
+        if (send_join_request (h, ctx->sim_h, ctx->module_name, -1) < 0) {
             flux_log (h,
                       LOG_ERR,
                       "timer module failed to register with sim module");
@@ -215,8 +269,6 @@ int mod_main (flux_t h, int argc, char **argv)
             flux_log (h, LOG_DEBUG, "unsubscribed from \"sim.start\"");
         }
     }
-
-    free (timertrigger);
 
     if (flux_reactor_run (flux_get_reactor (h), 0) < 0) {
         flux_log (h, LOG_ERR, "flux_reactor_run: %s", strerror (errno));

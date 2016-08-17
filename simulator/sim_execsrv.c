@@ -199,20 +199,51 @@ static int set_event_timer (ctx_t *ctx, char *mod_name, double timer_value)
     return 0;
 }
 
+static int archive_job (ctx_t *ctx, job_t *job)
+{
+    char *from = NULL;
+    char *to = NULL;
+    int rc = -1;
+
+    flux_log (ctx->h, LOG_DEBUG, "%s: archiving job %d", __FUNCTION__, job->id);
+
+    if (asprintf (&to, "lwj.%d", job->id) < 0
+        || asprintf (&from, "lwj-active.%d", job->id) < 0) {
+        flux_log_error (ctx->h, "archive_lwj: asprintf");
+        goto out;
+    }
+    if ((rc = kvs_move (ctx->h, from, to)) < 0) {
+        flux_log_error (ctx->h, "kvs_move (%s, %s)", from, to);
+        goto out;
+    }
+
+    if (kvs_commit (ctx->h) < 0)
+        flux_log_error (ctx->h, "kvs_commit");
+out:
+    free (to);
+    free (from);
+    return (rc);
+}
+
 // Update sched timer as necessary (to trigger an event in sched)
 // Also change the state of the job in the KVS
 static int complete_job (ctx_t *ctx, job_t *job, double completion_time)
 {
+    char *kvs_dir_key = NULL;
     flux_t h = ctx->h;
 
     flux_log (h, LOG_INFO, "Job %d completed", job->id);
 
+    kvs_dir_key = strdup(kvsdir_key(job->kvs_dir));
+    kvsdir_destroy (job->kvs_dir);
+    archive_job (ctx, job);
+    kvs_get_dir (ctx->h, &job->kvs_dir, kvs_dir_key);
     update_job_state (ctx, job->id, job->kvs_dir, J_COMPLETE, completion_time);
     set_event_timer (ctx, my_sched_module, ctx->sim_state->sim_time + .00001);
     kvsdir_put_double (job->kvs_dir, "complete_time", completion_time);
     kvsdir_put_double (job->kvs_dir, "io_time", job->io_time);
-
     kvs_commit (h);
+
     free_job (job);
 
     return 0;
@@ -508,19 +539,72 @@ static int advance_time (ctx_t *ctx, zhash_t *job_hash)
     return 0;
 }
 
+static int handle_hierarchical_job (ctx_t *ctx, int jobid, kvsdir_t *kvs_dir)
+{
+    int rc = -1;
+    char *topic = NULL;
+    flux_msg_t *msg = NULL;
+
+    // Wreck shouldn't kill hierarchical jobs
+    kvsdir_put_int(kvs_dir, "walltime", -1);
+
+    if (asprintf (&topic, "wrexec.run.%d", jobid) < 0) {
+        flux_log (ctx->h, LOG_ERR, "(%s): topic create failed: %s",
+                  __FUNCTION__, strerror (errno));
+    } else if (!(msg = flux_event_encode (topic, NULL))
+               || flux_send (ctx->h, msg, 0) < 0) {
+        flux_log (ctx->h, LOG_ERR, "(%s): event create failed: %s",
+                  __FUNCTION__, strerror (errno));
+    } else {
+        flux_log (ctx->h, LOG_DEBUG, "job %d runrequest", jobid);
+        rc = 0;
+    }
+
+    return rc;
+}
+
+static int handle_flat_job (ctx_t *ctx, int jobid, kvsdir_t *kvs_dir)
+{
+    job_t *job = NULL;
+    zlist_t *running_jobs = ctx->running_jobs;
+    double sim_time = ctx->sim_state->sim_time;
+
+    job = pull_job_from_kvs (kvs_dir);
+    if (update_job_state (ctx, jobid, kvs_dir, J_STARTING, sim_time) < 0) {
+        flux_log (ctx->h,
+                  LOG_ERR,
+                  "failed to set job %d's state to starting",
+                  jobid);
+        return -1;
+    }
+    if (update_job_state (ctx, jobid, kvs_dir, J_RUNNING, sim_time) < 0) {
+        flux_log (ctx->h,
+                  LOG_ERR,
+                  "failed to set job %d's state to running",
+                  jobid);
+        return -1;
+    }
+    flux_log (ctx->h,
+              LOG_INFO,
+              "job %d's state to starting then running",
+              jobid);
+    job->start_time = ctx->sim_state->sim_time;
+    zlist_append (running_jobs, job);
+    return 0;
+}
+
 // Take all of the scheduled job events that were queued up while we
 // weren't running and add those jobs to the set of running jobs. This
 // also requires switching their state in the kvs (to trigger events
 // in the scheduler)
 static int handle_queued_events (ctx_t *ctx)
 {
-    job_t *job = NULL;
     int *jobid = NULL;
-    kvsdir_t *kvs_dir;
+    kvsdir_t *kvs_dir = NULL;
     flux_t h = ctx->h;
     zlist_t *queued_events = ctx->queued_events;
-    zlist_t *running_jobs = ctx->running_jobs;
-    double sim_time = ctx->sim_state->sim_time;
+    int is_hierarchical = 0;
+    int rc = 0;
 
     if (zlist_size (queued_events) > 0) {
         set_event_timer (ctx, my_sched_module, ctx->sim_state->sim_time + .00001);
@@ -530,30 +614,24 @@ static int handle_queued_events (ctx_t *ctx)
         jobid = zlist_pop (queued_events);
         if (kvs_get_dir (h, &kvs_dir, "lwj.%d", *jobid) < 0)
             log_err_exit ("kvs_get_dir (id=%d)", *jobid);
-        job = pull_job_from_kvs (kvs_dir);
-        if (update_job_state (ctx, *jobid, kvs_dir, J_STARTING, sim_time) < 0) {
-            flux_log (h,
-                      LOG_ERR,
-                      "failed to set job %d's state to starting",
-                      *jobid);
-            return -1;
+        if (kvsdir_exists(kvs_dir, "is_hierarchical")) {
+            if (kvsdir_get_int(kvs_dir, "is_hierarchical", &is_hierarchical) < 0) {
+                flux_log (h, LOG_ERR, "%s: kvs_get_dir (id=%d)", __FUNCTION__, *jobid);
+                is_hierarchical = 0;
+            }
+        } else {
+            is_hierarchical = 0;
         }
-        if (update_job_state (ctx, *jobid, kvs_dir, J_RUNNING, sim_time) < 0) {
-            flux_log (h,
-                      LOG_ERR,
-                      "failed to set job %d's state to running",
-                      *jobid);
-            return -1;
+
+        if (is_hierarchical &&
+            (handle_hierarchical_job(ctx, *jobid, kvs_dir) < 0)) {
+            flux_log (h, LOG_ERR, "%s: failed to handle hierarchical job %d", __FUNCTION__, *jobid);
+        } else if (handle_flat_job(ctx, *jobid, kvs_dir) < 0) {
+            flux_log (h, LOG_ERR, "%s: failed to handle flat job %d", __FUNCTION__, *jobid);
         }
-        flux_log (h,
-                  LOG_INFO,
-                  "job %d's state to starting then running",
-                  *jobid);
-        job->start_time = ctx->sim_state->sim_time;
-        zlist_append (running_jobs, job);
     }
 
-    return 0;
+    return rc;
 }
 
 // Received an event that a simulation is starting
@@ -630,7 +708,7 @@ static void run_cb (flux_t h,
     //ctx_t *ctx = (ctx_t *)arg;
     ctx_t *ctx = getctx (h);
     int *jobid = (int *)malloc (sizeof (int));
-    
+
     if (flux_msg_get_topic (msg, &topic) < 0) {
         flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
         return;
@@ -638,15 +716,18 @@ static void run_cb (flux_t h,
 
     // Logging
     flux_log (h, LOG_DEBUG, "received a request (%s)", topic);
-    
+
     // Handle Request
     //sscanf (topic, "%s.run.%d", final_name, jobid); 
     int i;
+    // TODO: replace with strtok
     for (i = strlen(topic) - 1; topic[i] != '.'; i--);
     *jobid = atoi (&topic[i+1]);
     zlist_append (ctx->queued_events, jobid);
- 
-    flux_log (h, LOG_DEBUG, "queued the running of jobid %d", *jobid);
+
+    flux_log (h, LOG_DEBUG, "queued the running of jobid %d, sending RPC reply", *jobid);
+
+    flux_respond(h, msg, 0, NULL);
 }
 /*
 static struct flux_msg_handler_spec htab[] = {

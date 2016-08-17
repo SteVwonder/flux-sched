@@ -7,6 +7,7 @@
 
 #include <uuid/uuid.h>
 #include <czmq.h>
+#include <flux/core.h>
 
 #define TIME_MAX INT64_MAX
 #define SLACK_BUFFER_TIME 0
@@ -208,14 +209,16 @@ int64_t resrc_epochtime ();
 
 int64_t resrc_owner (resrc_t *resrc);
 int64_t resrc_leasee (resrc_t *resrc);
-
 void resrc_set_owner (resrc_t *resrc, int64_t owner);
-bool resrc_check_resource_destroy_ready (resrc_t *resrc);
-int resrc_add_resources_from_json (resrc_t *resrc, zhash_t *hash_table, json_object *o, int64_t owner);
 
-bool resrc_check_slacksub_ready (resrc_t *resrc, int64_t *endtime);
-bool resrc_check_return_ready (resrc_t *resrc, int64_t *jobid);
-int resrc_collect_own_resources_unasked (zhash_t *hash_table, json_object *ro_array);
+void resrc_copy_lifetime (resrc_t *from, resrc_t *to);
+
+bool resrc_check_resource_destroy_ready (resrc_t *resrc);
+int resrc_add_resources_from_json (flux_t h, resrc_t *resrc, zhash_t *hash_table, json_object *o, int64_t owner);
+
+bool resrc_check_slacksub_ready (flux_t h, resrc_t *resrc, int64_t *endtime);
+bool resrc_check_return_ready (flux_t h, resrc_t *resrc, int64_t *jobid);
+int resrc_collect_own_resources_unasked (flux_t h, zhash_t *hash_table, JSON ro_array);
 int resrc_retrieve_lease_information (zhash_t *hash_table, json_object *ro_array, json_object *ut);
 int resrc_mark_resource_return_received (resrc_t *resrc, int64_t jobid);
 int resrc_mark_resources_returned (zhash_t *hash_table, json_object *ro_array);
@@ -226,6 +229,10 @@ int resrc_mark_resources_to_be_returned (zhash_t *hash_table, json_object *ro_ar
 int resrc_allocate_resource_in_time_dynamic (resrc_t *resrc, int64_t job_id, int64_t starttime, int64_t endtime);
 
 void resrc_set_sim_mode ();
-void resrc_set_sim_time (uint64_t t);
+void resrc_set_sim_time (int64_t t);
+
+void resrc_flux_log (flux_t h, resrc_t *resrc);
+void resrc_hash_flux_log (flux_t h, zhash_t *hash);
+
 
 #endif /* !FLUX_RESRC_H */

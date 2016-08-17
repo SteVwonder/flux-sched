@@ -180,7 +180,11 @@ int put_job_in_kvs (job_t *job)
     // TODO: Check to see if this is necessary, i assume the kvsdir becomes
     // stale after a commit
     char *dir_key;
-    asprintf (&dir_key, "%s", kvsdir_key (job->kvs_dir));
+    if (asprintf (&dir_key, "%s", kvsdir_key (job->kvs_dir)) < 0) {
+        flux_log (h, LOG_ERR, "%s: failed to create kvs dir key", __FUNCTION__);
+        return -1;
+    }
+
     kvsdir_destroy (job->kvs_dir);
     kvs_get_dir (h, &job->kvs_dir, dir_key);
     free (dir_key);
@@ -275,7 +279,7 @@ int send_reply_request (flux_t h,
         rc = -1;
     }
 
-    flux_log (h, LOG_DEBUG, "Sent reply request from module_name :%s", module_name);
+    flux_log (h, LOG_DEBUG, "Sent reply request from module_name :%s - %s", module_name, Jtostr(o));
 
     Jput (o);
     return rc;

@@ -53,18 +53,15 @@
 
 #include "../simulator/simulator.h"
 
-#define DYNAMIC_SCHEDULING 1
-#define ENABLE_TIMER_EVENT 1
+#define ENABLE_TIMER_EVENT 0
 #define SCHED_UNIMPL -1
 
 //#undef LOG_DEBUG
 //#define LOG_DEBUG LOG_INFO
 
 
-#if ENABLE_TIMER_EVENT
 static void timer_event_cb (flux_reactor_t *r, flux_watcher_t *w,
                            int revents, void *arg);
-#endif
 static void res_event_cb (flux_t h, flux_msg_handler_t *w,
                           const flux_msg_t *msg, void *arg);
 static int job_status_cb (const char *jcbstr, void *arg, int errnum);
@@ -185,6 +182,7 @@ typedef struct {
 } ssrvctx_t;
 
 static void set_next_event_slack_wrapper (ssrvctx_t *ctx, int jobid);
+static void set_next_event_timer_wrapper (ssrvctx_t *ctx, int jobid);
 static int schedule_jobs (ssrvctx_t *ctx);
 
 static char *my_simexec_module;
@@ -678,24 +676,6 @@ done:
     return rc;
 }
 
-static void dump_resrc_state (flux_t h, resrc_tree_t *rt)
-{
-    char *str;
-    if (!rt)
-        return;
-    str = resrc_to_string (resrc_tree_resrc (rt));
-    flux_log (h, LOG_INFO, "%s", str);
-    free (str);
-    if (resrc_tree_num_children (rt)) {
-        resrc_tree_t *child = resrc_tree_list_first (resrc_tree_children (rt));
-        while (child) {
-            dump_resrc_state (h, child);
-            child = resrc_tree_list_next (resrc_tree_children (rt));
-        }
-    }
-    return;
-}
-
 static int load_rdl_from_parent_kvs (ssrvctx_t *ctx)
 {
     int rc = -1;
@@ -737,8 +717,8 @@ static int load_rdl_from_parent_kvs (ssrvctx_t *ctx)
 
     /* deserialize and add it to cluster */
     JSON ro = Jfromstr (rdlstr);
-    flux_log (h, LOG_DEBUG, "%s: LoadRDLkvs: ro obtained from json: %s", __FUNCTION__, Jtostr(ro));
-    resrc_add_resources_from_json (ctx->rctx.root_resrc, ctx->rctx.resrc_id_hash, ro, 0);
+    //flux_log (h, LOG_DEBUG, "%s: LoadRDLkvs: ro obtained from json: %s", __FUNCTION__, Jtostr(ro));
+    resrc_add_resources_from_json (h, ctx->rctx.root_resrc, ctx->rctx.resrc_id_hash, ro, 0);
     //resrc_hash_by_uuid (resrc_phys_tree (ctx->rctx.root_resrc), ctx->rctx.resrc_id_hash);
     //Jput (ro);
 
@@ -782,9 +762,25 @@ static int load_resources (ssrvctx_t *ctx)
             */
             ctx->rctx.root_uri = turi;
             ctx->rctx.root_resrc = tres;
+            resrc_tree_hash_by_uuid (resrc_phys_tree (ctx->rctx.root_resrc), ctx->rctx.resrc_id_hash);
             rc = 0;
         }
-        flux_log (ctx->h, LOG_INFO, "loaded resrc");
+        resrc_tree_idle_resources (resrc_phys_tree (ctx->rctx.root_resrc));
+        flux_log (ctx->h, LOG_INFO, "%s: loaded resrc", __FUNCTION__);
+        //flux_log (ctx->h, LOG_DEBUG, "%s: Printing resource in resrc_id_hash", __FUNCTION__);
+        //resrc_hash_flux_log (ctx->h, ctx->rctx.resrc_id_hash);
+        int num_nodes = 0;
+        resrc_t *curr_resrc = NULL;
+        for (curr_resrc = zhash_first(ctx->rctx.resrc_id_hash);
+             curr_resrc;
+             curr_resrc = zhash_next(ctx->rctx.resrc_id_hash)) {
+            if (!strncmp (resrc_type(curr_resrc), "node", 5)) {
+                num_nodes++;
+            }
+        }
+        flux_log (ctx->h, LOG_DEBUG, "%s: number of nodes: %d", __FUNCTION__, num_nodes);
+        flux_log (ctx->h, LOG_DEBUG, "%s: Printing resource in root_resrc tree", __FUNCTION__);
+        resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
         break;
 
     case RSREADER_RESRC:
@@ -797,7 +793,7 @@ static int load_resources (ssrvctx_t *ctx)
         }
         if (ctx->arg.verbosity > 0) {
             flux_log (ctx->h, LOG_INFO, "resrc state after resrc read");
-            dump_resrc_state (ctx->h, resrc_phys_tree (tres));
+            resrc_tree_flux_log (ctx->h, resrc_phys_tree (tres));
         }
         if (rsreader_link2rank (ctx->machs, tres, &e_str) != 0) {
             flux_log (ctx->h, LOG_INFO, "RDL(%s) inconsistent w/ hwloc!", path);
@@ -833,7 +829,7 @@ static int load_resources (ssrvctx_t *ctx)
         /* linking has already been done by build_hwloc_rs2rank above */
         if (ctx->arg.verbosity > 0) {
             flux_log (ctx->h, LOG_INFO, "resrc state after hwloc read");
-            dump_resrc_state (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
+            resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
         }
         rc = 0;
         break;
@@ -854,19 +850,17 @@ done:
  *                                                                            *
  ******************************************************************************/
 
-static void job_cslack_set (flux_lwj_t *job, JSON needobj)
+static void job_cslack_set (flux_t h, flux_lwj_t *job, JSON needobj)
 {
     job->slackinfo->slack_state = CSLACK;
     if (job->slackinfo->need) {
         Jput (job->slackinfo->need);
         job->slackinfo->need = NULL;
     }
-    fprintf (stderr, "SO FAR SO GOOD\n");
+    flux_log (h, LOG_DEBUG, "SO FAR SO GOOD");
     job->slackinfo->need = Jdup (needobj);
     if (job->slackinfo == NULL)
-        fprintf (stderr, "AGAIN IT IS NULL\n");
-    else
-        fprintf (stderr, "IT IS NOT NULL\n");
+        flux_log (h, LOG_DEBUG, "AGAIN IT IS NULL");
 }
 
 static void job_cslack_invalidate (flux_lwj_t *job)
@@ -884,6 +878,9 @@ static void ctx_slack_invalidate (ssrvctx_t *ctx)
     ctx->slctx.psize = 0;
     ctx->slctx.rsize = 0;
     ctx->slctx.jobid = 0;
+#ifdef DYNAMIC_SCHEDULING
+    set_next_event_timer_wrapper (ctx, -1);
+#endif
 }
 
 bool all_children_cslack (ssrvctx_t *ctx)
@@ -914,7 +911,7 @@ static int accumulate_surplus_need (ssrvctx_t *ctx, int k_needs, JSON o, int *rc
     /* If all my resources are not yet with me, do not send surplus */
     if (ctx->slctx.wait_until_return) {
         *rcount = 0;
-        flux_log (h, LOG_DEBUG, "%s: Wait until return set to trure. Skipping surplus collection. Goto needs.", __FUNCTION__);
+        flux_log (h, LOG_DEBUG, "%s: Wait until return set to true. Skipping surplus collection. Goto needs.", __FUNCTION__);
         goto needs;
     }
 
@@ -922,23 +919,23 @@ static int accumulate_surplus_need (ssrvctx_t *ctx, int k_needs, JSON o, int *rc
     /* Calculate surplus */
     resrc_t *resrc = zhash_first (ctx->rctx.resrc_id_hash);
     while (resrc) {
-        flux_log (h, LOG_DEBUG, "%s: Checking resource %s and type %s", __FUNCTION__, resrc_name (resrc), resrc_type (resrc));
+        //flux_log (h, LOG_DEBUG, "%s: Checking resource %s and type %s", __FUNCTION__, resrc_name (resrc), resrc_type (resrc));
         int64_t endtime = 0;
-        if (!(resrc_check_slacksub_ready (resrc, &endtime))) {  // ensures only cores are included. even the ones that I am not the owner of.
-            flux_log (h, LOG_DEBUG, "%s: Resource not eligible for slacksub", __FUNCTION__);
+        if (!(resrc_check_slacksub_ready (h, resrc, &endtime))) {  // ensures only cores are included. even the ones that I am not the owner of.
+            //flux_log (h, LOG_DEBUG, "%s: Resource not eligible for slacksub", __FUNCTION__);
             goto next;
         }
-        flux_log (h, LOG_DEBUG, "%s: Resource is eligible", __FUNCTION__);
+        //flux_log (h, LOG_DEBUG, "%s: Resource is eligible", __FUNCTION__);
         char ruuid[40];
         resrc_uuid (resrc, ruuid);
         Jadd_int64 (j, ruuid, endtime);
-        flux_log (h, LOG_ERR, "Accumulated resource with uuid: %s of type: %s and endtime:%ld", ruuid, resrc_type (resrc), endtime);
+        flux_log (h, LOG_DEBUG, "Accumulated resource with uuid: %s of type: %s, endtime:%"PRId64", owner: %"PRId64"", ruuid, resrc_type (resrc), endtime, resrc_owner (resrc));
         if (resrc_owner (resrc) == 0)
             (*rcount)++;
 next:
         resrc = zhash_next (ctx->rctx.resrc_id_hash);
     }
-    flux_log (h, LOG_ERR, "final value of rcount: %d", *rcount);
+    flux_log (h, LOG_DEBUG, "final value of rcount: %d", *rcount);
 
     /* Add surplus to message */
     Jadd_obj (o, "surplus", j);
@@ -956,11 +953,11 @@ needs:
 
         //TODO: freeing this memory of needs
         JSON req_res = Jnew ();
-        Jadd_int (req_res, "nnodes", job->req->nnodes);
-        Jadd_int (req_res, "ncores", job->req->corespernode);
+        Jadd_int64 (req_res, "nnodes", job->req->nnodes);
+        Jadd_int64 (req_res, "ncores", job->req->ncores);
         Jadd_int64 (req_res, "walltime", job->req->walltime);
 
-        flux_log (h, LOG_DEBUG, "%s: 8888888888 Added need: = %s, corespernode was: %ld, and walltime was= %ld\n", __FUNCTION__, Jtostr (req_res), job->req->corespernode, job->req->walltime);
+        flux_log (h, LOG_DEBUG, "%s: Added need: = %s, ncores was: %ld, and walltime was= %ld", __FUNCTION__, Jtostr (req_res), job->req->ncores, job->req->walltime);
 
         char *key;
         asprintf (&key, "need%d", jcount);
@@ -995,7 +992,7 @@ int send_cslack (ssrvctx_t *ctx, JSON jmsg)
     int rc = -1;
     flux_t h = ctx->h;
     JSON o = Jnew ();
-    flux_rpc_t *rpc;
+    flux_rpc_t *rpc = NULL;
     flux_log (h, LOG_DEBUG, "%s: Going to send cslack", __FUNCTION__);
 
     Jadd_int64 (o, "jobid", ctx->my_job_id);
@@ -1024,6 +1021,8 @@ int send_cslack (ssrvctx_t *ctx, JSON jmsg)
     flux_log (h, LOG_DEBUG, "%s: Parent handle successfully obtained, x = %s", __FUNCTION__, Jtostr (o));
     rpc = flux_rpc (parent_h, "sched.slack.cslack", (const char *)Jtostr (o), FLUX_NODEID_ANY, 0);
     flux_log (h, LOG_DEBUG, "%s: Message sent to parent", __FUNCTION__);
+    flux_rpc_destroy (rpc);
+    flux_log (h, LOG_DEBUG, "%s: destroyed rpc", __FUNCTION__);
     flux_close (parent_h);
     flux_log (h, LOG_DEBUG, "%s: Closed parent handle", __FUNCTION__);
     Jput (o);
@@ -1031,8 +1030,10 @@ int send_cslack (ssrvctx_t *ctx, JSON jmsg)
 
     rc = 0;
 
-    if ((ctx->my_job_id) && (ctx->sctx.in_sim))
+    if ((ctx->my_job_id) && (ctx->sctx.in_sim)) {
+        flux_log (h, LOG_DEBUG, "%s: setting slack event for parent", __FUNCTION__);
         set_next_event_slack_wrapper (ctx, -1);
+    }
 
     return rc;
 }
@@ -1081,8 +1082,10 @@ static int send_cslack_invalid (ssrvctx_t *ctx, JSON jmsg)
     Jput (o);
     rc = 0;
 
-    if ((ctx->my_job_id) && (ctx->sctx.in_sim))
+    if ((ctx->my_job_id) && (ctx->sctx.in_sim)) {
+        flux_log (h, LOG_DEBUG, "%s: setting slack event for parent", __FUNCTION__);
         set_next_event_slack_wrapper (ctx, -1);
+    }
 
     return rc;
 }
@@ -1112,8 +1115,10 @@ static int send_to_child (ssrvctx_t *ctx, flux_lwj_t *job, JSON jmsg, char *serv
     Jput (o);
     rc = 0;
 
-    if (ctx->sctx.in_sim)
+    if (ctx->sctx.in_sim) {
+        flux_log (h, LOG_DEBUG, "%s: setting slack event for child - %"PRId64"", __FUNCTION__, job->lwj_id);
         set_next_event_slack_wrapper (ctx, job->lwj_id);
+    }
 
     return rc;
 }
@@ -1138,10 +1143,55 @@ static int send_to_parent (ssrvctx_t *ctx, JSON jmsg, char *service)
     Jput (o);
     rc = 0;
 
-    if ((ctx->my_job_id) && (ctx->sctx.in_sim))
+    if ((ctx->my_job_id) && (ctx->sctx.in_sim)) {
+        flux_log (h, LOG_DEBUG, "%s: setting slack event for parent", __FUNCTION__);
         set_next_event_slack_wrapper (ctx, -1);
+    }
 
     return rc;
+}
+
+/*
+ * Find any slack resources that were given to a child job that
+ * haven't been returned yet.  To be run after a child job has
+ * completed.
+ */
+static int reap_child_slack_resources (ssrvctx_t *ctx, flux_lwj_t *job)
+{
+    /*
+     * TODO: this performance stinks, utilize a structure in the job's
+     * slackinfo to avoid having to search the entire resrc tree, and
+     * instead just iterate over the slack resources of the job
+     * directly
+     */
+
+    flux_log (ctx->h, LOG_DEBUG,
+              "%s: just entered - job #%"PRId64", "
+              "current resource_out_count is %"PRId64"",
+              __FUNCTION__, job->lwj_id,
+              ctx->slctx.resource_out_count);
+    resrc_t *curr_resrc = NULL;
+    for (curr_resrc = zhash_first (ctx->rctx.resrc_id_hash);
+         curr_resrc;
+         curr_resrc = zhash_next (ctx->rctx.resrc_id_hash))
+        {
+            if ((resrc_owner (curr_resrc) == 0) &&
+                (!strncmp (resrc_type (curr_resrc), "core", 5)) &&
+                // TODO: verify that this check is sufficient
+                (resrc_leasee (curr_resrc) == job->lwj_id))
+                {
+                    resrc_mark_resource_return_received (curr_resrc, job->lwj_id);
+                    // TODO: verify if this should only happen for cores
+                    ctx->slctx.resource_out_count--;
+                    flux_log (ctx->h, LOG_DEBUG,
+                              "%s: reaping a child's slack resources: %s, "
+                              "current resource_out_count is %"PRId64"",
+                              __FUNCTION__, resrc_path (curr_resrc),
+                              ctx->slctx.resource_out_count);
+                }
+        }
+
+    return 0;
 }
 
 static int return_idle_slack_resources (ssrvctx_t *ctx)
@@ -1150,16 +1200,17 @@ static int return_idle_slack_resources (ssrvctx_t *ctx)
     int rc = 0;
     int64_t jobid = 0;
     flux_t h = ctx->h;
+    // Contains an entry for every owner that is being returned resources
     zhash_t *jobid_uuid_hash = zhash_new ();
     flux_log (h, LOG_DEBUG, "%s: Entered return idle slack resources", __FUNCTION__);
     resrc_t *resrc = zhash_first (ctx->rctx.resrc_id_hash);
     while (resrc) {
-        flux_log (h, LOG_DEBUG, "%s: Considering resource = %s, %s, state=%s,", __FUNCTION__, resrc_type (resrc), resrc_path (resrc), resrc_state (resrc));
-        if (resrc_check_return_ready (resrc, &jobid) == false)  {// jobid is the ownerid
-            flux_log (h, LOG_DEBUG, "%s: Resource not return ready", __FUNCTION__);
+        //flux_log (h, LOG_DEBUG, "%s: Considering resource = %s, %s, state=%s,", __FUNCTION__, resrc_type (resrc), resrc_path (resrc), resrc_state (resrc));
+        if (resrc_check_return_ready (h ,resrc, &jobid) == false)  {// jobid is the ownerid
+            //flux_log (h, LOG_DEBUG, "%s: Resource not return ready", __FUNCTION__);
             goto next;
         }
-        flux_log (h, LOG_DEBUG, "%s: Resource is return ready", __FUNCTION__);
+        flux_log (h, LOG_DEBUG, "%s: Resource is return ready - %ss", __FUNCTION__, resrc_path (resrc));
         char *jobid_str = NULL;
         asprintf (&jobid_str, "%ld", jobid);
         char *juidarry = zhash_lookup (jobid_uuid_hash, jobid_str);
@@ -1176,7 +1227,9 @@ static int return_idle_slack_resources (ssrvctx_t *ctx)
             char *x = xstrdup (Jtostr (j));
             zhash_insert (jobid_uuid_hash, jobid_str, (void *)x);
             Jput (j);
-            flux_log (h, LOG_DEBUG, "%s: New resource entry added", __FUNCTION__);
+            flux_log (h, LOG_DEBUG,
+                      "%s: New array created in idle hashtable for job %s",
+                      __FUNCTION__, jobid_str);
         }
 next:
         resrc = zhash_next (ctx->rctx.resrc_id_hash);
@@ -1189,16 +1242,17 @@ next:
         JSON uo = Jfromstr (jstr);
         jobid = strtol (jobid_str, NULL, 10);
         if (jobid == -1) {
-            flux_log (h, LOG_DEBUG, "%s: Sending something to parent", __FUNCTION__);
             JSON r = Jnew ();
             Jadd_obj (r, "return", uo);
-            if ((send_to_parent (ctx, uo, "sched.slack.addresources")) < 0) {
+            if ((send_to_parent (ctx, r, "sched.slack.addresources")) < 0) {
                 flux_log (h, LOG_ERR, "couldn't send resources back to parent");
                 goto nextone;
             }
+            flux_log (h, LOG_DEBUG,
+                      "%s: Sent idle slack resources back to parent: %s",
+                      __FUNCTION__, Jtostr (r));
             Jput (r);
         } else {
-            flux_log (h, LOG_DEBUG, "%s: Sending back to child", __FUNCTION__);
             flux_lwj_t *job = find_job_in_queue (ctx->i_queue, jobid);
             if (!job) {
                 flux_log (h, LOG_ERR, "job in resrc not found in i_queue: %ld", job->lwj_id);
@@ -1208,6 +1262,9 @@ next:
             JSON r = Jnew ();
             Jadd_obj (r, "return", uo);
             send_to_child (ctx, job, r, "sched.slack.addresources");
+            flux_log (h, LOG_DEBUG,
+                      "%s: Sent idle slack resources back to child - %s",
+                      __FUNCTION__, Jtostr (r));
             Jput (r);
         }
         resrc_mark_resources_returned (ctx->rctx.resrc_id_hash, uo);
@@ -1232,18 +1289,25 @@ nextone:
  *                                                                            *
  ******************************************************************************/
 
-static void delete_dead_timers (ssrvctx_t *ctx, sim_state_t *sim_state, int64_t jobid)
+static int add_job_complete_time (ssrvctx_t *ctx, flux_lwj_t *job)
 {
-    char *module = NULL;
-    asprintf (&module, "sched.%s.%ld", ctx->sctx.next_prefix, jobid);
-    zhash_delete (sim_state->timers, module);
-    free (module);
-    asprintf (&module, "sim_exec.%s.%ld", ctx->sctx.next_prefix, jobid);
-    zhash_delete (sim_state->timers, module);
-    free (module);
-    asprintf (&module, "sim_timer.%s.%ld", ctx->sctx.next_prefix, jobid);
-    zhash_delete (sim_state->timers, module);
-    free (module);
+    int rc = -1;
+    char *complete_key = NULL;
+    double sim_time = ctx->sctx.sim_state->sim_time;
+
+    asprintf(&complete_key, "lwj.%"PRId64".complete_time", job->lwj_id);
+    if (kvs_put_double (ctx->h, complete_key, sim_time) < 0) {
+        flux_log_error (ctx->h, "%s: kvs_commit", __FUNCTION__);
+        goto out;
+    }
+    if (kvs_commit(ctx->h) < 0) {
+        flux_log_error (ctx->h, "%s: kvs_commit", __FUNCTION__);
+        goto out;
+    }
+
+out:
+    free (complete_key);
+    return (rc);
 }
 
 static void queue_timer_change (ssrvctx_t *ctx, const char *module)
@@ -1257,9 +1321,16 @@ static void queue_timer_change (ssrvctx_t *ctx, const char *module)
 // 3->4 states before the sim_exec module can actually "exec" a job
 static void set_next_event (const char *module, sim_state_t *sim_state)
 {
-    double next_event;
+    double next_event = sim_state->sim_time;
+    if (!strncmp (module, "sim_exec", 8)) {
+        next_event += .0001;
+    } else if (!strncmp (module, "sim_timer", 9)) {
+        next_event += .01;
+    } else {
+        next_event += .00001;
+    }
+
     double *timer = zhash_lookup (sim_state->timers, module);
-    next_event = sim_state->sim_time + ((!strncmp (module, "sim_exec", 8)) ? .0001 : .00001);
     if (timer) {
         if (*timer > next_event || *timer < 0) {
             *timer = next_event;
@@ -1272,47 +1343,89 @@ static void set_next_event (const char *module, sim_state_t *sim_state)
 
 }
 
+/*
+ * Set next event for sched module based on a slack event
+ * If job id < 0, then set for the parent's sched module
+ * If job is >= 0, then set for the sched module of the child with id == jobid
+ */
 static void set_next_event_slack_wrapper (ssrvctx_t *ctx, int jobid)
 {
+#ifdef DYNAMIC_SCHEDULING
     char *module = NULL;
-    flux_log (ctx->h, LOG_DEBUG, "setting up next timer for module");
     if ((jobid < 0) && (ctx->my_job_id == 0)) return;
 
     if (jobid < 0) {
-        flux_log (ctx->h, LOG_DEBUG, "Parent ID = %s", ctx->sctx.parent_id);
         asprintf (&module, "sched.%s", ctx->sctx.parent_id);
     } else {
         asprintf (&module, "sched.%s.%d", ctx->sctx.next_prefix, jobid);
     }
+    flux_log (ctx->h, LOG_DEBUG,
+              "%s: setting up next event for %s based on slack event",
+              __FUNCTION__, module);
 
     set_next_event (module, ctx->sctx.sim_state);
     flux_log (ctx->h, LOG_DEBUG, "setup next timer for module %s", module);
     free (module);
+#endif
     return;
 }
 
-#if DYNAMIC_SCHEDULING
+/*
+ * Set next event for timer module
+ * If job id < 0, then set for this instance's timer module
+ * If job is >= 0, then set for the timer module of the child with id == jobid
+ * TODO: come up with a better interface, this can easily be confused with
+ *     slack_wrapper's functionality when passing -1
+ */
 static void set_next_event_timer_wrapper (ssrvctx_t *ctx, int jobid)
 {
+#ifdef DYNAMIC_SCHEDULING
     char *module = NULL;
-    flux_log (ctx->h, LOG_DEBUG, "setting up next timer for timer module");
-    if ((jobid < 0) && (ctx->my_job_id == 0)) return;
+    flux_log (ctx->h, LOG_DEBUG, "%s: setting up next timer for timer module", __FUNCTION__);
 
     if (jobid < 0) {
-        asprintf (&module, "sim_timer.%s", ctx->sctx.parent_id);
+        asprintf (&module, "sim_timer.%s", ctx->sctx.next_prefix);
     } else {
         asprintf (&module, "sim_timer.%s.%d", ctx->sctx.next_prefix, jobid);
     }
 
-    double *next_event = (double *)malloc (sizeof (double));
-    *next_event = ctx->sctx.sim_state->sim_time + 10;
-    zhash_insert (ctx->sctx.sim_state->timers, module, next_event);
+    // TODO: use set_next_event?
+    /*
+    double next_event = ctx->sctx.sim_state->sim_time + .01;
+    double *curr_event = zhash_lookup (ctx->sctx.sim_state->timers, module);
+    *curr_event = next_event;
+    */
+    set_next_event (module, ctx->sctx.sim_state);
 
-    flux_log (ctx->h, LOG_DEBUG, "setup next timer for module %s", module);
+    flux_log (ctx->h, LOG_DEBUG, "%s: setup next timer for module %s", __FUNCTION__, module);
     free (module);
+#endif
     return;
 }
-#endif
+
+static void set_next_event_childbirth_wrapper (ssrvctx_t *ctx, int jobid)
+{
+    sim_state_t *sim_state = ctx->sctx.sim_state;
+    flux_log (ctx->h, LOG_DEBUG, "%s: setting up next event for child (%d) scheduler module", __FUNCTION__, jobid);
+
+    char *module = NULL;
+    asprintf (&module, "sched.%s.%d", ctx->sctx.next_prefix, jobid);
+
+    double next_event = sim_state->sim_time + 1.0;
+    double *timer = zhash_lookup (sim_state->timers, module);
+    if (timer) {
+        if (*timer > next_event || *timer < 0) {
+            *timer = next_event;
+        }
+    } else {
+        timer = (double *)malloc (sizeof (double));
+        *timer = next_event;
+        zhash_insert (sim_state->timers, module, timer);
+    }
+
+    flux_log (ctx->h, LOG_DEBUG, "%s: setup next event for module %s", __FUNCTION__, module);
+    free (module);
+}
 
 static void handle_timer_queue (ssrvctx_t *ctx, sim_state_t *sim_state)
 {
@@ -1323,6 +1436,8 @@ static void handle_timer_queue (ssrvctx_t *ctx, sim_state_t *sim_state)
 static void handle_jsc_queue (ssrvctx_t *ctx)
 {
     jsc_event_t *jsc_event = NULL;
+
+    flux_log (ctx->h, LOG_DEBUG, "%s: Handling jsc_queue", __FUNCTION__);
 
     while (zlist_size (ctx->sctx.jsc_queue) > 0) {
         jsc_event = (jsc_event_t *)zlist_pop (ctx->sctx.jsc_queue);
@@ -1340,7 +1455,14 @@ static void handle_jsc_queue (ssrvctx_t *ctx)
 
 static void handle_res_queue (ssrvctx_t *ctx)
 {
+    bool should_schedule_jobs = (zlist_size (ctx->sctx.res_queue) > 0);
     res_event_t *res_event = NULL;
+
+    flux_log (ctx->h, LOG_DEBUG,
+              "%s: Handling res_queue and %s schedule jobs after since number of events = %zu",
+              __FUNCTION__,
+              should_schedule_jobs ? "will" : "will not",
+              zlist_size (ctx->sctx.res_queue));
 
     while (zlist_size (ctx->sctx.res_queue) > 0) {
         res_event = (res_event_t *)zlist_pop (ctx->sctx.res_queue);
@@ -1350,11 +1472,21 @@ static void handle_res_queue (ssrvctx_t *ctx)
         res_event_cb (res_event->h, NULL, NULL, res_event->arg);
         free (res_event);
     }
+
+    if (should_schedule_jobs) {
+        int num_jobs_scheduled = schedule_jobs (ctx);
+        if (num_jobs_scheduled > 0) {
+            flux_log (ctx->h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
+            resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
+        }
+    }
 }
 
 static void handle_slack_queue (ssrvctx_t *ctx)
 {
+    bool should_schedule_jobs = false;
     slack_event_t *slack_event = NULL;
+    flux_log (ctx->h, LOG_DEBUG, "%s: Handling slack_queue", __FUNCTION__);
     while (zlist_size (ctx->sctx.slack_queue) > 0) {
         slack_event = (slack_event_t *)zlist_pop (ctx->sctx.slack_queue);
         flux_log (ctx->h,
@@ -1362,10 +1494,12 @@ static void handle_slack_queue (ssrvctx_t *ctx)
                   "SlackEvent being handled for topic: %s", slack_event->topic);
         if (!strcmp (slack_event->topic, "sched.slack.cslack")) {
             req_cslack_cb (slack_event->h, NULL, slack_event->msg, slack_event->arg);
+            should_schedule_jobs = true;
         } else if (!strcmp (slack_event->topic, "sched.slack.cslack_invalidate")) {
             req_cslack_invalid_cb (slack_event->h, NULL, slack_event->msg, slack_event->arg);
         } else if (!strcmp (slack_event->topic, "sched.slack.addresources")) {
             req_addresources_cb (slack_event->h, NULL, slack_event->msg, slack_event->arg);
+            should_schedule_jobs = true;
         } else if (!strcmp (slack_event->topic, "sched.slack.askresources")) {
             req_askresources_cb (slack_event->h, NULL, slack_event->msg, slack_event->arg);
         }
@@ -1373,6 +1507,21 @@ static void handle_slack_queue (ssrvctx_t *ctx)
         flux_msg_destroy (slack_event->msg);
         free (slack_event->topic);
         free (slack_event);
+    }
+
+    if (should_schedule_jobs) {
+        flux_log (ctx->h, LOG_DEBUG,
+                  "%s: resources were added and/or sched is now in cslack, printing rdl:",
+                  __FUNCTION__);
+        resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
+        flux_log (ctx->h, LOG_DEBUG, "%s: will schedule jobs", __FUNCTION__);
+        int num_jobs_scheduled = schedule_jobs (ctx);
+        if (num_jobs_scheduled > 0) {
+            flux_log (ctx->h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
+            resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
+        }
+    } else {
+        flux_log (ctx->h, LOG_DEBUG, "%s: will not schedule jobs", __FUNCTION__);
     }
 }
 
@@ -1394,6 +1543,7 @@ static void check_completion (ssrvctx_t *ctx)
         }
         char *module = NULL;
         asprintf (&module, "init_prog.%s", ctx->sctx.next_prefix);
+        flux_log (ctx->h, LOG_DEBUG, "%s: setting timer event for %s", __FUNCTION__, module);
         set_next_event(module, ctx->sctx.sim_state);
         free (module);
     }
@@ -1545,10 +1695,13 @@ static void sim_timer_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg
     }
 
     ctx->sctx.sim_state = json_to_sim_state (o);
-    resrc_set_sim_time ((uint64_t)ctx->sctx.sim_state->sim_time);
+    resrc_set_sim_time (floor(ctx->sctx.sim_state->sim_time));
+    flux_log (h, LOG_DEBUG, "resrc_epochtime: %"PRId64", epochtime: %"PRId64"", resrc_epochtime(), epochtime());
 
     timer_event_cb (flux_get_reactor(h), NULL, 0, h);
     out = sim_state_to_json (ctx->sctx.sim_state);
+
+    Jadd_int (out, "slack_state", ctx->slctx.slack_state);
 
     flux_log (h, LOG_DEBUG, "%s: sending response to timer - %s", __FUNCTION__, Jtostr(out));
     if (flux_respond (h, msg, 0, Jtostr(out)) < 0) {
@@ -1583,7 +1736,8 @@ static void trigger_cb (flux_t h,
 
     //flux_log (h, LOG_DEBUG, "%s: Setting sim_state to new values", __FUNCTION__);
     ctx->sctx.sim_state = json_to_sim_state (o);
-    resrc_set_sim_time ((uint64_t)ctx->sctx.sim_state->sim_time);
+    resrc_set_sim_time (floor(ctx->sctx.sim_state->sim_time));
+    flux_log (h, LOG_DEBUG, "resrc_epochtime: %"PRId64", epochtime: %"PRId64"", resrc_epochtime(), epochtime());
     ctx->sctx.token = 1;
 
     start = clock ();
@@ -1591,11 +1745,14 @@ static void trigger_cb (flux_t h,
     handle_jsc_queue (ctx);
     handle_res_queue (ctx);
 
+#if 0
+    flux_log (h, LOG_DEBUG, "%s: will now schedule jobs", __FUNCTION__);
+    schedule_jobs (ctx);
+#endif
 
     handle_slack_queue (ctx);
     handle_timer_queue (ctx, ctx->sctx.sim_state);
 
-    //schedule_jobs (ctx);
     check_completion (ctx);
 
     if ((ctx->sctx.cstartcount == 0) && (ctx->sctx.cdeathcount == 0) && (ctx->sctx.ccompletecount == 0)) {
@@ -1938,10 +2095,15 @@ static inline int bridge_send_runrequest (ssrvctx_t *ctx, flux_lwj_t *job)
         if (asprintf (&topic, "%s.run.%"PRId64"", my_simexec_module, job->lwj_id) < 0) {
             flux_log (h, LOG_ERR, "(%s): topic create failed: %s",
                       __FUNCTION__, strerror (errno));
-        } else if (!(msg = flux_msg_create (FLUX_MSGTYPE_REQUEST))
-                   || flux_msg_set_topic (msg, topic) < 0
-                   || flux_send (h, msg, 0) < 0) {
-            flux_log (h, LOG_ERR, "(%s): request create failed: %s",
+        }
+        // TODO: move the "rpc_get" to before the simulator reply is
+        // sent (to make asynchronous and improve throughput)
+        flux_rpc_t *rpc = flux_rpc (h, topic, NULL, FLUX_NODEID_ANY, 0);
+        if (rpc == NULL) {
+            flux_log (h, LOG_ERR, "(%s): rpc failed: %s",
+                      __FUNCTION__, strerror (errno));
+        } else if (flux_rpc_get (rpc, NULL, NULL) < 0) {
+            flux_log (h, LOG_ERR, "(%s): rpc_get failed: %s",
                       __FUNCTION__, strerror (errno));
         } else {
             queue_timer_change (ctx, my_simexec_module);
@@ -1949,6 +2111,18 @@ static inline int bridge_send_runrequest (ssrvctx_t *ctx, flux_lwj_t *job)
             rc = 0;
         }
     } else {
+        if (ctx->sctx.in_sim) {
+            ctx->sctx.cstartcount++;
+            flux_log (h, LOG_DEBUG, "%s: ++++++++++++ cstartcount incremented = %d", __FUNCTION__, ctx->sctx.cstartcount);
+            // TODO: redirect hierarchical jobs to sim_exec and do this there
+            kvsdir_t *kvs_dir = NULL;
+            if (kvs_get_dir (h, &kvs_dir, "lwj.%"PRId64"", job->lwj_id) < 0)
+                flux_log (h, LOG_ERR, "%s: kvs_get_dir (id=%"PRId64")", __FUNCTION__, job->lwj_id);
+            //kvsdir_put_int(kvs_dir, "walltime", -1);
+            //kvsdir_put_int(kvs_dir, "nprocs", 1);
+            kvsdir_put_double(kvs_dir, "starting_time", ctx->sctx.sim_state->sim_time);
+            kvs_commit(h);
+        }
         /* Normal mode */
         if (asprintf (&topic, "wrexec.run.%"PRId64"", job->lwj_id) < 0) {
             flux_log (h, LOG_ERR, "(%s): topic create failed: %s",
@@ -1960,10 +2134,6 @@ static inline int bridge_send_runrequest (ssrvctx_t *ctx, flux_lwj_t *job)
         } else {
             flux_log (h, LOG_DEBUG, "job %"PRId64" runrequest", job->lwj_id);
             rc = 0;
-        }
-        if (ctx->sctx.in_sim) {
-            ctx->sctx.cstartcount++;
-            flux_log (h, LOG_DEBUG, "%s: ++++++++++++ cstartcount incremented = %d", __FUNCTION__, ctx->sctx.cstartcount);
         }
     }
 
@@ -1991,7 +2161,7 @@ static inline int bridge_rs2rank_tab_query (ssrvctx_t *ctx, resrc_t *r,
         */
         rc = 0;
     } else {
-        flux_log (ctx->h, LOG_INFO, "hostname: %s, digest: %s\n", resrc_name (r),
+        flux_log (ctx->h, LOG_INFO, "hostname: %s, digest: %s", resrc_name (r),
                                      resrc_digest (r));
         rc = rs2rank_tab_query_by_sign (ctx->machs, resrc_name (r), resrc_digest (r),
                                         false, rank);
@@ -2085,7 +2255,7 @@ static int req_tpexec_allocate (ssrvctx_t *ctx, flux_lwj_t *job)
         flux_log (h, LOG_ERR, "error updating jcb");
         goto done;
     }
-    Jput (arr);
+    //Jput (arr);
     if ((update_state (h, job->lwj_id, job->state, J_ALLOCATED)) != 0) {
         flux_log (h, LOG_ERR, "failed to update the state of job %"PRId64"",
                   job->lwj_id);
@@ -2211,13 +2381,10 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
     resrc_reqst_t *resrc_reqst = NULL;
     resrc_tree_list_t *found_trees = NULL;
     resrc_tree_list_t *selected_trees = NULL;
-
     struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
 
     if (!plugin)
         return rc;
-
-    //flux_log (h, LOG_DEBUG, "%s: scheduling job: %ld", __FUNCTION__, job->lwj_id);
 
     /*
      * Require at least one task per node, and
@@ -2252,27 +2419,29 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
     Jadd_int64 (req_res, "starttime", starttime);
     Jadd_int64 (req_res, "endtime", starttime + job->req->walltime);
 
-    flux_log (h, LOG_DEBUG, "%s: id = %ld, starttime = %ld, endtime = %ld", __FUNCTION__, job->lwj_id, starttime, starttime + job->req->walltime);
+    flux_log (h, LOG_DEBUG, "%s: id = %ld, nnodes = %ld, corespernode = %ld, starttime = %"PRId64", walltime = %ld", __FUNCTION__, job->lwj_id, job->req->nnodes, job->req->corespernode, starttime, job->req->walltime);
 
     json_object_object_add (req_res, "req_child", child_core);
 
     resrc_reqst = resrc_reqst_from_json (req_res, NULL);
+    flux_log (h, LOG_DEBUG, "%s: resrc_reqst: %s", __FUNCTION__, Jtostr (req_res));
     Jput (req_res);
     if (!resrc_reqst)
         goto done;
 
-    flux_lwj_t *curr_prev_attempt;
+    int i = 0;
+    flux_lwj_t *curr_prev_attempt = NULL;
     for (curr_prev_attempt = (flux_lwj_t*) zlist_first (ctx->prev_attempts);
          curr_prev_attempt;
-         curr_prev_attempt = (flux_lwj_t*) zlist_next (ctx->prev_attempts)) {
+         curr_prev_attempt = (flux_lwj_t*) zlist_next (ctx->prev_attempts), i++) {
 
         if ((curr_prev_attempt->req->nnodes <= job->req->nnodes) &&
             (curr_prev_attempt->req->corespernode <= job->req->corespernode) &&
             (curr_prev_attempt->req->walltime <= job->req->walltime)) {
 
             flux_log (h, LOG_DEBUG,
-                      ": Job %ld will fail, therefore going for reservation directly",
-                      job->lwj_id);
+                      ": Job %ld will fail, therefore going for reservation directly (had to go %d deep)",
+                      job->lwj_id, i);
             zlist_append (ctx->prev_attempts, job);
             plugin->reserve_resources (h, NULL, job->lwj_id,
                                        starttime, job->req->walltime,
@@ -2298,7 +2467,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
                                                           resrc_reqst))) {
             nnodes = resrc_tree_list_size (selected_trees);
             if (nnodes == job->req->nnodes) {
-                flux_log (h, LOG_DEBUG, "%s: Starting allocate resources", __FUNCTION__);
+                flux_log (h, LOG_DEBUG, "%s: Starting allocate resources from %"PRId64" to %"PRId64"", __FUNCTION__, starttime, starttime + job->req->walltime);
                 plugin->allocate_resources (h, selected_trees, job->lwj_id,
                                               starttime, starttime +
                                               job->req->walltime);
@@ -2318,9 +2487,9 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
                 flux_log (h, LOG_DEBUG, "Allocated %"PRId64" nodes for job "
                           "%"PRId64", reqrd: %"PRId64"", nnodes, job->lwj_id,
                           job->req->nnodes);
-
             } else {
-                flux_log (h, LOG_DEBUG, "%s: Couldn't select trees", __FUNCTION__);
+                flux_log (h, LOG_DEBUG, "%s: Couldn't select trees, only found %"PRId64" nodes", __FUNCTION__, nnodes);
+                zlist_append (ctx->prev_attempts, job);
                 plugin->reserve_resources (h, selected_trees, job->lwj_id,
                                            starttime, job->req->walltime,
                                            ctx->rctx.root_resrc,
@@ -2329,6 +2498,11 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
         }
     } else {
         flux_log (h, LOG_DEBUG, "%s: Couldn't find trees at all", __FUNCTION__);
+        zlist_append (ctx->prev_attempts, job);
+        plugin->reserve_resources (h, selected_trees, job->lwj_id,
+                                   starttime, job->req->walltime,
+                                   ctx->rctx.root_resrc,
+                                   resrc_reqst);
     }
 
     rc = 0;
@@ -2354,9 +2528,9 @@ int schedule_dynamic_job (ssrvctx_t *ctx, flux_lwj_t *job)
     flux_t h = ctx->h;
     int64_t nnodes = 0;
 
-    int reqd_nodes = 0;
-    int reqd_cores = 0;
-    int reqd_corespernode = 0;
+    int64_t reqd_nodes = 0;
+    int64_t reqd_cores = 0;
+    int64_t reqd_corespernode = 0;
     int64_t walltime = 0;
 
     struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
@@ -2382,55 +2556,55 @@ int schedule_dynamic_job (ssrvctx_t *ctx, flux_lwj_t *job)
         JSON req_res = Jnew ();
         JSON child_core = Jnew ();
 
-        flux_log (h, LOG_DEBUG, "%s: Considering need i = %d", __FUNCTION__, i);
         if (!(Jget_ar_obj (job->slackinfo->need, i, &needobj))) {
             flux_log (h, LOG_ERR, "Could not fetch need i = %d", i);
             goto next;
-        }
-        flux_log (h, LOG_DEBUG, "%s: Fetched the need %d: %s", __FUNCTION__, i, Jtostr (req_res));
-
-        if (!(Jget_int (needobj, "nnodes", &reqd_nodes))) {
+        } else if (!(Jget_int64 (needobj, "nnodes", &reqd_nodes))) {
             flux_log (h, LOG_ERR, "Could not fetch the required nodes");
             goto next;
-        }
-        flux_log (h, LOG_DEBUG, "%s: Required quantity of nodes = %d", __FUNCTION__, reqd_nodes);
-
-        if (!(Jget_int (needobj, "ncores", &reqd_cores))) {
+        } else if (!(Jget_int64 (needobj, "ncores", &reqd_cores))) {
             flux_log (h, LOG_ERR, "Could not fetch the required nodes");
             goto next;
-        }
-        flux_log (h, LOG_DEBUG, "%s: Required quantity of cores = %d", __FUNCTION__, reqd_cores);
-
-        if (!(Jget_int64 (needobj, "walltime", &walltime))) {
+        } else if (!(Jget_int64 (needobj, "walltime", &walltime))) {
             flux_log (h, LOG_ERR, "Could not fetch walltime");
             goto next;
         }
-        flux_log (h, LOG_DEBUG, "%s: Required quantity of walltime = %ld", __FUNCTION__, walltime);
 
         //create req_res
+        reqd_nodes = (reqd_nodes ? reqd_nodes : 1);
+        if (reqd_cores < reqd_nodes)
+            reqd_cores = reqd_nodes;
         reqd_corespernode = (reqd_cores + reqd_nodes - 1) / reqd_nodes;
         Jadd_str (child_core, "type", "core");
-        Jadd_int (child_core, "req_qty", reqd_corespernode);
+        Jadd_int64 (child_core, "req_qty", reqd_corespernode);
+        Jadd_int64 (child_core, "req_size", 1);
+        Jadd_bool (child_core, "exclusive", true);
         Jadd_int64 (child_core, "starttime", starttime);
         Jadd_int64 (child_core, "endtime", starttime + walltime);
+
         Jadd_str (req_res, "type", "node");
         Jadd_int (req_res, "req_qty", reqd_nodes);
+        Jadd_int64 (req_res, "req_size", 0);
         Jadd_int64 (req_res, "starttime", starttime);
         Jadd_int64 (req_res, "endtime", starttime + walltime);
         json_object_object_add (req_res, "req_child", child_core);
 
+        flux_log (h, LOG_DEBUG,
+                  "%s: need #%d, nnodes = %"PRId64", corespernode = %"PRId64", starttime = %"PRId64", walltime = %"PRId64"",
+                  __FUNCTION__, i, reqd_nodes, reqd_corespernode,
+                  starttime, walltime);
         resrc_reqst = resrc_reqst_from_json (req_res, NULL);
-
+        //Jput (req_res);
         if (!resrc_reqst) {
             flux_log (h, LOG_DEBUG, "%s: Could not form resrc_reqst from json", __FUNCTION__);
             goto next;
         }
-        flux_log (h, LOG_DEBUG, "%s: Created resrc_reqst", __FUNCTION__);
-
+        flux_log (h, LOG_DEBUG, "%s: Created resrc_reqst:", __FUNCTION__);
         resrc_reqst_print (resrc_reqst);
 
         if ((found_trees = plugin->find_resources (h, ctx->rctx.root_resrc,
                                                      resrc_reqst))) {
+            nnodes = resrc_tree_list_size (found_trees);
             flux_log (h, LOG_DEBUG, "%"PRId64" nodes found for job %"PRId64"", nnodes, job->lwj_id);
             resrc_tree_list_unstage_resources (found_trees);
             flux_log (h, LOG_DEBUG, "%s: Starting select resources", __FUNCTION__);
@@ -2440,32 +2614,44 @@ int schedule_dynamic_job (ssrvctx_t *ctx, flux_lwj_t *job)
                 flux_log (h, LOG_DEBUG, "%s: nnodes found = %ld", __FUNCTION__, nnodes);
                 if (nnodes == reqd_nodes) {
                     flux_log (h, LOG_DEBUG, "%s: Found the nodes required", __FUNCTION__);
-                    resrc_tree_list_print (found_trees);
+                    //resrc_tree_list_flux_log (h, found_trees);
+
+                    //Mark/Allocate these resources
+                    flux_log (h, LOG_DEBUG,
+                              "%s: Starting allocate resources from %"PRId64" to %"PRId64"",
+                              __FUNCTION__, starttime, starttime + walltime + SLACK_BUFFER_TIME);
+                    resrc_tree_list_allocate_dynamic (selected_trees, job->lwj_id, starttime, starttime + walltime + SLACK_BUFFER_TIME);
 
                     //Split new and old resources, in other words, new and return resources
                     resrc_tree_list_t *to_serialize_tree_list = NULL;
                     JSON ret_array = Jnew_ar ();
-                    to_serialize_tree_list = resrc_split_resources (selected_trees, job->resrc_trees, ret_array, job->lwj_id);
+                    to_serialize_tree_list = resrc_tree_split_resources (h, selected_trees,
+                                                                         job->resrc_trees,
+                                                                         ret_array, job->lwj_id);
 
-                    flux_log (h, LOG_DEBUG, "%s: RESULTTTTTTTTTTTTT: return array = %s\n", __FUNCTION__, Jtostr (ret_array));
-                    printf(" PRINTING THE LISTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT\n");
-                    resrc_tree_list_print (to_serialize_tree_list);
-                    printf(" END: PRINTING THE LISTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT\n");
+                    flux_log (h, LOG_DEBUG, "%s: return array = %s", __FUNCTION__, Jtostr (ret_array));
                     JSON new_serialized = Jnew_ar ();
-                    resrc_tree_list_serialize (new_serialized, to_serialize_tree_list, 0);
-                    flux_log (h, LOG_DEBUG, "%s: Serialized dynamic new: %s", __FUNCTION__, Jtostr(new_serialized));
+                    if (resrc_tree_list_size (to_serialize_tree_list) > 0) {
+                        flux_log (h, LOG_DEBUG, " Printing the list of resources to serialize");
+                        resrc_tree_list_flux_log (h, to_serialize_tree_list);
+                        flux_log (h, LOG_DEBUG, " Finished printing the list of resources to serialize");
+                        resrc_tree_list_serialize (new_serialized, to_serialize_tree_list, job->lwj_id);
+                        flux_log (h, LOG_DEBUG, "%s: Serialized dynamic new: %s", __FUNCTION__, Jtostr(new_serialized));
+                    }
 
-                    //Mark/Allocate these resources
-                    resrc_tree_list_allocate_dynamic (selected_trees, job->lwj_id, starttime, starttime + walltime + SLACK_BUFFER_TIME);
+                    /*
+                     * TODO: add selected_trees to job's slackinfo
+                     *       struct for easy reaping once the child
+                     *       job completes and just all around better
+                     *       accounting
+                     */
 
-#if 1
                     //Send resources to job
                     JSON j = Jnew ();
                     Jadd_obj (j, "return", ret_array);
                     Jadd_obj (j, "new", new_serialized);
                     send_to_child (ctx, job, j, "sched.slack.addresources");
                     Jput (j);
-#endif
 
                     Jput (new_serialized);
 
@@ -2482,17 +2668,15 @@ int schedule_dynamic_job (ssrvctx_t *ctx, flux_lwj_t *job)
         }
 
 next:
-#if 0
         nnodes = 0;
         reqd_nodes = 0;
         reqd_cores = 0;
-        Jput (child_core);
-        Jput (req_res);
+        //Jput (child_core);
+        //Jput (req_res);
         if (resrc_reqst)
             resrc_reqst_destroy (resrc_reqst);
         if (found_trees)
             resrc_tree_list_destroy (found_trees, false);
-#endif
         continue;
     }
 
@@ -2507,6 +2691,7 @@ static int schedule_jobs (ssrvctx_t *ctx)
     flux_t h = ctx->h;
     struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
 
+    zlist_purge (ctx->prev_attempts);
     /* Prioritizing the job queue is left to an external agent.  In
      * this way, the scheduler's activities are pared down to just
      * scheduling activies.
@@ -2519,11 +2704,12 @@ static int schedule_jobs (ssrvctx_t *ctx)
 
     zlist_t *jobs = ctx->p_queue;
     int64_t starttime = (ctx->sctx.in_sim) ?
-        (int64_t) ctx->sctx.sim_state->sim_time : resrc_epochtime();
+        (int64_t) floor(ctx->sctx.sim_state->sim_time) : resrc_epochtime();
 
     resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
     rc = plugin->sched_loop_setup (ctx->h);
     job = zlist_first (jobs);
+    flux_log (h, LOG_DEBUG, "%s: Released reservations, about to start scheduling with starttime = %"PRId64"", __FUNCTION__, starttime);
     while (!rc && job) {
         if (job->state == J_SCHEDREQ) {
             rc = schedule_job (ctx, job, starttime);
@@ -2550,13 +2736,15 @@ static int dynamic_action (ssrvctx_t *ctx)
 
     /* schedule own jobs */
     sc = schedule_jobs (ctx);
-#if 1
+    if (sc > 0) {
+        flux_log (h, LOG_DEBUG, "%s: a job in this instance was scheduled using slack resources", __FUNCTION__);
+    }
     /* try to schedule needs */
     job = zlist_first (ctx->i_queue);
     while (!rc && job) {
-        flux_log (h, LOG_DEBUG, "%s: Considering expansion of job: %ld\n", __FUNCTION__, job->lwj_id);
+        flux_log (h, LOG_DEBUG, "%s: Considering expansion of job: %ld", __FUNCTION__, job->lwj_id);
         if (job->slackinfo->slack_state != CSLACK) {
-            flux_log (h, LOG_DEBUG, "%s: Instance job %ld not in CLSACK. Not scheduling.\n", __FUNCTION__, job->lwj_id);
+            flux_log (h, LOG_DEBUG, "%s: Instance job %ld not in CLSACK. Not scheduling.", __FUNCTION__, job->lwj_id);
             goto next;
         }
         rc = schedule_dynamic_job (ctx, job);
@@ -2570,7 +2758,12 @@ static int dynamic_action (ssrvctx_t *ctx)
 next:
         job = (flux_lwj_t*)zlist_next (ctx->i_queue);
     }
-#endif
+
+    if (sc > 0) {
+        flux_log (h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
+        resrc_tree_flux_log (h, resrc_phys_tree (ctx->rctx.root_resrc));
+    }
+
     return sc;
 }
 
@@ -2622,12 +2815,16 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
     case J_PENDING:
         flux_log (h, LOG_INFO, "Job %ld going from submitted to pending", job->lwj_id);
         VERIFY (trans (J_SCHEDREQ, J_SCHEDREQ, &(job->state)));
-        //set_slack_state (ctx, false);
         jobsubcount++;
-        if (jobsubcount == jobcount)
-            schedule_jobs (ctx); /* includes request allocate if successful */
-        //if (!ctx->resource_out_count)
-        //    set_slack_state (ctx, true);
+        if (jobsubcount == jobcount) {
+            flux_log (h, LOG_DEBUG, "%s: All jobs (%d) submitted, scheduling jobs",
+                      __FUNCTION__, jobsubcount);
+            int num_jobs_scheduled = schedule_jobs (ctx);
+            if (num_jobs_scheduled > 0) {
+                flux_log (h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
+                resrc_tree_flux_log (h, resrc_phys_tree (ctx->rctx.root_resrc));
+            }
+        }
         break;
     case J_SCHEDREQ:
         /* A schedule reqeusted should not get an event. */
@@ -2652,10 +2849,12 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
     case J_RUNNING:
         VERIFY (trans (J_COMPLETE, newstate, &(job->state))
                 || trans (J_CANCELLED, newstate, &(job->state)));
-        q_move_to_cqueue (ctx, job);
         if (!ctx->arg.schedonce && (resrc_tree_list_release (job->resrc_trees, job->lwj_id))) {
             flux_log (h, LOG_ERR, "(%s): failed to release resources for job "
                       "%"PRId64"", __FUNCTION__, job->lwj_id);
+        } else if (reap_child_slack_resources (ctx, job) < 0) {
+            flux_log (h, LOG_ERR, "(%s): failed to reap slack resources of child job #%"PRId64"",
+                      __FUNCTION__, job->lwj_id);
         } else {
             flux_msg_t *msg = flux_event_encode ("sched.res.freed", NULL);
 
@@ -2665,13 +2864,20 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
             } else {
                 flux_msg_destroy (msg);
             }
-            flux_log (h, LOG_DEBUG, "Released resources for job %"PRId64"",
+            flux_log (h, LOG_DEBUG,
+                      "Released resources for job %"PRId64", printing root resrc tree:",
                       job->lwj_id);
+            resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
         }
+        q_move_to_cqueue (ctx, job);
         if (ctx->sctx.in_sim) {
             //queue_timer_change (ctx, ctx->sctx.module_name);
             ctx->sctx.ccompletecount++;
             flux_log (h, LOG_DEBUG, "%s: ++++++++++++ completecount incremented = %d", __FUNCTION__, ctx->sctx.ccompletecount);
+            if (job->is_hierarchical) {
+                // TODO: move this code over to sim_execsrv
+                add_job_complete_time (ctx, job);
+            }
             if (ctx->sctx.cdeathcount > 0) {
                 int64_t *jobid = zlist_first (ctx->sctx.dying_jobs);
                 while (jobid) {
@@ -2680,7 +2886,6 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
                         free (jobid);
                         ctx->sctx.cdeathcount--;
                         flux_log (h, LOG_DEBUG, "%s: Job expected to die died: %ld, deathcount = %d", __FUNCTION__, job->lwj_id, ctx->sctx.cdeathcount);
-                        delete_dead_timers (ctx, ctx->sctx.sim_state, job->lwj_id);
                         break;
                     }
                     jobid = zlist_next (ctx->sctx.dying_jobs);
@@ -2724,13 +2929,14 @@ bad_transition:
 static void res_event_cb (flux_t h, flux_msg_handler_t *w,
                           const flux_msg_t *msg, void *arg)
 {
+#ifdef DYNAMIC_SCHEDULING
     ssrvctx_t *ctx = getctx (h);
 
     flux_log (h, LOG_DEBUG, "%s: Resource event, job completion detected", __FUNCTION__);
 
     JSON ao = Jnew_ar ();
     JSON jao = Jnew ();
-    resrc_collect_own_resources_unasked (ctx->rctx.resrc_id_hash, ao);  // uuid_array only
+    resrc_collect_own_resources_unasked (h, ctx->rctx.resrc_id_hash, ao);  // uuid_array only
     resrc_retrieve_lease_information (ctx->rctx.resrc_id_hash, ao, jao); // jobid : uuid_array, jobid : uuid_array
 
     flux_log (h, LOG_DEBUG, "%s: Lease information : %s", __FUNCTION__, Jtostr (jao));
@@ -2783,36 +2989,34 @@ static void res_event_cb (flux_t h, flux_msg_handler_t *w,
     /* change slack state */
     ctx_slack_invalidate (ctx);
     if (ctx->slctx.resource_out_count > 0) {
-        flux_log (h, LOG_DEBUG, "%s: wait until return is being set as true", __FUNCTION__);
+        flux_log (h, LOG_DEBUG, "%s: wait until return is being set as true, current resource_out_count is %"PRId64"",
+                  __FUNCTION__, ctx->slctx.resource_out_count);
         ctx->slctx.wait_until_return = 1;
     }
-
+#endif
     //Jput (ao);
     //Jput (jao);
 
-    zlist_purge (ctx->prev_attempts);
-
-    schedule_jobs (getctx ((flux_t)arg));
+    //schedule_jobs (getctx ((flux_t)arg));
 
     return;
 }
-#if ENABLE_TIMER_EVENT
+
 static void timer_event_cb (flux_reactor_t *r, flux_watcher_t *w,
                            int revents, void *arg)
 {
+    clock_t start, diff;
+    double seconds;
     flux_t h = (flux_t) arg;
     ssrvctx_t *ctx = getctx (h);
     int64_t jobid;
     int psize, rsize;
     int rc = 0;
 
+
+    start = clock ();
     flux_log (h, LOG_DEBUG, "TIMER CALLED: %ld", resrc_epochtime());
-    resrc_t *resrc = zhash_first (ctx->rctx.resrc_id_hash);
-    while (resrc) {
-        flux_log (h, LOG_DEBUG, "%s:  resource-state info = %s, %s, state=%s,", __FUNCTION__, resrc_type (resrc), resrc_path (resrc), resrc_state (resrc));
-        resrc = zhash_next (ctx->rctx.resrc_id_hash);
-    }
-    schedule_jobs(ctx);
+    //schedule_jobs(ctx);
 
     /* 1. If there are any resources overtime, return them */
     return_idle_slack_resources (ctx);
@@ -2820,7 +3024,7 @@ static void timer_event_cb (flux_reactor_t *r, flux_watcher_t *w,
 
     /* 2. If already in cslack, nothing to do */
     if (ctx->slctx.slack_state == CSLACK) {
-        flux_log (h, LOG_DEBUG, "%s: instance already in cslack. doing nothing", __FUNCTION__);
+        flux_log (h, LOG_ERR, "%s: instance already in cslack. doing nothing", __FUNCTION__);
         goto ret;
     }
     flux_log (h, LOG_DEBUG, "%s: instance not in cslack", __FUNCTION__);
@@ -2831,7 +3035,7 @@ static void timer_event_cb (flux_reactor_t *r, flux_watcher_t *w,
     if (ctx->slctx.slack_state == SLACK) {
         flux_log (h, LOG_DEBUG, "%s: Instance already in slack", __FUNCTION__);
     } else if ((ctx->slctx.jobid == jobid) && (ctx->slctx.psize == psize) && (ctx->slctx.rsize == rsize)) {
-        flux_log (h, LOG_DEBUG, "%s: slack detected in timer", __FUNCTION__);
+        flux_log (h, LOG_DEBUG, "%s: Instance moving to SLACK state", __FUNCTION__);
         ctx->slctx.slack_state = SLACK;
     } else {
         flux_log (h, LOG_DEBUG, "%s: updating recent job information", __FUNCTION__);
@@ -2841,15 +3045,20 @@ static void timer_event_cb (flux_reactor_t *r, flux_watcher_t *w,
     }
 
     /* 4. If in slack and all children cslack, then action */
-    if ((ctx->slctx.slack_state == SLACK) && (all_children_cslack(ctx))) {
-        flux_log (h, LOG_DEBUG, "%s: instance in slack and all children in cslack. taking dynamic action", __FUNCTION__);
+    if ((ctx->slctx.slack_state == SLACK)
+        // TODO: determine if this is a good idea or not
+        //&& (all_children_cslack(ctx))
+        ) {
+        flux_log (h, LOG_DEBUG, "%s: instance in slack. taking dynamic action", __FUNCTION__);
         rc = dynamic_action(ctx);  // returns number of jobs started/expanded
         if (rc > 0) {
             flux_log (h, LOG_DEBUG, "%s: started/expanded %d jobs, not changing to cslack", __FUNCTION__, rc);
             goto ret;
         } else {
             flux_log (h, LOG_DEBUG, "%s: no jobs started/expanded. going into cslack", __FUNCTION__);
-            ctx->slctx.slack_state = CSLACK;
+            if (all_children_cslack (ctx)) {
+                ctx->slctx.slack_state = CSLACK;
+            }
         }
     }
 
@@ -2860,7 +3069,7 @@ static void timer_event_cb (flux_reactor_t *r, flux_watcher_t *w,
         int rcount = 0;
         flux_log (h, LOG_DEBUG, "%s: going to compute surplus", __FUNCTION__);
         accumulate_surplus_need (ctx, 1, jmsg, &rcount);
-        flux_log (h, LOG_DEBUG, "%s: surplus accumulated, rcount = %d\n", __FUNCTION__, rcount);
+        flux_log (h, LOG_DEBUG, "%s: surplus accumulated, rcount = %d", __FUNCTION__, rcount);
         if (send_cslack (ctx, jmsg) < 0) {
             flux_log (h, LOG_DEBUG, "%s: Could not send slack to parent. Error or parent does not implement push model.", __FUNCTION__);
             goto ret;
@@ -2875,16 +3084,24 @@ static void timer_event_cb (flux_reactor_t *r, flux_watcher_t *w,
                 flux_log (h, LOG_DEBUG, "%s: Destroyed returned resources", __FUNCTION__);
             }
             ctx->slctx.resource_out_count += rcount;
+            flux_log (h, LOG_DEBUG, "%s: current resource_out_count is %"PRId64"",
+                      __FUNCTION__, ctx->slctx.resource_out_count);
         }
         Jput (jmsg);
     }
     rc = 0;
 
 ret:
+    diff = clock () - start;
+    seconds = ((double)diff) / CLOCKS_PER_SEC;
+
+    flux_log (h,
+              LOG_DEBUG,
+              "timer trigger took %f seconds",
+              seconds);
     flux_log (h, LOG_DEBUG, "%s: exiting timer", __FUNCTION__);
     return;
 }
-#endif
 
 static int job_status_cb (const char *jcbstr, void *arg, int errnum)
 {
@@ -2950,7 +3167,7 @@ static void req_childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t
     flux_lwj_t *job = NULL;
     const char *json_str = NULL;
 
-    flux_log (h, LOG_DEBUG, "%s: Child has scheduler!\n", __FUNCTION__);
+    flux_log (h, LOG_DEBUG, "%s: Child has scheduler!", __FUNCTION__);
 
     if (flux_request_decode (msg, NULL, &json_str) < 0 || json_str == NULL
         || !(in = Jfromstr (json_str))) {
@@ -2958,7 +3175,7 @@ static void req_childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t
         Jput (in);
         return;
     }
-    flux_log (h, LOG_DEBUG, "%s: Message received = %s\n", __FUNCTION__, Jtostr(in));
+    flux_log (h, LOG_DEBUG, "%s: Message received = %s", __FUNCTION__, Jtostr(in));
 
     /* Decode information */
     Jget_int64 (in, "jobid", &jobid);
@@ -2971,12 +3188,9 @@ static void req_childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t
     if (ctx->sctx.in_sim) {
         ctx->sctx.cstartcount--;
         flux_log (h, LOG_DEBUG, "%s: ++++++++++++ cstartcount decremented = %d", __FUNCTION__, ctx->sctx.cstartcount);
-        set_next_event_slack_wrapper (ctx, jobid);
-
-        // Comment this out to be static scheduling
-#if DYNAMIC_SCHEDULING
+        //set_next_event_slack_wrapper (ctx, jobid);
         set_next_event_timer_wrapper (ctx, jobid);
-#endif
+        set_next_event_childbirth_wrapper (ctx, jobid);
         if (ctx->sctx.cstartcount == 0) {
             handle_jsc_queue (ctx);
             ctx->sctx.token = 0;
@@ -2995,7 +3209,7 @@ static void req_qstat_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg
     JSON out = Jnew ();
 
     /* debug */
-    //flux_log (h, LOG_DEBUG, "%s: Received qstat request: %s ================ %s\n", __FUNCTION__, (char *) *zmsg, (char *) arg);
+    //flux_log (h, LOG_DEBUG, "%s: Received qstat request: %s ================ %s", __FUNCTION__, (char *) *zmsg, (char *) arg);
 
     /* get the context */
     if (!(ctx = getctx (h))) {
@@ -3026,7 +3240,7 @@ static void req_cslack_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *ms
 {
     flux_log (h, LOG_DEBUG, "%s: Callback on reporting surplus/need called", __FUNCTION__);
 
-    int64_t jobid = -1, id = -1;
+    int64_t jobid = -1;
     flux_lwj_t *job = NULL;
     ssrvctx_t *ctx = getctx (h);
     const char *json_str = NULL;
@@ -3068,39 +3282,50 @@ static void req_cslack_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *ms
         /* Update slack reservation */
         json_object_iter iter;
         json_object_object_foreachC (surobj, iter) {
-
-            id = strtol (iter.key, NULL, 10);
             resrc_t *resrc = zhash_lookup (ctx->rctx.resrc_id_hash, iter.key);
             if (!resrc) {
-                flux_log (h, LOG_ERR, "Resource not found");
+                flux_log (h, LOG_ERR, "Resource not found - %s", iter.key);
+                flux_log (h, LOG_ERR, "Printing resource in resrc_id_hash");
+                resrc_t *curr_resrc = NULL;
+                char *resrc_str = NULL;
+                for (curr_resrc = zhash_first (ctx->rctx.resrc_id_hash);
+                     curr_resrc;
+                     curr_resrc = zhash_next (ctx->rctx.resrc_id_hash))
+                    {
+                        resrc_str = resrc_to_string (curr_resrc);
+                        flux_log (h, LOG_ERR, "curr_resrc: %s", resrc_str);
+                        free (resrc_str);
+                    }
                 continue;
             }
-            flux_log (h, LOG_DEBUG, "%s: Resource type: %s, uuid: %s is being reported as slack", __FUNCTION__, resrc_type (resrc), iter.key);
+            //flux_log (h, LOG_DEBUG, "%s: Resource type: %s, uuid: %s is being reported as slack", __FUNCTION__, resrc_type (resrc), iter.key);
             if (!(!(strncmp (resrc_type (resrc), "core", 4)))) {
                 flux_log (h, LOG_ERR, "FATAL: non core resource slacksubbed by child");
                 continue;
             }
-            printf("CSLACK: passsed checks\n");
             const char *endtime_str = json_object_get_string (iter.val);
-            printf ("CLSACK: endtime_str = %s\n", endtime_str);
+            //flux_log (h, LOG_DEBUG, "CLSACK: passed checks, endtime_str = %s", endtime_str);
 
             if (!endtime_str) {
                 flux_log (h, LOG_ERR, "Value invalid");
                 goto ret;
             }
-            flux_log (h, LOG_DEBUG, "%s: slack endtime obtained as: %s", __FUNCTION__, endtime_str);
+            //flux_log (h, LOG_DEBUG, "%s: slack endtime obtained as: %s", __FUNCTION__, endtime_str);
 
             int64_t endtime = strtol (endtime_str, NULL, 10);
             if (endtime == 0) {
                 // a slack resource that was originally sent from me
                 resrc_mark_resource_return_received (resrc, jobid);
-                if (resrc_owner(resrc) == 0)
+                if (resrc_owner(resrc) == 0) {
                     ctx->slctx.resource_out_count--;
-                flux_log (h, LOG_DEBUG, "%s: Return resource received during slacksub :%s\n", __FUNCTION__, resrc_name (resrc));
+                    flux_log (h, LOG_DEBUG, "%s: current resource_out_count is %"PRId64"",
+                              __FUNCTION__, ctx->slctx.resource_out_count);
+                }
+                flux_log (h, LOG_DEBUG, "%s: Return resource received during slacksub :%s", __FUNCTION__, resrc_path (resrc));
             } else {
                 // a slack resource from job's allocation
                 resrc_mark_resource_slack (resrc, jobid, endtime);
-                printf ("CSLACK: Resource marked as slack: %s\n", resrc_name (resrc));
+                //flux_log (h, LOG_DEBUG, "CSLACK: Resource marked as slack: %s", resrc_name (resrc));
            }
         }
     } else {
@@ -3114,8 +3339,8 @@ static void req_cslack_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *ms
     }
 
     /* update job slack state */
-    job_cslack_set (job, needobj);
-    flux_log (h, LOG_DEBUG, "%s: job cslack set", __FUNCTION__);
+    job_cslack_set (h, job, needobj);
+    flux_log (h, LOG_DEBUG, "%s: job %"PRId64", cslack set", __FUNCTION__, job->lwj_id);
 
     /* return idle resources */
     if (return_idle_slack_resources(ctx) < 0) {
@@ -3129,14 +3354,15 @@ static void req_cslack_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *ms
         send_cslack_invalid (ctx, NULL);
         ctx->slctx.slack_state = INVALID;
     } else if (ctx->slctx.slack_state == SLACK) {
-        flux_log (h, LOG_DEBUG, "%s: SLACK state going back to invalid", __FUNCTION__);
-        ctx->slctx.slack_state = INVALID;
+        flux_log (h, LOG_DEBUG, "%s: SLACK state staying as SLACK", __FUNCTION__);
+        //flux_log (h, LOG_DEBUG, "%s: SLACK state going back to invalid", __FUNCTION__);
+        //ctx->slctx.slack_state = INVALID;
     } else {
         flux_log (h, LOG_DEBUG, "%s: Slack state in parent already not reached yet", __FUNCTION__);
         ctx->slctx.slack_state = INVALID;
     }
 
-    schedule_jobs (ctx);
+    //schedule_jobs (ctx);
 
 ret:
     Jput (in);
@@ -3151,7 +3377,7 @@ static void req_addresources_cb (flux_t h, flux_msg_handler_t *w, const flux_msg
     int i = 0;
     int len = 0;
     JSON id_array;
-    int64_t jobid;
+    int64_t jobid = -1;
     JSON in = NULL;
     JSON new_res = NULL;
     JSON jmsg = NULL;
@@ -3181,14 +3407,13 @@ static void req_addresources_cb (flux_t h, flux_msg_handler_t *w, const flux_msg
     }
     flux_log (h, LOG_DEBUG, "%s: Message in add resources retrieved: %s", __FUNCTION__, Jtostr (jmsg));
 
-#if 1
     if (!(Jget_obj (jmsg, "return", &id_array))) {
         flux_log (h, LOG_DEBUG, "%s: no resources returned", __FUNCTION__);
     } else {
         // collect all returned resources
         flux_log (h, LOG_DEBUG, "%s: resource return included in addresources", __FUNCTION__);
         if (!(Jget_ar_len (id_array, &len))) {
-            flux_log (h, LOG_ERR, "FATAL: Could not get length of id array. skipping return resources");
+            flux_log (h, LOG_ERR, "%s: FATAL: Could not get length of id array. skipping return resources", __FUNCTION__);
             goto new;
         }
 
@@ -3201,23 +3426,28 @@ static void req_addresources_cb (flux_t h, flux_msg_handler_t *w, const flux_msg
                 continue;
             }
             if (!(!(strcmp (resrc_type (resrc), "core")))) {
-                flux_log (h, LOG_ERR, "non-core resource returned by job dropping it: %ld\n", jobid);
+                flux_log (h, LOG_ERR, "%s: non-core resource returned by job %"PRId64" dropping it:", __FUNCTION__, jobid);
+                resrc_flux_log (h, resrc);
                 continue;
             }
             resrc_mark_resource_return_received (resrc, jobid);
-            if (resrc_owner (resrc) == 0)
+            flux_log (h, LOG_DEBUG, "%s: resource returned by job adding it:", __FUNCTION__);
+            resrc_flux_log(h, resrc);
+            if (resrc_owner (resrc) == 0) {
                 ctx->slctx.resource_out_count--;
-            flux_log (h, LOG_DEBUG, "%s: resource return = %s\n", __FUNCTION__, resrc_name (resrc));
+                flux_log (h, LOG_DEBUG, "%s: current resource_out_count is %"PRId64"",
+                          __FUNCTION__, ctx->slctx.resource_out_count);
+            }
+            flux_log (h, LOG_DEBUG, "%s: resource return = %s", __FUNCTION__, resrc_name (resrc));
         }
     }
-#endif
 
 new:
     if (!(Jget_obj (jmsg, "new", &new_res))) {
         flux_log (h, LOG_DEBUG, "%s: no new resources added", __FUNCTION__);
     } else {
         flux_log (h, LOG_DEBUG, "%s: new resources provided", __FUNCTION__);
-        if (resrc_add_resources_from_json (ctx->rctx.root_resrc, ctx->rctx.resrc_id_hash, new_res, jobid) < 0) {
+        if (resrc_add_resources_from_json (h, ctx->rctx.root_resrc, ctx->rctx.resrc_id_hash, new_res, jobid) < 0) {
             flux_log (h, LOG_ERR, "error in adding new resources");
             return;
         }
@@ -3242,11 +3472,23 @@ new:
     }
     flux_log (h, LOG_DEBUG, "%s: slack resources return successful", __FUNCTION__);
 
-    if ((ctx->slctx.wait_until_return) && (ctx->slctx.resource_out_count == 0))
+    if ((ctx->slctx.wait_until_return) && (ctx->slctx.resource_out_count == 0)) {
         ctx->slctx.wait_until_return = 0;
+        flux_log (h, LOG_DEBUG,
+                  "%s: Was waiting for all resources to return, "
+                  "all resources have been returned, setting wait flag to 0",
+                  __FUNCTION__);
+    }
 
     /* schedule jobs */
-    schedule_jobs (ctx);
+#if 0
+    flux_log (h, LOG_DEBUG, "%s: will now schedule jobs", __FUNCTION__);
+    int num_jobs_scheduled = schedule_jobs (ctx);
+    if (num_jobs_scheduled > 0) {
+        flux_log (h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
+        resrc_tree_flux_log (h, resrc_phys_tree (ctx->rctx.root_resrc));
+    }
+#endif
 
 ret:
     Jput (in);
@@ -3274,7 +3516,7 @@ static void req_cslack_invalid_cb (flux_t h, flux_msg_handler_t *w, const flux_m
         flux_log (h, LOG_ERR, "Could not fetch jobid on receiving slack invalidate");
         goto ret;
     }
-    flux_log (h, LOG_DEBUG, "Slack invalide message from job: %"PRId64"\n", jobid);
+    flux_log (h, LOG_DEBUG, "Slack invalide message from job: %"PRId64"", jobid);
 
     /* 1. Find the job */
     job = find_job_in_queue (ctx->r_queue, jobid);
@@ -3366,7 +3608,7 @@ static void req_askresources_cb (flux_t h, flux_msg_handler_t *w, const flux_msg
         flux_log (h, LOG_ERR, "Could not fetch jobid on receiving askresources");
         goto ret;
     }
-    flux_log (h, LOG_DEBUG, "Ask resources from %"PRId64"\n", jobid);
+    flux_log (h, LOG_DEBUG, "Ask resources from %"PRId64"", jobid);
 
     JSON id_ar = NULL;
     if (!(Jget_obj (in, "msg", &id_ar))) {

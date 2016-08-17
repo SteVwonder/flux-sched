@@ -85,6 +85,8 @@ static int send_trigger (flux_t h, char *mod_name, sim_state_t *sim_state)
 
     o = sim_state_to_json (sim_state);
 
+    flux_log (h, LOG_DEBUG, "Triggering %s with %s", mod_name, Jtostr(o));
+
     flux_t mod_h = zhash_lookup (ctx->handle_hash, mod_name);
     if (!mod_h) {
         flux_log (h, LOG_ERR, "ERROR: could not get handle from hash for module %s", mod_name);
@@ -334,8 +336,7 @@ static void leave_cb (flux_t h,
               "leave rcvd from module %s",
               mod_name);
 
-    zhash_t *timers = sim_state->timers;
-    zhash_delete (timers, mod_name);
+    zhash_delete (sim_state->timers, mod_name);
 
     flux_t mod_h = zhash_lookup (ctx->handle_hash, mod_name);
     if (mod_h) {

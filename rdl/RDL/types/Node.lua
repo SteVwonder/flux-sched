@@ -30,9 +30,13 @@ function Node:initialize (arg)
     assert (basename, "Required Node arg `basename' missing")
 
     local id = arg.id
-    assert (arg.sockets, "Required Node arg `sockets' missing")
-    assert (type (arg.sockets) == "table",
-            "Node argument sockets must be a table of core ids")
+    assert (arg.sockets or arg.num_cores, "Required Node arg `sockets' or `num_cores' missing")
+    if arg.sockets then
+       assert (type (arg.sockets) == "table",
+               "Node argument sockets must be a table of core ids")
+    elseif arg.num_cores then
+          assert (type (arg.num_cores) == "number", "Node argument `num_cores' must be a number")
+    end
 
     local name = arg.name or string.format ("%s%s", basename, id or "")
 
@@ -46,23 +50,31 @@ function Node:initialize (arg)
         }
     )
 
-	local num_sockets = 0
-	for _,_ in pairs (arg.sockets) do
-	   num_sockets = num_sockets + 1
-	end
-
-	local bw_per_socket = 0
-    if arg.tags ~= nil and arg.tags['max_bw'] ~= nil then
-	   bw_per_socket = arg.tags.max_bw / num_sockets
+    if arg.sockets then
+       local num_sockets = 0
+       for _,_ in pairs (arg.sockets) do
+          num_sockets = num_sockets + 1
+       end
+       local bw_per_socket = 0
+       if arg.tags ~= nil and arg.tags['max_bw'] ~= nil then
+          bw_per_socket = arg.tags.max_bw / num_sockets
+       end
+       local sockid = 0
+       for _,c in pairs (arg.sockets) do
+          self:add_child (Socket{ id = sockid, cpus = c,
+                                  memory = arg.memory_per_socket,
+                                  tags = { ["max_bw"] = bw_per_socket, ["alloc_bw"] = 0 }})
+          sockid = sockid + 1
+       end
+    elseif arg.num_cores then
+       for core=0,arg.num_cores do
+          self:add_child (
+             Resource{ "core", id = core, properties = { localid = core},
+                       tags = { ['max_bw'] = 0, ["alloc_bw"] = 0 }}
+          )
+       end
     end
 
-    local sockid = 0
-    for _,c in pairs (arg.sockets) do
-        self:add_child (Socket{ id = sockid, cpus = c,
-                                memory = arg.memory_per_socket,
-                                tags = { ["max_bw"] = bw_per_socket, ["alloc_bw"] = 0 }})
-        sockid = sockid + 1
-    end
 end
 
 return Node

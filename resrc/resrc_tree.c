@@ -37,6 +37,8 @@
 #include "resrc_tree.h"
 #include "src/common/libutil/xzmalloc.h"
 
+//#define flux_log(...)
+
 struct resrc_tree_list {
     zlist_t *list;
 };
@@ -83,37 +85,36 @@ int resrc_tree_add_child (resrc_tree_t *parent, resrc_tree_t *child)
     return rc;
 }
 
-int resrc_tree_add_child_special (resrc_tree_t *parent, resrc_tree_t *child, zhash_t *hash_table, int64_t owner)
+int resrc_tree_add_child_special (flux_t h, resrc_tree_t *parent, resrc_tree_t *child, zhash_t *hash_table, int64_t owner)
 {
-    printf("inside the function\n");fflush(0);
     int rc = 0;
     if (parent) {
-        printf("came inside parent\n");fflush(0);
         resrc_t *resrc = resrc_tree_resrc (child);
+        flux_log (h, LOG_DEBUG, "%s: looking to add:", __FUNCTION__);
+        resrc_flux_log (h, resrc_tree_resrc (child));
         char uuid[40];
         resrc_uuid (resrc, uuid);
-        printf("got uuid\n");fflush(0);
         resrc_t *resrc_exist = zhash_lookup (hash_table, uuid);
-        printf ("checked for resource exist\n"); fflush(0); 
         if (resrc_exist) {
-            printf ("came inside resource exist\n"); fflush(0);
+            flux_log (h, LOG_DEBUG, "%s: resource exist, updating twindow 0", __FUNCTION__);
+            resrc_copy_lifetime (resrc, resrc_exist);
             if (resrc_tree_num_children (child)) {
                 resrc_tree_t *chtree = resrc_tree_list_first (child->children);
                 while (chtree) {
-                    rc = resrc_tree_add_child_special (resrc_phys_tree (resrc_exist), chtree, hash_table, owner);
-                    if (rc < 0) 
+                    rc = resrc_tree_add_child_special (h, resrc_phys_tree (resrc_exist), chtree, hash_table, owner);
+                    if (rc < 0)
                         goto ret;
                     chtree = resrc_tree_list_next (child->children);
                 }
             }
             rc = 0;
         } else {
+            flux_log (h, LOG_DEBUG, "%s: resource doesn't exist, adding", __FUNCTION__);
             child->parent = parent;
-            rc = resrc_tree_list_append (parent->children, child);   
+            rc = resrc_tree_list_append (parent->children, child);
             resrc_tree_set_owner (child, owner);
-            printf ("set owner ok\n"); fflush(0);
-            resrc_hash_by_uuid (child, hash_table);
-            printf ("hash table add ok\n"); fflush(0);
+            resrc_tree_hash_by_uuid (child, hash_table);
+            resrc_tree_idle_resources (child);
         }
     }
 ret:
@@ -312,6 +313,15 @@ void resrc_tree_unstage_resources (resrc_tree_t *resrc_tree)
         resrc_stage_resrc (resrc_tree->resrc, 0);
         if (resrc_tree_num_children (resrc_tree))
             resrc_tree_list_unstage_resources (resrc_tree->children);
+    }
+}
+
+void resrc_tree_idle_resources (resrc_tree_t *resrc_tree)
+{
+    if (resrc_tree) {
+        resrc_set_state (resrc_tree->resrc, RESOURCE_IDLE);
+        if (resrc_tree_num_children (resrc_tree))
+            resrc_tree_list_idle_resources (resrc_tree->children);
     }
 }
 
@@ -540,6 +550,19 @@ void resrc_tree_list_unstage_resources (resrc_tree_list_t *rtl)
     }
 }
 
+void resrc_tree_list_idle_resources (resrc_tree_list_t *rtl)
+{
+    resrc_tree_t *rt;
+
+    if (rtl) {
+        rt = resrc_tree_list_first (rtl);
+        while (rt) {
+            resrc_tree_idle_resources (rt);
+            rt = resrc_tree_list_next (rtl);
+        }
+    }
+}
+
 resrc_t *resrc_find_by_id_tree (resrc_tree_t *resrc_tree, int64_t id)
 {
     resrc_t *resrc;
@@ -577,7 +600,7 @@ resrc_t *resrc_tree_by_id_tree_list (resrc_tree_list_t *resrc_tree_list, int64_t
 
 }
 
-int resrc_hash_by_uuid (resrc_tree_t *resrc_tree, zhash_t *hash_table)
+int resrc_tree_hash_by_uuid (resrc_tree_t *resrc_tree, zhash_t *hash_table)
 {
     int rc = 0;
     resrc_t *resrc = NULL;
@@ -585,28 +608,24 @@ int resrc_hash_by_uuid (resrc_tree_t *resrc_tree, zhash_t *hash_table)
         resrc = resrc_tree_resrc (resrc_tree);
         char uuid[40];
         resrc_uuid (resrc, uuid);
-        //uuid_unparse (resrc->uuid, uuid);
         zhash_insert (hash_table, uuid, (void *)resrc);
-        if (resrc_tree_num_children (resrc_tree)) {
-            resrc_tree_t *child_tree = resrc_tree_list_first (resrc_tree->children);
-            while (child_tree) {
-                resrc_hash_by_uuid (child_tree, hash_table);
-                child_tree = resrc_tree_list_next (resrc_tree->children);
-            }
-        } 
-
+        resrc_tree_t *child_tree = NULL;
+        for (child_tree = resrc_tree_list_first (resrc_tree->children);
+             child_tree;
+             child_tree = resrc_tree_list_next (resrc_tree->children)) {
+            resrc_tree_hash_by_uuid (child_tree, hash_table);
+        }
     }
 
     return rc;
 }
 
-int resrc_hash_by_uuid_list (resrc_tree_list_t *resrc_tree_list, zhash_t *hash_table)
+int resrc_tree_list_hash_by_uuid (resrc_tree_list_t *resrc_tree_list, zhash_t *hash_table)
 {
     int rc = 0;
-    
     resrc_tree_t *resrc_tree = resrc_tree_list_first (resrc_tree_list);
     while (resrc_tree) {
-        resrc_hash_by_uuid (resrc_tree, hash_table);
+        resrc_tree_hash_by_uuid (resrc_tree, hash_table);
         resrc_tree = resrc_tree_list_next (resrc_tree_list);
     }
     return rc;
@@ -654,7 +673,7 @@ int resrc_tree_destroy_returned_resources (resrc_tree_t *resrc_tree, zhash_t *ha
             }
             if ((!(resrc_tree_num_children (resrc_tree))) && (resrc_check_resource_destroy_ready (resrc))) {
                 // delete it
-                printf ("destroyreturnedresource: deleting a resource that just lost all its children\n");
+                fprintf (stderr, "destroyreturnedresource: deleting a resource that just lost all its children\n");
                 char uuid[40];
                 resrc_uuid (resrc, uuid);
                 zhash_delete (hash_table, uuid);
@@ -662,72 +681,70 @@ int resrc_tree_destroy_returned_resources (resrc_tree_t *resrc_tree, zhash_t *ha
             }
         } else {
             if (resrc_check_resource_destroy_ready (resrc)) {
-                printf ("destroyreturnedresource: deleting resource ready for deletion\n");
+                fprintf (stderr, "destroyreturnedresource: deleting resource ready for deletion\n");
                 char uuid[40];
                 resrc_uuid (resrc, uuid);
                 zhash_delete (hash_table, uuid);
                 resrc_tree_destroy (resrc_tree, true);
-            } 
+            }
         }
     }
     return rc;
 }
 
-resrc_tree_list_t* resrc_split_resources (resrc_tree_list_t *found_tree_list, resrc_tree_list_t *job_tree_list, JSON ret_array, int64_t jobid)
+// TOOD: make this work with any structure of resrc trees
+resrc_tree_list_t* resrc_tree_split_resources (flux_t h, resrc_tree_list_t *selected_tree_list,
+                                               resrc_tree_list_t *job_tree_list, JSON ret_array,
+                                               int64_t jobid)
 {
     int rc = -1;
     int found = 0;
 
     resrc_tree_list_t *to_serialize_tree_list = resrc_tree_list_new ();
 
-    resrc_tree_t *resrc_tree = resrc_tree_list_first (found_tree_list);
-    printf ("gogsladfjalskdfj\n"); fflush (0);
-    while (resrc_tree) {
-        resrc_t *new_resrc = resrc_tree_resrc (resrc_tree);
-        resrc_tree_t *job_tree = resrc_tree_list_first (job_tree_list);
-        printf ("okie doklaksdjfl asdlkjfas asd flkasjdf\n"); fflush (0);
-        while (job_tree) {
-            resrc_t *job_resrc = resrc_tree_resrc (job_tree);
-#if 1
-            if (new_resrc == job_resrc) {
-                // The new node and old node are same
-                found = 1;
-                int add = resrc_compare (resrc_tree, job_tree, ret_array);
-#if 1
-                if (add) {
-                    resrc_tree_list_append (to_serialize_tree_list, resrc_tree);
+    flux_log (h, LOG_DEBUG, "Entered %s", __FUNCTION__);
+    int i = 0, j = 0;
+    resrc_tree_t *resrc_tree = NULL;
+    for (resrc_tree = resrc_tree_list_first (selected_tree_list), i = 0;
+         resrc_tree;
+         resrc_tree = resrc_tree_list_next (selected_tree_list), i++)
+        {
+            resrc_t *new_resrc = resrc_tree_resrc (resrc_tree);
+            resrc_tree_t *job_tree = NULL;
+            for (job_tree = resrc_tree_list_first (job_tree_list), j = 0;
+                 job_tree;
+                 job_tree = resrc_tree_list_next (job_tree_list), j++)
+                {
+                    flux_log (h, LOG_DEBUG, "%s: Comparing resrc tree #%d to job resrc #%d", __FUNCTION__, i, j);
+                    resrc_t *job_resrc = resrc_tree_resrc (job_tree);
+                    if (new_resrc == job_resrc) {
+                        flux_log (h, LOG_DEBUG, "%s: resrc tree #%d and job resrc #%d are equal", __FUNCTION__, i, j);
+                        resrc_tree_flux_log(h, resrc_tree);
+                        // The new node and old list entries are same
+                        found = 1;
+                        // Check if all of the direct children match as well
+                        int add = resrc_compare (resrc_tree, job_tree, ret_array);
+                        if (add) {
+                            resrc_tree_list_append (to_serialize_tree_list, resrc_tree);
+                        }
+                        break;
+                    }
                 }
-#endif
-                break;
+            if (!found) {
+                // The new node was not found in any of the job tree
+                // This needs to be serialized
+                flux_log (h, LOG_DEBUG, "%s: Going to append", __FUNCTION__);
+                resrc_tree_list_append (to_serialize_tree_list, resrc_tree);
             }
-#endif
-nextjobtree:
-            job_tree = resrc_tree_list_next (job_tree_list);
+            found = 0;
         }
-    
-        if (to_serialize_tree_list == NULL) {
-            printf ("YESSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS\n");
-        }
-        fflush(0);
-#if 1
-        if (!found) {
-            // The new node was not found in any of the job tree
-            // This needs to be serialized
-            printf ("Going to appendddddddddddddd\n"); fflush(0);
-            resrc_tree_list_append (to_serialize_tree_list, resrc_tree);
-
-        }
-#endif
-next:
-        found = 0;
-        resrc_tree = resrc_tree_list_next (found_tree_list);
-    }
 
     rc = 0;
     return to_serialize_tree_list;
 }
 
-// dealing with cores here
+// TODO: make this recursive
+// Suraj: dealing with cores here
 int resrc_compare (resrc_tree_t *new_tree, resrc_tree_t *job_tree, JSON ret_array)
 {
     int rc = 0;
@@ -762,6 +779,31 @@ nextone:
     return rc;
 }
 
+
+void resrc_tree_flux_log (flux_t h, resrc_tree_t *rt)
+{
+    if (!rt) {
+        flux_log (h, LOG_ERR, "%s: NULL resrc_tree passed in", __FUNCTION__);
+        return;
+    }
+    resrc_flux_log (h, resrc_tree_resrc (rt));
+    resrc_tree_t *child;
+    for (child = resrc_tree_list_first (resrc_tree_children (rt));
+         child;
+         child = resrc_tree_list_next (resrc_tree_children (rt))) {
+            resrc_tree_flux_log (h, child);
+    }
+}
+
+void resrc_tree_list_flux_log (flux_t h, resrc_tree_list_t *tree_list)
+{
+    resrc_tree_t *curr_tree = NULL;
+    for (curr_tree = resrc_tree_list_first (tree_list);
+         curr_tree;
+         curr_tree = resrc_tree_list_next (tree_list)) {
+        resrc_tree_flux_log (h, curr_tree);
+    }
+}
 
 /*
  * vi: ts=4 sw=4 expandtab

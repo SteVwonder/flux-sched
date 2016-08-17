@@ -54,16 +54,15 @@ typedef enum {
     INVALID = 0,
     SLACK,
     CSLACK
-}slack_state_t; 
+} slack_state_t;
 
 /**
  *  * Defines the required information during slackstate
  *   */
 typedef struct slackstate {
-
+    // TODO: store resources sent as slack to the job here
     slack_state_t   slack_state;    /*!< INVALID, SLACK or CSLACK */
     JSON            need;           /*!< needs of the child upto some k */
-
 } flux_slackinfo_t;
 
 /**
@@ -81,7 +80,6 @@ typedef struct {
     char        *contact; /*!< Contact information when it is an instance */
 
     flux_slackinfo_t   *slackinfo; /*!< hierarchical job slack state information */
-
 } flux_lwj_t;
 
 #endif /* SCHEDULER_H */

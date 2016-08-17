@@ -42,11 +42,12 @@
 
 #include <flux/core.h>
 #include "src/common/libutil/log.h"
-//#define printf(...)
+#define printf(...)
+//#define flux_log(...)
 
 typedef struct resrc_slack_info {
-    uint64_t owner;             /* 0 = self, -1 = parent, other = children */
-    uint64_t leasee;            /* 0 = self, -1 = parent, other = children */
+    int64_t owner;             /* 0 = self, -1 = parent, other = children */
+    int64_t leasee;            /* 0 = self, -1 = parent, other = children */
     int      asked;             /* 1 = yes, 0 = no */
     int      to_be_returned;    /* 1 = yes, 0 = no */
     int      returned;          /* 1 = yes, 0 = no */
@@ -74,23 +75,29 @@ struct resrc {
     resrc_slinfo_t slinfo;
 };
 
-int sim_mode = 0;
-uint64_t sim_time;
+static int sim_mode = 0;
+static int64_t sim_time;
 
+// TODO: remove this
 void resrc_set_sim_mode () {
     sim_mode = 1;
 }
 
-void resrc_set_sim_time (uint64_t st) {
+// TODO: remove this
+void resrc_set_sim_time (int64_t st) {
     sim_time = st;
 }
 
+// TODO: remove this
 int64_t epochtime ()
 {
-    if (sim_mode)
+    if (sim_mode) {
         return sim_time;
+    }
     return (int64_t)time (NULL);
 }
+
+// TODO: remove this
 int64_t resrc_epochtime ()
 {
     return epochtime ();
@@ -339,8 +346,13 @@ size_t resrc_available_during_range (resrc_t *resrc, int64_t range_starttime,
     // job id to the JSON obj and insert the JSON obj into the
     // "matching windows" list.
     window_keys = zhash_keys (resrc->twindow);
-    id_ptr = (const char *) zlist_next (window_keys);
-    while (id_ptr) {
+    for (id_ptr = (const char *) zlist_next (window_keys);
+         id_ptr;
+         id_ptr = zlist_next (window_keys)) {
+        if (!strncmp (id_ptr, "0", 2)) {
+            printf ("Skipping lifetime window in intersection check, id_ptr = %s\n", id_ptr);
+            continue;
+        }
         printf ("Considering id_ptr = %s\n", id_ptr);
         window_json_str = (const char*) zhash_lookup (resrc->twindow, id_ptr);
         window_json = Jfromstr (window_json_str);
@@ -357,12 +369,6 @@ size_t resrc_available_during_range (resrc_t *resrc, int64_t range_starttime,
                (curr_starttime > range_endtime &&
                 curr_endtime > range_endtime)) ) {
 
-            /* If the sample requires exclusive access and we are
-             * here, then we now know that exclusivity cannot be
-             * granted over the requested range.  Leave now. */
-            if (exclusive)
-                goto ret;
-
             alloc_ptr = (size_t*)zhash_lookup (resrc->allocs, id_ptr);
             reservtn_ptr = (size_t*)zhash_lookup (resrc->reservtns, id_ptr);
             if (alloc_ptr || reservtn_ptr || !(strcmp (id_ptr, "slack")) || !(strcmp (id_ptr, "slacksub"))) {
@@ -376,8 +382,6 @@ size_t resrc_available_during_range (resrc_t *resrc, int64_t range_starttime,
                 Jput (window_json);
         } else
             Jput (window_json);
-
-        id_ptr = zlist_next (window_keys);
     }
 
     // Duplicate the "matching windows" list and then sort the 2 lists
@@ -397,6 +401,7 @@ size_t resrc_available_during_range (resrc_t *resrc, int64_t range_starttime,
     min_available = resrc->size;
     curr_available = resrc->size;
 
+    printf ("Min available starting = %zu\n", min_available);
     // Start iterating over the windows and calculating the min
     // available
     //
@@ -465,9 +470,14 @@ size_t resrc_available_during_range (resrc_t *resrc, int64_t range_starttime,
                      "%s - ERR: Both start/end windows are empty\n",
                      __FUNCTION__);
         }
+        // TODO: curr_available underflows (becomes MAX - 1)
         min_available = (curr_available < min_available) ? curr_available :
             min_available;
-        printf("curr available now = %zu and min available now = %zu\n", curr_available, min_available);
+        printf ("curr available now = %zu and min available now = %zu\n", curr_available, min_available);
+        if (exclusive && min_available < resrc->size) {
+            // Is not exclusively allocated, so return 0
+            min_available = 0;
+        }
     }
 
     zlist_destroy (&end_windows);
@@ -539,6 +549,29 @@ void resrc_set_owner (resrc_t *resrc, int64_t owner)
         resrc->slinfo.owner = owner;
     }
     return;
+}
+
+void resrc_copy_lifetime (resrc_t *from, resrc_t *to)
+{
+    if (!from || !to) {
+        return;
+    }
+
+    char *from_lifetime = zhash_lookup (from->twindow, "0");
+    if (from_lifetime == NULL) {
+        fprintf (stderr,
+                 "%s: twindow 0 does not exist in added resource, keeping old twindow",
+                 __FUNCTION__);
+        return;
+    }
+    char *to_lifetime = zhash_lookup (to->twindow, "0");
+    if (to_lifetime) {
+        zhash_update (to->twindow, "0", xstrdup (from_lifetime));
+    } else {
+        zhash_insert (to->twindow, "0", xstrdup (from_lifetime));
+    }
+
+
 }
 
 resrc_t *resrc_new_resource (const char *type, const char *path,
@@ -1058,11 +1091,11 @@ int resrc_to_json (json_object *o, resrc_t *resrc, int64_t jobid)
             char *entry = zhash_lookup (resrc->twindow, jobid_str);
             if (entry) {
                 JSON j = Jfromstr (entry);
-                const char *starttime, *endtime;
-                Jget_str (j, "starttime", &starttime);
-                Jget_str (j, "endtime", &endtime);
-                Jadd_str (o, "starttime", starttime);
-                Jadd_str (o, "endtime", endtime);
+                int64_t starttime, endtime;
+                Jget_int64 (j, "starttime", &starttime);
+                Jget_int64 (j, "endtime", &endtime);
+                Jadd_int64 (o, "starttime", starttime);
+                Jadd_int64 (o, "endtime", endtime);
                 Jput (j);
             }
             free (jobid_str);
@@ -1079,6 +1112,7 @@ char *resrc_to_string (resrc_t *resrc)
     char uuid[40];
     char *property;
     char *tag;
+    char *window_ptr;
     size_t *size_ptr;
     size_t len;
     FILE *ss;
@@ -1095,6 +1129,11 @@ char *resrc_to_string (resrc_t *resrc)
              resrc->type, resrc->path, resrc->basename, resrc->name,
              resrc->digest, resrc->id, resrc_state (resrc),
              uuid, resrc->size, resrc->available);
+    fprintf (ss, ", owner: %"PRId64", leasee: %"PRId64"%s%s%s",
+             resrc->slinfo.owner, resrc->slinfo.leasee,
+             (resrc->slinfo.asked) ? ", asked" : "",
+             (resrc->slinfo.to_be_returned) ? ", to_be_returned" : "",
+             (resrc->slinfo.returned) ? ", returned" : "");
     if (zhash_size (resrc->properties)) {
         fprintf (ss, ", properties:");
         property = zhash_first (resrc->properties);
@@ -1104,6 +1143,7 @@ char *resrc_to_string (resrc_t *resrc)
             property = zhash_next (resrc->properties);
         }
     }
+#if 0
     if (zhash_size (resrc->tags)) {
         fprintf (ss, ", tags:");
         tag = zhash_first (resrc->tags);
@@ -1112,8 +1152,18 @@ char *resrc_to_string (resrc_t *resrc)
             tag = zhash_next (resrc->tags);
         }
     }
+#endif
+    if (zhash_size (resrc->twindow)) {
+        fprintf (ss, ", twindows");
+        window_ptr = zhash_first (resrc->twindow);
+        while (window_ptr) {
+            fprintf (ss, ", %s: %s",
+                    (char *)zhash_cursor (resrc->twindow), window_ptr);
+            window_ptr = zhash_next (resrc->twindow);
+        }
+    }
     if (zhash_size (resrc->allocs)) {
-        fprintf (ss, ", allocs");
+        fprintf (ss, ", resrc->allocs");
         size_ptr = zhash_first (resrc->allocs);
         while (size_ptr) {
             fprintf (ss, ", %s: %"PRIu64"",
@@ -1172,28 +1222,21 @@ static bool resrc_walltime_match (resrc_t *resrc, resrc_reqst_t *request)
 
     printf ("inside walltime match for resource type : %s, starttime = %ld, endtime = %ld\n", resrc->type, starttime, endtime);
 
-    /* If request endtime is greater than the lifetime of the
-       resource, then return false */
-    if ((starttime == 0) || (epochtime() >= starttime)) {// now reservation
-        printf ("seems to be now reservation with starttime = %ld\n", starttime);
-        json_str_window = zhash_lookup (resrc->twindow, "slack");
-        if (!json_str_window) {
-            printf ("no slack reservation present, fetching lifetime as 0\n");
-            json_str_window = zhash_lookup (resrc->twindow, "0");
-        } else {
-            printf ("resource has slack reservation and taken as lifetime\n");
-        }
-    } else {
-        printf ("not a now reservation. taking lifetime as 0\n");
+    json_str_window = zhash_lookup (resrc->twindow, "slack");
+    if (!json_str_window) {
+        printf ("no slack reservation present, fetching lifetime as 0\n");
         json_str_window = zhash_lookup (resrc->twindow, "0");
+    } else {
+        printf ("resource has slack reservation and taken as lifetime\n");
     }
 
     if (json_str_window) {
         JSON lt = Jfromstr (json_str_window);
         Jget_int64 (lt, "endtime", &lendtime);
         Jput (lt);
-        printf("Retrieved lendtime = %ld\n", lendtime);
+        printf ("Retrieved lendtime = %ld\n", lendtime);
         if (endtime > (lendtime - SLACK_BUFFER_TIME)) {
+            printf ("entime > (lendtime - SLACK_BUFFER_TIME), return false (no match)\n");
             return false;
         }
     }
@@ -1204,6 +1247,8 @@ static bool resrc_walltime_match (resrc_t *resrc, resrc_reqst_t *request)
                                               resrc_reqst_exclusive (request));
 
     rc = (available >= resrc_reqst_reqrd_size (request));
+    printf ("available (%zu) >= resrc_requested_size (%"PRId64") evals to %d\n",
+             available, resrc_reqst_reqrd_size (request), rc);
 
     return rc;
 }
@@ -1251,10 +1296,12 @@ bool resrc_match_resource (resrc_t *resrc, resrc_reqst_t *request,
              * We save this for last because the time search will be
              * expensive.
              */
-             if (resrc_reqst_starttime (request)) {
+             if (resrc_reqst_starttime (request) >= 0) {
                 if ((resrc->slinfo.to_be_returned != 1) && (resrc->slinfo.returned != 1)) {
                     rc = resrc_walltime_match (resrc, request);
                 } else {
+                    printf ("slinfo.to_be_returned (%d) == 1 or slinfo.returned (%d) == 1\n",
+                             resrc->slinfo.to_be_returned, resrc->slinfo.returned);
                     rc = false;
                 }
              } else {
@@ -1292,8 +1339,11 @@ static int resrc_allocate_resource_now (resrc_t *resrc, int64_t job_id)
     int rc = -1;
 
     if (resrc && job_id) {
-        if (resrc->staged > resrc->available)
+        printf ("Entering %s: allocating %"PRId64"\n", __FUNCTION__, job_id);
+        if (resrc->staged > resrc->available) {
+            fprintf (stderr, "%s: ERR - staged too many resources, skipping allocation", __FUNCTION__);
             goto ret;
+        }
 
         id_ptr = xasprintf ("%"PRId64"", job_id);
         size_ptr = xzmalloc (sizeof (size_t));
@@ -1333,14 +1383,17 @@ static int resrc_allocate_resource_in_time (resrc_t *resrc, int64_t job_id,
     size_t available;
 
     if (resrc && job_id) {
+        printf ("Entering %s: allocating %"PRId64" from %"PRId64" to %"PRId64"\n", __FUNCTION__, job_id, starttime, endtime);
         /* Don't bother going through the exclusivity checks.  We will
          * save cycles and assume the selected resources are
          * exclusively available if that was the criteria of the
          * search. */
         available = resrc_available_during_range (resrc, starttime, endtime,
                                                   false);
-        if (resrc->staged > available)
+        if (resrc->staged > available) {
+            fprintf (stderr, "%s: ERR - staged too many resources, skipping allocation", __FUNCTION__);
             goto ret;
+        }
 
         id_ptr = xasprintf ("%"PRId64"", job_id);
         size_ptr = xzmalloc (sizeof (size_t));
@@ -1348,7 +1401,7 @@ static int resrc_allocate_resource_in_time (resrc_t *resrc, int64_t job_id,
         zhash_insert (resrc->allocs, id_ptr, size_ptr);
         zhash_freefn (resrc->allocs, id_ptr, free);
         resrc->staged = 0;
-        resrc->available -= resrc->staged;
+        //resrc->available -= resrc->staged;
         resrc->state = RESOURCE_ALLOCATED;
 
         /* add walltime */
@@ -1356,8 +1409,16 @@ static int resrc_allocate_resource_in_time (resrc_t *resrc, int64_t job_id,
         Jadd_int64 (j, "starttime", starttime);
         Jadd_int64 (j, "endtime", endtime);
         json_str = xstrdup (Jtostr (j));
-        zhash_insert (resrc->twindow, id_ptr, (void *) json_str);
-        zhash_freefn (resrc->twindow, id_ptr, free);
+        if (zhash_lookup (resrc->twindow, id_ptr) != NULL) {
+            fprintf (stderr,
+                     "%s: ERR - entry in alloc table for job %"PRId64" already exists, "
+                     "will update rather than insert, but this should never happen",
+                     __FUNCTION__, job_id);
+            zhash_update (resrc->twindow, id_ptr, (void *) json_str);
+        } else {
+            zhash_insert (resrc->twindow, id_ptr, (void *) json_str);
+            zhash_freefn (resrc->twindow, id_ptr, free);
+        }
         Jput (j);
 
         if (!(strcmp (resrc->type, "core"))) {
@@ -1385,12 +1446,18 @@ int resrc_allocate_resource_in_time_dynamic (resrc_t *resrc, int64_t job_id,
     int64_t endtime_modified = 0;
 
     if (resrc && job_id) {
+        printf ("Entering %s: allocating %"PRId64" from %"PRId64" to %"PRId64"\n", __FUNCTION__, job_id, starttime, endtime);
         json_str = zhash_lookup (resrc->twindow, "job_id");
         if (json_str) {
-            // entry already exists. That means a slack should be present
+            // Entry already exists for this job. That means a slack
+            // entry should be present. This happens when a parent is
+            // currently leasing a resource from a child and is now
+            // returning it to expand the child job
+            // TODO: assert that the owner is the child and the leasee is the current instance
+            // OPTIMIZE: will be faster to just check who the owner is
             char *json_str = zhash_lookup (resrc->twindow, "slack");
             if (!json_str) {
-                printf ("FATAL ERROR: job id exists without a slack entry\n");
+                fprintf (stderr, "FATAL ERROR: job id exists without a slack entry\n");
                 goto ret;
             }
             zhash_delete (resrc->twindow, "slack");
@@ -1406,6 +1473,11 @@ int resrc_allocate_resource_in_time_dynamic (resrc_t *resrc, int64_t job_id,
             if (json_str) {
                 JSON e = Jfromstr (json_str);
                 Jget_int64 (e, "endtime", &endtime_modified);
+                /*
+                 * TODO: what is this for?  is it to make sure the
+                 * child returns the slack resource in time to return
+                 * to the parent?
+                 */
                 endtime_modified -= 10;
                 Jput (e);
             } else {
@@ -1419,14 +1491,18 @@ int resrc_allocate_resource_in_time_dynamic (resrc_t *resrc, int64_t job_id,
             zhash_insert (resrc->twindow, id_ptr, (void *) json_str);
             zhash_freefn (resrc->twindow, id_ptr, free);
             Jput (j);
-
             free(id_ptr);
 
+            // TODO: this only valid is the current instance is the
+            // owner (see above TODO)
+            if (!(strcmp (resrc->type, "core"))) {
+                resrc->slinfo.leasee = job_id;
+            }
         }
 
 
         resrc->staged = 0;
-        resrc->available -= resrc->staged;
+        //resrc->available -= resrc->staged;
         resrc->state = RESOURCE_ALLOCATED;
         rc = 0;
     }
@@ -1441,10 +1517,10 @@ int resrc_allocate_resource (resrc_t *resrc, int64_t job_id, int64_t starttime,
 {
     int rc;
 
-    if (starttime)
-        rc = resrc_allocate_resource_in_time (resrc, job_id, starttime, endtime);
-    else
+    if (starttime < 0)
         rc = resrc_allocate_resource_now (resrc, job_id);
+    else
+        rc = resrc_allocate_resource_in_time (resrc, job_id, starttime, endtime);
 
     return rc;
 }
@@ -1460,8 +1536,10 @@ static int resrc_reserve_resource_now (resrc_t *resrc, int64_t job_id)
     int rc = -1;
 
     if (resrc && job_id) {
-        if (resrc->staged > resrc->available)
+        if (resrc->staged > resrc->available) {
+            printf ("%s: ERR - staged too many resources, skipping reservation", __FUNCTION__);
             goto ret;
+        }
 
         id_ptr = xasprintf ("%"PRId64"", job_id);
         size_ptr = xzmalloc (sizeof (size_t));
@@ -1499,8 +1577,10 @@ static int resrc_reserve_resource_in_time (resrc_t *resrc, int64_t job_id,
          * search. */
         available = resrc_available_during_range (resrc, starttime, endtime,
                                                   false);
-        if (resrc->staged > available)
+        if (resrc->staged > available) {
+            fprintf (stderr, "%s: ERR - staged too many resources, skipping reservation", __FUNCTION__);
             goto ret;
+        }
 
         id_ptr = xasprintf ("%"PRId64"", job_id);
         size_ptr = xzmalloc (sizeof (size_t));
@@ -1530,10 +1610,10 @@ int resrc_reserve_resource (resrc_t *resrc, int64_t job_id, int64_t starttime,
 {
     int rc;
 
-    if (starttime)
-        rc =resrc_reserve_resource_in_time (resrc, job_id, starttime, endtime);
-    else
+    if (starttime < 0)
         rc =resrc_reserve_resource_now (resrc, job_id);
+    else
+        rc =resrc_reserve_resource_in_time (resrc, job_id, starttime, endtime);
 
     return rc;
 }
@@ -1560,10 +1640,9 @@ int resrc_release_allocation (resrc_t *resrc, int64_t rel_job)
     size_ptr = zhash_lookup (resrc->allocs, id_ptr);
     if (size_ptr) {
         if (resrc->state == RESOURCE_ALLOCATED) {
-            resrc->available += *size_ptr;
-        } else {
-            zhash_delete (resrc->twindow, id_ptr);
+            //resrc->available += *size_ptr;
         }
+        zhash_delete (resrc->twindow, id_ptr);
         zhash_delete (resrc->allocs, id_ptr);
         if ((resrc->state != RESOURCE_INVALID) && !zhash_size (resrc->allocs)) {
             if (zhash_size (resrc->reservtns))
@@ -1573,11 +1652,14 @@ int resrc_release_allocation (resrc_t *resrc, int64_t rel_job)
         }
     }
 
-    // TODO: ensure this was ported correctly
     if (! (strcmp (resrc->type, "core"))) {
-        printf ("============================== SETTING THIS RESOURCE BACK TO IDLE =================================, path = %s\n", resrc->path);
-        if (resrc->slinfo.owner == rel_job)
+        // printf ("============================== SETTING THIS RESOURCE BACK TO IDLE =================================, path = %s\n", resrc->path);
+        if (resrc->slinfo.owner == rel_job) {
             resrc->slinfo.owner = 0;
+            // TODO: this should have already been happening elsewhere
+            resrc->slinfo.to_be_returned = 0;
+            resrc->slinfo.returned = 0;
+        }
         resrc->slinfo.leasee = 0;
 
         char *slackstr = zhash_lookup (resrc->twindow, "slack");
@@ -1585,7 +1667,7 @@ int resrc_release_allocation (resrc_t *resrc, int64_t rel_job)
             JSON js = Jfromstr (slackstr);
             int64_t jobid = 0;
             if (!Jget_int64 (js, "jobid", &jobid)) {
-                printf ("FATAL ERROR: slack reservation present, but couldn't get jobid");
+                fprintf (stderr, "FATAL ERROR: slack reservation present, but couldn't get jobid");
                 goto ret;
             }
             if (jobid == rel_job) {
@@ -1605,7 +1687,8 @@ ret:
     return rc;
 }
 
-int resrc_add_resources_from_json (resrc_t *resrc, zhash_t *hash_table, JSON o, int64_t owner)
+// TODO: add flux logging to this function
+int resrc_add_resources_from_json (flux_t h, resrc_t *resrc, zhash_t *hash_table, JSON o, int64_t owner)
 {
     int rc = 0;
 
@@ -1614,17 +1697,16 @@ int resrc_add_resources_from_json (resrc_t *resrc, zhash_t *hash_table, JSON o, 
 
     resrc_tree_list_t *deserialized_tree_list = resrc_tree_list_deserialize (o);
 
-    resrc_tree_t *resrc_tree = resrc_tree_list_first (deserialized_tree_list);
-
-    while (resrc_tree) {
-        printf ("going to call special\n"); fflush(0);
-        rc = resrc_tree_add_child_special (resrc_phys_tree (resrc), resrc_tree, hash_table, owner);
-        printf ("came out of special\n"); fflush(0);
-        if (rc < 0) {
-            return rc;
+    resrc_tree_t *resrc_tree = NULL;
+    for (resrc_tree = resrc_tree_list_first (deserialized_tree_list);
+         resrc_tree;
+         resrc_tree = resrc_tree_list_next (deserialized_tree_list))
+        {
+            rc = resrc_tree_add_child_special (h, resrc_phys_tree (resrc), resrc_tree, hash_table, owner);
+            if (rc < 0) {
+                return rc;
+            }
         }
-        resrc_tree = resrc_tree_list_next (deserialized_tree_list);
-    }
 
     return rc;
 }
@@ -1638,7 +1720,7 @@ int resrc_mark_resource_slack (resrc_t *resrc, int64_t jobid, int64_t endtime)
     if (!resrc) {
         return rc;
     }
-    printf ("Setting resource as SLACK\n");
+    // printf ("Setting resource as SLACK\n");
 
     JSON j = Jnew ();
     Jadd_int64 (j, "starttime", time_now);
@@ -1655,7 +1737,7 @@ int resrc_mark_resource_slack (resrc_t *resrc, int64_t jobid, int64_t endtime)
     return rc;
 }
 
-int64_t resrc_find_slack_endtime (resrc_t *resrc)
+int64_t resrc_find_slack_endtime (flux_t h, resrc_t *resrc)
 {
     int64_t endtime = -1;
     int64_t tmp_endtime = 0;
@@ -1669,24 +1751,36 @@ int64_t resrc_find_slack_endtime (resrc_t *resrc)
     char *jstr = zhash_lookup (resrc->twindow, "slack");
     if (jstr) {
         j = Jfromstr (jstr);
-        if (!(Jget_int64 (j, "endtime", &tmp_endtime)))
+        if (!(Jget_int64 (j, "endtime", &tmp_endtime))) {
+            flux_log (h, LOG_ERR, "%s: endtime key not found in slack twindow, slack-twindow-json: %s", __FUNCTION__, jstr);
             goto ret;
+        }
         endtime = tmp_endtime;
+        flux_log (h, LOG_DEBUG, "%s: endtime key was found in slack twindow: %"PRId64"", __FUNCTION__, endtime);
     } else {
         jstr = zhash_lookup (resrc->twindow, "0");
-        if (!jstr)
+        if (!jstr) {
+            printf ("resrc lifetime (aka key = 0) not found in twindow\n");
             goto ret;
+        }
         j = Jfromstr (jstr);
-        if (!(Jget_int64 (j, "endtime", &tmp_endtime)))
+        if (!(Jget_int64 (j, "endtime", &tmp_endtime))) {
+            flux_log (h, LOG_ERR, "%s: endtime key not found in 0 twindow, 0-twindow-json: %s", __FUNCTION__, jstr);
             goto ret;
+        }
         Jput (j);
+        flux_log (h, LOG_DEBUG, "%s: endtime key was found in 0 twindow: %"PRId64"", __FUNCTION__, tmp_endtime);
         jstr = zhash_first (resrc->twindow);
         while (jstr) {
             j = Jfromstr (jstr);
-            if (!(Jget_int64 (j, "starttime", &tmp_starttime)))
+            if (!(Jget_int64 (j, "starttime", &tmp_starttime))) {
+                flux_log (h, LOG_ERR, "%s: starttime key not found in a twindow, twindow-json: %s", __FUNCTION__, jstr);
                 goto next;
-            if ((tmp_starttime > time_now) && (tmp_starttime < tmp_endtime))
+            }
+            if ((tmp_starttime > time_now) && (tmp_starttime < tmp_endtime)) {
                 tmp_endtime = tmp_starttime;
+                flux_log (h, LOG_DEBUG, "%s: starttime key was found in 0 twindow with time < endtime: %"PRId64"", __FUNCTION__, tmp_endtime);
+            }
 next:
             Jput (j);
             jstr = zhash_next (resrc->twindow);
@@ -1723,11 +1817,10 @@ int resrc_release_all_reservations (resrc_t *resrc)
         while (size_ptr) {
             if ((resrc->state == RESOURCE_ALLOCATED) ||
                 (resrc->state == RESOURCE_RESERVED)) {
-                resrc->available += *size_ptr;
-            } else {
-                id_ptr = (char *)zhash_cursor (resrc->reservtns);
-                zhash_delete (resrc->twindow, id_ptr);
+                //resrc->available += *size_ptr;
             }
+            id_ptr = (char *)zhash_cursor (resrc->reservtns);
+            zhash_delete (resrc->twindow, id_ptr);
             size_ptr = zhash_next (resrc->reservtns);
         }
         zhash_destroy (&resrc->reservtns);
@@ -1751,7 +1844,6 @@ int resrc_mark_resources_slacksub_or_returned (zhash_t *hash_table, JSON o)
     int rc = -1;
     json_object_iter iter;
 
-    fflush(0);
     printf ("----------------- Setting resources as slacksub or returned for json = %s\n", Jtostr (o));
 
     json_object_object_foreachC (o, iter) {
@@ -1760,7 +1852,7 @@ int resrc_mark_resources_slacksub_or_returned (zhash_t *hash_table, JSON o)
             printf ("------------- resource not found\n");
             continue;
         }
-        if (!(!(strcmp(resrc->type, "core")))) {
+        if (strcmp(resrc->type, "core")) {
             printf ("------------- resource not core\n");
             continue;
         }
@@ -1857,15 +1949,18 @@ int resrc_mark_resources_returned (zhash_t *hash_table, JSON ro_array)
             resrc->slinfo.asked = 0;
 
         if (resrc->slinfo.owner > 0) {
+            // Owned by a child job
             // remove slack entry in twindow
             zhash_delete (resrc->twindow, "slack");
             zhash_delete (resrc->twindow, "slacksub");
             resrc->state = RESOURCE_ALLOCATED;
         } else if (resrc->slinfo.owner < 0) {
+            // Owned by parent
             // remove resrc from tree
-            resrc->state = RESOURCE_IDLE;
             resrc->slinfo.returned = 1;
+            resrc->state = RESOURCE_IDLE;
         } else {
+            // Owned by me
             // should not reach
             zhash_delete (resrc->twindow, "slack");
             zhash_delete (resrc->twindow, "slacksub");
@@ -1880,15 +1975,18 @@ int resrc_mark_resources_returned (zhash_t *hash_table, JSON ro_array)
 int resrc_mark_resource_return_received (resrc_t *resrc, int64_t jobid)
 {
     int rc = -1;
+
     if (!resrc)
         goto ret;
-    if (!(!(strcmp (resrc->type, "core"))))
+    // If not a core, ignore
+    if (strcmp (resrc->type, "core"))
         goto ret;
 
     if (jobid != -1) {
         char *jobid_str;
         asprintf (&jobid_str, "%ld", jobid);
         zhash_delete (resrc->twindow, jobid_str);
+        zhash_delete (resrc->allocs, jobid_str);
     }
 
     if (resrc->slinfo.asked)
@@ -1923,7 +2021,7 @@ int resrc_retrieve_lease_information (zhash_t *hash_table, JSON ro_array, JSON o
         Jget_ar_str (ro_array, i, &uuid);
         resrc_t *resrc = zhash_lookup (hash_table, uuid);
         if (!resrc) {
-            printf ("FATAL ERROR: Coulnd't find resource\n");
+            fprintf (stderr, "FATAL ERROR: Coulnd't find resource\n");
             return rc;
         }
         char *jobid_str;
@@ -1942,43 +2040,41 @@ int resrc_retrieve_lease_information (zhash_t *hash_table, JSON ro_array, JSON o
         }
     }
 
-    printf ("1111111111111111 JSON out = %s\n", Jtostr (out));
+    // printf ("1111111111111111 JSON out = %s\n", Jtostr (out));
 
     rc = 0;
     return rc;
 }
 
-int resrc_collect_own_resources_unasked (zhash_t *hash_table, JSON ro_array)
+int resrc_collect_own_resources_unasked (flux_t h, zhash_t *hash_table, JSON ro_array)
 {
     int rc = -1;
 
-    fflush (0);
-
     resrc_t *resrc = zhash_first (hash_table);
     while (resrc) {
-        printf ("OOOOOOOOOOOOOOOOO Considering resource %s of type %s and state %s\n", resrc->path, resrc->type, resrc_state (resrc));
+        //flux_log (h, LOG_DEBUG, "%s: Considering resource %s of type %s and state %s", __FUNCTION__, resrc->path, resrc->type, resrc_state (resrc));
         if (!(!(strcmp (resrc->type, "core")))) {
-            printf ("Skipping because it is not a core\n");
+            //flux_log (h, LOG_DEBUG, "%s: Skipping because it is not a core", __FUNCTION__);
             goto next;
         }
         if ((resrc->state != RESOURCE_ALLOCATED) && (resrc->state != RESOURCE_SLACKSUB)) {
-            printf ("OOOOOOOOOOOOOOOOO Skipping because it is neither allocated nor slacksubbed\n");
+            //flux_log (h, LOG_DEBUG, "%s: Skipping because it is neither allocated nor slacksubbed", __FUNCTION__);
             goto next;
         }
         if (resrc->slinfo.owner != 0) {
-            printf ("OOOOOOOOOOOOOOOOO Skipping because I am not the owner\n");
+            //flux_log (h, LOG_DEBUG, "%s: Skipping because I am not the owner", __FUNCTION__);
             goto next;
         }
         if (resrc->slinfo.leasee == 0) {
-            printf ("OOOOOOOOOOOOOOOOO Skipping because I am the leasee\n");
+            //flux_log (h, LOG_DEBUG, "%s: Skipping because I am the leasee", __FUNCTION__);
             goto next;
         }
         if (resrc->slinfo.asked != 0) {
-            printf ("OOOOOOOOOOOOOOOOO Skipping because it is already asked\n");
+            //flux_log (h, LOG_DEBUG, "%s: Skipping because it is already asked", __FUNCTION__);
             goto next;
         }
 
-        printf ("OOOOOOOOOOOOOOOOO adding resource to array\n");
+        //flux_log (h, LOG_DEBUG, "%s: adding resource to array", __FUNCTION__);
         char uuid[40] = {0};
         resrc_uuid (resrc, uuid);
         Jadd_ar_str (ro_array, uuid);
@@ -1987,73 +2083,72 @@ next:
     }
 
 
-    printf ("OOOOOOOOOOOOOOOOO final entry = %s\n", Jtostr (ro_array));
-    fflush(0);
+    flux_log (h, LOG_DEBUG, "%s: final entry = %s", __FUNCTION__, Jtostr (ro_array));
 
     rc = 0;
     return rc;
 }
 
-bool resrc_check_return_ready (resrc_t *resrc, int64_t *jobid)
+bool resrc_check_return_ready (flux_t h, resrc_t *resrc, int64_t *jobid)
 {
     int64_t endtime = 0;
     char *json_str_window = NULL;
     int64_t time_now = epochtime();
     JSON j = NULL;
 
-    fflush(0);
+
     if (!resrc)
         return false;
     if (!(!(strcmp(resrc->type, "core")))) {
-        printf ("because resource is not a core\n"); fflush (0);
+        //flux_log (h, LOG_DEBUG, "%s: because resource is not a core", __FUNCTION__);
         return false;
     }
     if (resrc->slinfo.owner == 0) {
-        printf ("because I am the owner\n"); fflush (0);
+        //flux_log (h, LOG_DEBUG, "%s: because I am the owner", __FUNCTION__);
         return false;
     }
     if (resrc->state != RESOURCE_IDLE) {
-        printf ("because resource is not idle, path = %s and state = %s\n", resrc->path, resrc_state (resrc)); fflush (0);
+        //flux_log (h, LOG_DEBUG, "%s: because resource is not idle, path = %s and state = %s", __FUNCTION__, resrc->path, resrc_state (resrc));
         return false;
     }
     if (resrc->slinfo.returned == 1) {
-        printf ("because it has already been returned\n"); fflush (0);
+        flux_log (h, LOG_DEBUG, "%s: because it has already been returned", __FUNCTION__);
         return false;
     }
     if (resrc->slinfo.leasee != 0) {
-        printf ("because I am not the leasee\n"); fflush (0);
+        flux_log (h, LOG_DEBUG, "%s: because I am not the leasee", __FUNCTION__);
         return false;
     }
     if (resrc->slinfo.to_be_returned == 1) {
-        printf ("Resource to be returned. Not checking endtime and returning now\n");
+        flux_log (h, LOG_DEBUG, "%s: Resource to be returned. Not checking endtime and returning now", __FUNCTION__);
         *jobid = resrc->slinfo.owner;
         return true;
     }
 
     if (resrc->slinfo.owner > 0) {
-        printf ("looking up slack entry\n"); fflush(0);
+        flux_log (h, LOG_DEBUG, "%s: looking up slack entry since owner is %"PRId64"", __FUNCTION__, resrc->slinfo.owner);
         json_str_window = zhash_lookup (resrc->twindow, "slack");
     } else {
-        printf ("looking up 0 entry\n"); fflush (0);
+        flux_log (h, LOG_DEBUG, "%s: looking up 0 entry", __FUNCTION__);
         json_str_window = zhash_lookup (resrc->twindow, "0");
     }
 
     if (!json_str_window) {
-        printf ("because slack or 0 entry could not be found\n"); fflush (0);
+        flux_log (h, LOG_DEBUG, "%s: not ready because slack or 0 entry could not be found", __FUNCTION__);
         return false;
     }
 
     j = Jfromstr (json_str_window);
     if (!(Jget_int64 (j, "endtime", &endtime))) {
         Jput (j);
-        printf ("because an endtime could not be found\n"); fflush (0);
+        flux_log (h, LOG_DEBUG, "%s: not ready because an endtime could not be found", __FUNCTION__);
         return false;
     }
 
-    printf ("timenow = %ld is not less than endtime - buffer : %ld - %ld = %ld\n", time_now, endtime, (int64_t) SLACK_BUFFER_TIME, endtime - SLACK_BUFFER_TIME); fflush (0);
+    //flux_log (h, LOG_DEBUG, "%s: timenow = %ld is not less than endtime - buffer : %ld - %ld = %ld", __FUNCTION__, time_now, endtime, (int64_t) SLACK_BUFFER_TIME, endtime - SLACK_BUFFER_TIME);
 
     if (time_now < (endtime - SLACK_BUFFER_TIME)) {
-        printf ("because timenow = %ld is not less than endtime - buffer : %ld - %ld = %ld\n", time_now, endtime, (int64_t) SLACK_BUFFER_TIME, endtime - SLACK_BUFFER_TIME); fflush (0);
+        flux_log (h, LOG_DEBUG, "%s: because timenow = %ld is not less than endtime - buffer : %ld - %ld = %ld", __FUNCTION__, time_now, endtime, (int64_t) SLACK_BUFFER_TIME, endtime - SLACK_BUFFER_TIME);
         Jput (j);
         return false;
     }
@@ -2063,37 +2158,34 @@ bool resrc_check_return_ready (resrc_t *resrc, int64_t *jobid)
     return true;
 }
 
-bool resrc_check_slacksub_ready (resrc_t *resrc, int64_t *endtime)
+bool resrc_check_slacksub_ready (flux_t h, resrc_t *resrc, int64_t *endtime)
 {
-    fflush(0);
     if (!resrc) {
-        printf ("Resource not in slack because there is no resource\n");
+        flux_log (h, LOG_DEBUG, "%s: Resource not in slack because there is no resource", __FUNCTION__);
         return false;
     }
     if (!(!(strcmp(resrc_type (resrc), "core")))) {
-        printf ("Resource not in slack because its not a core\n");
+        flux_log (h, LOG_DEBUG, "%s: Resource not in slack because its not a core", __FUNCTION__);
         return false;
     }
     if (resrc->state != RESOURCE_IDLE) {
-        printf ("Resource not in slack because its not IDLE\n");
+        flux_log (h, LOG_DEBUG, "%s: Resource not in slack because its not IDLE", __FUNCTION__);
         return false;
     }
     if (resrc->slinfo.returned == 1) {
-        printf ("Resource not in slack because it has been returned\n");
+        flux_log (h, LOG_DEBUG, "%s: Resource not in slack because it has been returned", __FUNCTION__);
         return false;
     }
     if ((resrc->slinfo.to_be_returned == 1) && (resrc->slinfo.owner != -1)) {
-        printf ("Resource not in slack because it is to be returned and the owner is not parent\n");
+        flux_log (h, LOG_DEBUG, "%s: Resource not in slack because it is to be returned and the owner is not parent", __FUNCTION__);
         return false;
     }
-
-    resrc_print_resource (resrc);
 
     if (resrc->slinfo.owner == -1) {
         *endtime = 0;
     } else {
-        *endtime = resrc_find_slack_endtime(resrc);
-        printf ("slacksub: slack endtime computed = %ld\n", *endtime);
+        *endtime = resrc_find_slack_endtime (h, resrc);
+        flux_log (h, LOG_DEBUG, "%s: slacksub: slack endtime computed = %ld", __FUNCTION__, *endtime);
 
         if (*endtime == -1)
             return false;
@@ -2102,6 +2194,9 @@ bool resrc_check_slacksub_ready (resrc_t *resrc, int64_t *endtime)
 
         *endtime = *endtime - SLACK_BUFFER_TIME;
     }
+
+    flux_log (h, LOG_DEBUG, "%s: resource is slacksub_ready with endtime = %"PRId64":", __FUNCTION__, *endtime);
+    resrc_flux_log (h, resrc);
 
     return true;
 }
@@ -2115,6 +2210,55 @@ bool resrc_check_resource_destroy_ready (resrc_t *resrc)
    if (resrc->slinfo.returned != 1)
         return false;
     return true;
+}
+
+
+void resrc_flux_log (flux_t h, resrc_t *resrc)
+{
+    char *str = NULL;
+    str = resrc_to_string (resrc);
+    flux_log (h, LOG_DEBUG, "%s", str);
+    free (str);
+
+    // TODO: move this verification to a separate verification function
+    if (zhash_size (resrc->allocs) > 1) {
+        size_t *curr_alloc = NULL;
+        size_t total_allocs = 0;
+        for (curr_alloc = zhash_first (resrc->allocs);
+             curr_alloc;
+             curr_alloc = zhash_next (resrc->allocs)) {
+
+            total_allocs += *curr_alloc;
+        }
+        if (zhash_lookup (resrc->twindow, "slack") != NULL) {
+            total_allocs -= 1;
+        }
+        if (total_allocs > resrc->size) {
+            flux_log (h, LOG_ERR,
+                      "Simple allocation calculation (%zu) larger than "
+                      "resources size (%zu)",
+                      total_allocs, resrc->size);
+        }
+        size_t curr_avail = resrc_available_at_time(resrc, resrc_epochtime());
+        size_t actual_allocs = resrc->size - curr_avail;
+        if (total_allocs != actual_allocs) {
+            flux_log (h, LOG_ERR,
+                      "Simple allocation calculation (%zu) differs from "
+                      "available_at_time (%"PRId64") calculation (%zu)",
+                      total_allocs, resrc_epochtime(), actual_allocs);
+        }
+    }
+}
+
+void resrc_hash_flux_log (flux_t h, zhash_t *hash)
+{
+    resrc_t *curr_resrc = NULL;
+    for (curr_resrc = zhash_first (hash);
+         curr_resrc;
+         curr_resrc = zhash_next (hash))
+        {
+            resrc_flux_log (h, curr_resrc);
+        }
 }
 
 /*
