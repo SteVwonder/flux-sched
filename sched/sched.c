@@ -70,7 +70,7 @@ static int job_status_cb (const char *jcbstr, void *arg, int errnum);
 
 static void req_qstat_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg);
 static void req_alljobssubmitted_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg);
-static void req_childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg);
+static void childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg);
 static void req_death_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg);
 
 static void req_addresources_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg);
@@ -124,7 +124,6 @@ typedef struct {
     zlist_t *jsc_queue;
     zlist_t *timer_queue;
     zlist_t *slack_queue;
-    int     cstartcount;        /* number of children starting */
     int     cdeathcount;        /* number of children dying */
     int     ccompletecount;
     zlist_t *dying_jobs;
@@ -182,7 +181,7 @@ typedef struct {
 } ssrvctx_t;
 
 static void set_next_event_slack_wrapper (ssrvctx_t *ctx, int jobid);
-static void set_next_event_timer_wrapper (ssrvctx_t *ctx, int jobid);
+static void set_next_event_timer_wrapper (ssrvctx_t *ctx);
 static int schedule_jobs (ssrvctx_t *ctx);
 
 static char *my_simexec_module;
@@ -455,9 +454,8 @@ static inline int fill_hierarchical_req (flux_t h, flux_lwj_t *j)
 
 
     if (kvsdir_get_int (dir, "is_hierarchical", &(j->is_hierarchical)) < 0) {
-        flux_log (h, LOG_ERR, "Failed to find \"is_hierarchical\" entry in kvs");
+        flux_log (h, LOG_DEBUG, "Failed to find \"is_hierarchical\" entry in kvs");
         j->is_hierarchical = 0;
-        goto done;
     }
 
     if (j->is_hierarchical) {
@@ -878,9 +876,7 @@ static void ctx_slack_invalidate (ssrvctx_t *ctx)
     ctx->slctx.psize = 0;
     ctx->slctx.rsize = 0;
     ctx->slctx.jobid = 0;
-#ifdef DYNAMIC_SCHEDULING
-    set_next_event_timer_wrapper (ctx, -1);
-#endif
+    set_next_event_timer_wrapper (ctx);
 }
 
 bool all_children_cslack (ssrvctx_t *ctx)
@@ -1371,60 +1367,21 @@ static void set_next_event_slack_wrapper (ssrvctx_t *ctx, int jobid)
 }
 
 /*
- * Set next event for timer module
- * If job id < 0, then set for this instance's timer module
- * If job is >= 0, then set for the timer module of the child with id == jobid
- * TODO: come up with a better interface, this can easily be confused with
- *     slack_wrapper's functionality when passing -1
+ * Set next event for the timer module in THIS instance
  */
-static void set_next_event_timer_wrapper (ssrvctx_t *ctx, int jobid)
+static void set_next_event_timer_wrapper (ssrvctx_t *ctx)
 {
 #ifdef DYNAMIC_SCHEDULING
     char *module = NULL;
     flux_log (ctx->h, LOG_DEBUG, "%s: setting up next timer for timer module", __FUNCTION__);
 
-    if (jobid < 0) {
-        asprintf (&module, "sim_timer.%s", ctx->sctx.next_prefix);
-    } else {
-        asprintf (&module, "sim_timer.%s.%d", ctx->sctx.next_prefix, jobid);
-    }
-
-    // TODO: use set_next_event?
-    /*
-    double next_event = ctx->sctx.sim_state->sim_time + .01;
-    double *curr_event = zhash_lookup (ctx->sctx.sim_state->timers, module);
-    *curr_event = next_event;
-    */
+    asprintf (&module, "sim_timer.%s", ctx->sctx.next_prefix);
     set_next_event (module, ctx->sctx.sim_state);
 
     flux_log (ctx->h, LOG_DEBUG, "%s: setup next timer for module %s", __FUNCTION__, module);
     free (module);
 #endif
     return;
-}
-
-static void set_next_event_childbirth_wrapper (ssrvctx_t *ctx, int jobid)
-{
-    sim_state_t *sim_state = ctx->sctx.sim_state;
-    flux_log (ctx->h, LOG_DEBUG, "%s: setting up next event for child (%d) scheduler module", __FUNCTION__, jobid);
-
-    char *module = NULL;
-    asprintf (&module, "sched.%s.%d", ctx->sctx.next_prefix, jobid);
-
-    double next_event = sim_state->sim_time + 1.0;
-    double *timer = zhash_lookup (sim_state->timers, module);
-    if (timer) {
-        if (*timer > next_event || *timer < 0) {
-            *timer = next_event;
-        }
-    } else {
-        timer = (double *)malloc (sizeof (double));
-        *timer = next_event;
-        zhash_insert (sim_state->timers, module, timer);
-    }
-
-    flux_log (ctx->h, LOG_DEBUG, "%s: setup next event for module %s", __FUNCTION__, module);
-    free (module);
 }
 
 static void handle_timer_queue (ssrvctx_t *ctx, sim_state_t *sim_state)
@@ -1601,7 +1558,7 @@ static int sim_job_status_cb (const char *jcbstr, void *arg, int errnum)
     if (ctx->sctx.token) {
         handle_jsc_queue (ctx);
         check_completion (ctx);
-        if ((ctx->sctx.cstartcount == 0) && (ctx->sctx.cdeathcount == 0) && (ctx->sctx.ccompletecount == 0)) {
+        if ((ctx->sctx.cdeathcount == 0) && (ctx->sctx.ccompletecount == 0)) {
             ctx->sctx.token = 0;
             set_next_event (ctx->sctx.module_name, ctx->sctx.sim_state);
             send_reply_request (ctx->h, ctx->sctx.sim_h, ctx->sctx.module_name, ctx->sctx.sim_state);
@@ -1635,8 +1592,7 @@ static void sim_res_event_cb (flux_t h, flux_msg_handler_t *w,
     if (ctx->sctx.token) {
         handle_res_queue (ctx);
         check_completion (ctx);
-        if ((ctx->sctx.cstartcount == 0) && (ctx->sctx.cdeathcount == 0) && (ctx->sctx.ccompletecount == 0)) {
-//        if ((ctx->sctx.cstartcount == 0) && (ctx->sctx.cdeathcount == 0)) {
+        if ((ctx->sctx.cdeathcount == 0) && (ctx->sctx.ccompletecount == 0)) {
             ctx->sctx.token = 0;
             set_next_event (ctx->sctx.module_name, ctx->sctx.sim_state);
             send_reply_request (ctx->h, ctx->sctx.sim_h, ctx->sctx.module_name, ctx->sctx.sim_state);
@@ -1755,7 +1711,7 @@ static void trigger_cb (flux_t h,
 
     check_completion (ctx);
 
-    if ((ctx->sctx.cstartcount == 0) && (ctx->sctx.cdeathcount == 0) && (ctx->sctx.ccompletecount == 0)) {
+    if ((ctx->sctx.cdeathcount == 0) && (ctx->sctx.ccompletecount == 0)) {
         ctx->sctx.token = 0;
         send_reply_request (h, ctx->sctx.sim_h, ctx->sctx.module_name, ctx->sctx.sim_state);
         free_simstate (ctx->sctx.sim_state);
@@ -1787,6 +1743,10 @@ static int reg_sim_events (ssrvctx_t *ctx)
         flux_log (ctx->h, LOG_ERR, "subscribing to event: %s", strerror (errno));
         goto done;
     }
+    if (flux_event_subscribe (ctx->h, "sched.childbirth") < 0) {
+        flux_log (ctx->h, LOG_ERR, "subscribing to event: %s", strerror (errno));
+        goto done;
+    }
     if (flux_event_subscribe (ctx->h, "sched.res.") < 0) {
         flux_log (ctx->h, LOG_ERR, "subscribing to event: %s", strerror (errno));
         goto done;
@@ -1795,48 +1755,21 @@ static int reg_sim_events (ssrvctx_t *ctx)
     char *schedtrigger, *schedtimer;
     asprintf (&schedtrigger, "%s.trigger", ctx->sctx.module_name);
     asprintf (&schedtimer, "%s.timer", ctx->sctx.module_name);
-    //char *schedresstar, *schedslackstar
-    //asprintf (&schedresstar, "%s.res.*", ctx->sctx.module_name);
-    //asprintf (&schedslackstar, "%s.slack.*", ctx->sctx.module_name);
 
+    // TODO: move this htab outside of this function with topics we know a-priori
+    // Then use add the dynamic ones one-by-one in this function
     struct flux_msg_handler_spec sim_htab[] = {
         {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
+        {FLUX_MSGTYPE_EVENT, "sched.childbirth", childbirth_cb},
         {FLUX_MSGTYPE_EVENT, "sched.res.*", sim_res_event_cb},
         {FLUX_MSGTYPE_REQUEST, "sched.slack.*", sim_slack_event_cb},
-        {FLUX_MSGTYPE_REQUEST, "sched.childbirth", req_childbirth_cb},
         {FLUX_MSGTYPE_REQUEST, "sched.death", req_death_cb},
         {FLUX_MSGTYPE_REQUEST, "sched.qstat", req_qstat_cb},
         {FLUX_MSGTYPE_REQUEST, "sched.alljobssubmitted", req_alljobssubmitted_cb},
         {FLUX_MSGTYPE_REQUEST, schedtrigger, trigger_cb},
         {FLUX_MSGTYPE_REQUEST, schedtimer, sim_timer_cb},
-        //{FLUX_MSGTYPE_EVENT, schedresstar, sim_res_event_cb},
-        //{FLUX_MSGTYPE_REQUEST, schedslackstar, sim_slack_event_cb},
         FLUX_MSGHANDLER_TABLE_END,
     };
-
-    /*
-    if (flux_msghandler_add (h, FLUX_MSGTYPE_REQUEST, "sched.slack.*",
-                             (FluxMsgHandler)sim_slack_event_cb, (void *)h) < 0) {
-        flux_log (h, LOG_ERR,
-                  "error registering slack sim request handler: %s",
-                  strerror (errno));
-
-        rc = -1;
-        goto done;
-    }
-
-    if (flux_msghandler_add (h, FLUX_MSGTYPE_REQUEST, schedtimer,
-                             (FluxMsgHandler)sim_timer_cb, (void *)h) < 0) {
-        flux_log (h, LOG_ERR,
-                  "error registering sim timer handler: %s",
-                  strerror (errno));
-
-        rc = -1;
-        goto done;
-    }
-    flux_log (h, LOG_DEBUG, "%s: functions: %s %s %s", __FUNCTION__, schedtrigger, schedslackstar, schedtimer);
-    */
-
 
     if (flux_msg_handler_addvec (ctx->h, sim_htab, (void *)h) < 0) {
         flux_log (ctx->h, LOG_ERR, "flux_msg_handler_addvec: %s", strerror (errno));
@@ -1927,7 +1860,6 @@ static int setup_sim (ssrvctx_t *ctx, bool sim)
     ctx->sctx.timer_queue = zlist_new ();
     ctx->sctx.slack_queue = zlist_new ();
     ctx->sctx.dying_jobs = zlist_new ();
-    ctx->sctx.cstartcount = 0;
     ctx->sctx.cdeathcount = 0;
     ctx->sctx.ccompletecount = 0;
     ctx->sctx.sim_h = NULL;
@@ -1986,7 +1918,7 @@ done:
 
 static struct flux_msg_handler_spec htab[] = {
     { FLUX_MSGTYPE_EVENT,     "sched.res.*", res_event_cb},
-    {FLUX_MSGTYPE_REQUEST, "sched.childbirth", req_childbirth_cb},
+    {FLUX_MSGTYPE_EVENT, "sched.childbirth", childbirth_cb},
     {FLUX_MSGTYPE_REQUEST, "sched.death", req_death_cb},
     {FLUX_MSGTYPE_REQUEST, "sched.qstat", req_qstat_cb},
     {FLUX_MSGTYPE_REQUEST, "sched.slack.cslack", req_cslack_cb},
@@ -2090,7 +2022,7 @@ static inline int bridge_send_runrequest (ssrvctx_t *ctx, flux_lwj_t *job)
     char *topic = NULL;
     flux_msg_t *msg = NULL;
 
-    if ((ctx->sctx.in_sim) && (!job->is_hierarchical)) {
+    if (ctx->sctx.in_sim) {
         /* Emulation mode */
         if (asprintf (&topic, "%s.run.%"PRId64"", my_simexec_module, job->lwj_id) < 0) {
             flux_log (h, LOG_ERR, "(%s): topic create failed: %s",
@@ -2111,18 +2043,6 @@ static inline int bridge_send_runrequest (ssrvctx_t *ctx, flux_lwj_t *job)
             rc = 0;
         }
     } else {
-        if (ctx->sctx.in_sim) {
-            ctx->sctx.cstartcount++;
-            flux_log (h, LOG_DEBUG, "%s: ++++++++++++ cstartcount incremented = %d", __FUNCTION__, ctx->sctx.cstartcount);
-            // TODO: redirect hierarchical jobs to sim_exec and do this there
-            kvsdir_t *kvs_dir = NULL;
-            if (kvs_get_dir (h, &kvs_dir, "lwj.%"PRId64"", job->lwj_id) < 0)
-                flux_log (h, LOG_ERR, "%s: kvs_get_dir (id=%"PRId64")", __FUNCTION__, job->lwj_id);
-            //kvsdir_put_int(kvs_dir, "walltime", -1);
-            //kvsdir_put_int(kvs_dir, "nprocs", 1);
-            kvsdir_put_double(kvs_dir, "starting_time", ctx->sctx.sim_state->sim_time);
-            kvs_commit(h);
-        }
         /* Normal mode */
         if (asprintf (&topic, "wrexec.run.%"PRId64"", job->lwj_id) < 0) {
             flux_log (h, LOG_ERR, "(%s): topic create failed: %s",
@@ -3157,7 +3077,7 @@ static void req_death_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg
     flux_log (h, LOG_DEBUG, "%s: Response to death message sent", __FUNCTION__);
 }
 
-static void req_childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg)
+static void childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg)
 {
     int64_t jobid = -1;
     JSON in = NULL;
@@ -3168,12 +3088,10 @@ static void req_childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t
     const char *json_str = NULL;
 
     flux_log (h, LOG_DEBUG, "%s: Child has scheduler!", __FUNCTION__);
-
-    if (flux_request_decode (msg, NULL, &json_str) < 0 || json_str == NULL
+    if (flux_msg_get_payload_json (msg, &json_str) < 0 || json_str == NULL
         || !(in = Jfromstr (json_str))) {
         flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
-        Jput (in);
-        return;
+        goto done;
     }
     flux_log (h, LOG_DEBUG, "%s: Message received = %s", __FUNCTION__, Jtostr(in));
 
@@ -3183,22 +3101,9 @@ static void req_childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t
     job = q_find_job (ctx, jobid);
     if (job)
         job->contact = xstrdup (child_uri);
+
+ done:
     Jput (in);
-
-    if (ctx->sctx.in_sim) {
-        ctx->sctx.cstartcount--;
-        flux_log (h, LOG_DEBUG, "%s: ++++++++++++ cstartcount decremented = %d", __FUNCTION__, ctx->sctx.cstartcount);
-        //set_next_event_slack_wrapper (ctx, jobid);
-        set_next_event_timer_wrapper (ctx, jobid);
-        set_next_event_childbirth_wrapper (ctx, jobid);
-        if (ctx->sctx.cstartcount == 0) {
-            handle_jsc_queue (ctx);
-            ctx->sctx.token = 0;
-            send_reply_request (h, ctx->sctx.sim_h, ctx->sctx.module_name, ctx->sctx.sim_state);
-            free_simstate (ctx->sctx.sim_state);
-        }
-
-    }
 }
 
 static void req_qstat_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg)

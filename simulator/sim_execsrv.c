@@ -39,8 +39,8 @@
 #include "rdl.h"
 
 static const char *module_name = "sim_exec";
-static char *final_name;
-static char *my_sim_id;
+// TODO: move these into ctx_t
+static char *module_full_name;
 static char *my_sched_module;
 static char *sim_uri = NULL;
 static flux_t sim_h = NULL;
@@ -54,7 +54,9 @@ typedef struct {
     struct rdllib *rdllib;
     struct rdl *rdl;
     int64_t my_job_id;
-    char    *prefix; 
+    char    *prefix;
+    char    *my_sim_id;
+    int64_t startcount;
 } ctx_t;
 
 #if SIMEXEC_IO
@@ -96,9 +98,39 @@ static ctx_t *getctx (flux_t h)
         ctx->my_job_id = 0;
         flux_aux_set (h, "sim_exec", ctx, freectx);
         ctx->prefix = NULL;
+        ctx->my_sim_id = NULL;
+        ctx->startcount = 0;
     }
 
     return ctx;
+}
+
+static void send_job_state_event (ctx_t *ctx,
+                                  int64_t jobid,
+                                  const char *state)
+{
+    flux_msg_t *msg;
+    char *json = NULL;
+    char *topic = NULL;
+
+    if ((asprintf (&json, "{\"lwj\":%"PRId64"}", jobid) < 0)
+        || (asprintf (&topic, "wreck.state.%s", state) < 0)) {
+        flux_log (ctx->h, LOG_ERR, "failed to create state change event: %s", state);
+        goto out;
+    }
+
+    if ((msg = flux_event_encode (topic, json)) == NULL) {
+        flux_log (ctx->h, LOG_ERR, "flux_event_encode: %s", flux_strerror (errno));
+        goto out;
+    }
+
+    if (flux_send (ctx->h, msg, 0) < 0)
+        flux_log (ctx->h, LOG_ERR, "flux_send event: %s", flux_strerror (errno));
+
+    flux_msg_destroy (msg);
+out:
+    free (topic);
+    free (json);
 }
 
 // Given the kvs dir of a job, change the state of the job and
@@ -109,12 +141,22 @@ static int update_job_state (ctx_t *ctx,
                              job_state_t new_state,
                              double update_time)
 {
-    char *timer_key = NULL;
+    const char *timer_key = NULL;
+    const char *state_key = NULL;
 
     switch (new_state) {
-    case J_STARTING: timer_key = "starting_time"; break;
-    case J_RUNNING: timer_key = "running_time"; break;
-    case J_COMPLETE: timer_key = "complete_time"; break;
+    case J_STARTING:
+        timer_key = "starting_time";
+        state_key = "starting";
+        break;
+    case J_RUNNING:
+        timer_key = "running_time";
+        state_key = "running";
+        break;
+    case J_COMPLETE:
+        timer_key = "complete_time";
+        state_key = "complete";
+        break;
     default: break;
     }
     if (timer_key == NULL) {
@@ -127,10 +169,13 @@ static int update_job_state (ctx_t *ctx,
 
     Jadd_int64 (o, JSC_STATE_PAIR_NSTATE, (int64_t) new_state);
     Jadd_obj (jcb, JSC_STATE_PAIR, o);
-    jsc_update_jcb(ctx->h, jobid, JSC_STATE_PAIR, Jtostr (jcb));
+    jsc_update_jcb (ctx->h, jobid, JSC_STATE_PAIR, Jtostr (jcb));
 
     kvsdir_put_double (kvs_dir, timer_key, update_time);
     kvs_commit (ctx->h);
+
+    if (false)
+        send_job_state_event(ctx, jobid, state_key);
 
     Jput (jcb);
     Jput (o);
@@ -185,19 +230,41 @@ static double determine_next_termination (ctx_t *ctx,
 }
 
 // Set the timer for the given module
-static int set_event_timer (ctx_t *ctx, char *mod_name, double timer_value)
+static int set_event_timer (ctx_t *ctx, const char *mod_name, double timer_value)
 {
     double *event_timer = zhash_lookup (ctx->sim_state->timers, mod_name);
-    if (timer_value > 0 && (timer_value < *event_timer || *event_timer < 0)) {
+    if (event_timer) {
+        if (timer_value > 0 && (timer_value < *event_timer || *event_timer < 0)) {
+            *event_timer = timer_value;
+        }
+    } else {
+        event_timer = (double *)malloc (sizeof (double));
         *event_timer = timer_value;
-        flux_log (ctx->h,
-                  LOG_DEBUG,
-                  "next %s event set to %f",
-                  mod_name,
-                  *event_timer);
+        zhash_insert (ctx->sim_state->timers, mod_name, event_timer);
     }
+    flux_log (ctx->h,
+              LOG_DEBUG,
+              "next %s event set to %f",
+              mod_name,
+              *event_timer);
     return 0;
 }
+
+// Set the timer for "module" to happen relatively soon
+// If the mod is sim_timer, it shouldn't happen immediately
+static void set_next_event (ctx_t *ctx, const char *module)
+{
+    double next_event = ctx->sim_state->sim_time;
+    if (!strncmp (module, "sim_timer", 9)) {
+        // TODO: figure out how to deduplicate this with code in sched.c
+        next_event += .01;
+    } else {
+        next_event += .00001;
+    }
+
+    set_event_timer (ctx, module, next_event);
+}
+
 
 static int archive_job (ctx_t *ctx, job_t *job)
 {
@@ -544,9 +611,42 @@ static int handle_hierarchical_job (ctx_t *ctx, int jobid, kvsdir_t *kvs_dir)
     int rc = -1;
     char *topic = NULL;
     flux_msg_t *msg = NULL;
+    uint32_t size = -1;
 
-    // Wreck shouldn't kill hierarchical jobs
-    kvsdir_put_int(kvs_dir, "walltime", -1);
+    /* Delete the rank information that the scheduler setup so that
+     * wreck doesn't launch the child instance on a different node
+     */
+    kvsdir_unlink (kvs_dir, "rank");
+    /* Since ordering of put/unlink requests within a commit is not
+     * defined, commit now.
+     */
+    kvs_commit(ctx->h);
+    /* Replace the rank information that we just deleted with fake
+     * information that will force the child instance to run on the
+     * current rank and ignore all other ranks.
+     */
+    kvsdir_put_int (kvs_dir, "rank.0.cores", 1);
+    flux_get_size (ctx->h, &size);
+    if (size > 1) {
+        char *rank_str = malloc (sizeof (char) * 1024);
+        uint32_t i;
+        for (i = 1; i < size; i++) {
+            snprintf(rank_str, 1024, "rank.%"PRIu32".cores", i);
+            kvsdir_put_int (kvs_dir, rank_str, 0);
+        }
+        free (rank_str);
+    }
+    /* Wreck shouldn't kill hierarchical jobs running under sim */
+    kvsdir_put_int (kvs_dir, "walltime", 0);
+    /* Only run the child instance on 1 node as 1 task*/
+    kvsdir_put_int(kvs_dir, "nnodes", 1);
+    kvsdir_put_int(kvs_dir, "ntasks", 1);
+    /* Add same information that is added for "flat jobs" */
+    kvsdir_put_double (kvs_dir, "starting_time", ctx->sim_state->sim_time);
+    kvs_commit(ctx->h);
+
+    ctx->startcount++;
+    flux_log (ctx->h, LOG_DEBUG, "%s: startcount incremented = %"PRId64"", __FUNCTION__, ctx->startcount);
 
     if (asprintf (&topic, "wrexec.run.%d", jobid) < 0) {
         flux_log (ctx->h, LOG_ERR, "(%s): topic create failed: %s",
@@ -623,9 +723,10 @@ static int handle_queued_events (ctx_t *ctx)
             is_hierarchical = 0;
         }
 
-        if (is_hierarchical &&
-            (handle_hierarchical_job(ctx, *jobid, kvs_dir) < 0)) {
-            flux_log (h, LOG_ERR, "%s: failed to handle hierarchical job %d", __FUNCTION__, *jobid);
+        if (is_hierarchical) {
+            if (handle_hierarchical_job(ctx, *jobid, kvs_dir) < 0) {
+                flux_log (h, LOG_ERR, "%s: failed to handle hierarchical job %d", __FUNCTION__, *jobid);
+            }
         } else if (handle_flat_job(ctx, *jobid, kvs_dir) < 0) {
             flux_log (h, LOG_ERR, "%s: failed to handle flat job %d", __FUNCTION__, *jobid);
         }
@@ -642,7 +743,7 @@ static void start_cb (flux_t h,
 {
     flux_log (h, LOG_DEBUG, "received a start event 1");
 
-    if (send_join_request (h, sim_h, final_name, -1) < 0) {
+    if (send_join_request (h, sim_h, module_full_name, -1) < 0) {
         flux_log (h, LOG_ERR, "failed to register with sim module");
         return;
     }
@@ -690,14 +791,98 @@ static void trigger_cb (flux_t h,
     next_termination =
         determine_next_termination (ctx, ctx->sim_state->sim_time, job_hash);
 
-    set_event_timer (ctx, final_name, next_termination);
-    send_reply_request (h, sim_h, final_name, ctx->sim_state);
+    set_event_timer (ctx, module_full_name, next_termination);
+
+    if (ctx->startcount == 0) {
+        send_reply_request (h, sim_h, module_full_name, ctx->sim_state);
+        free_simstate (ctx->sim_state);
+    }
 
     // Cleanup
-    free_simstate (ctx->sim_state);
     Jput (o);
     zhash_destroy (&job_hash);
 }
+
+static void set_next_event_childbirth_wrapper (ctx_t *ctx, int jobid)
+{
+    sim_state_t *sim_state = ctx->sim_state;
+    flux_log (ctx->h, LOG_DEBUG, "%s: setting up next event for child (%d) scheduler module", __FUNCTION__, jobid);
+
+    char *module = NULL;
+    asprintf (&module, "sched.%s.%d", ctx->my_sim_id, jobid);
+
+    double next_event = sim_state->sim_time + 1.0;
+    double *timer = zhash_lookup (sim_state->timers, module);
+    if (timer) {
+        if (*timer > next_event || *timer < 0) {
+            *timer = next_event;
+        }
+    } else {
+        timer = (double *)malloc (sizeof (double));
+        *timer = next_event;
+        zhash_insert (sim_state->timers, module, timer);
+    }
+
+    flux_log (ctx->h, LOG_DEBUG, "%s: setup next event for module %s", __FUNCTION__, module);
+    free (module);
+}
+
+
+/*
+ * Set next event for timer module in a CHILD instance with id == jobid
+ */
+static void set_next_event_timer_wrapper (ctx_t *ctx, int jobid)
+{
+#ifdef DYNAMIC_SCHEDULING
+    char *module = NULL;
+    flux_log (ctx->h, LOG_DEBUG, "%s: setting up next timer for timer module", __FUNCTION__);
+
+    asprintf (&module, "sim_timer.%s.%d", ctx->my_sim_id, jobid);
+    set_next_event (ctx, module);
+
+    flux_log (ctx->h, LOG_DEBUG, "%s: setup next timer for module %s", __FUNCTION__, module);
+    free (module);
+#endif
+    return;
+}
+
+
+/* Handle an event from a child Flux instance that has just started up
+ * while running in simulation mode.  This module should maintain
+ * control of the simulation until all child instances have fully
+ * started up. */
+static void childbirth_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg)
+{
+    ctx_t *ctx = getctx (h);
+    int64_t jobid = -1;
+    JSON o = NULL;
+    const char *json_str = NULL;
+
+    if (flux_msg_get_payload_json (msg, &json_str) < 0 || json_str == NULL
+        || !(o = Jfromstr (json_str))) {
+        flux_log (h, LOG_ERR, "%s: bad message", __FUNCTION__);
+        goto done;
+    }
+    flux_log (h, LOG_DEBUG, "%s: Message received = %s", __FUNCTION__, Jtostr(o));
+    Jget_int64 (o, "jobid", &jobid);
+
+    ctx->startcount--;
+    flux_log (h, LOG_DEBUG, "%s: ++++++++++++ startcount decremented = %"PRId64"", __FUNCTION__, ctx->startcount);
+    /* Set the event timers for the CHILD instance (sched &
+     * timer). No need to set the next event for the scheduler in
+     * THIS instance, it has already been set by
+     * handle_queued_events */
+    set_next_event_childbirth_wrapper (ctx, jobid);
+    set_next_event_timer_wrapper (ctx, jobid);
+    if (ctx->startcount == 0) {
+        send_reply_request (h, sim_h, module_full_name, ctx->sim_state);
+        free_simstate (ctx->sim_state);
+    }
+
+ done:
+    Jput (o);
+}
+
 
 static void run_cb (flux_t h,
                     flux_msg_handler_t *w,
@@ -718,7 +903,7 @@ static void run_cb (flux_t h,
     flux_log (h, LOG_DEBUG, "received a request (%s)", topic);
 
     // Handle Request
-    //sscanf (topic, "%s.run.%d", final_name, jobid); 
+    //sscanf (topic, "%s.run.%d", module_full_name, jobid); 
     int i;
     // TODO: replace with strtok
     for (i = strlen(topic) - 1; topic[i] != '.'; i--);
@@ -729,6 +914,9 @@ static void run_cb (flux_t h,
 
     flux_respond(h, msg, 0, NULL);
 }
+
+// TODO: restore this static htab with topics we know a-priori
+// Then use add the dynamic ones one-by-one in mod_main
 /*
 static struct flux_msg_handler_spec htab[] = {
     {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
@@ -768,23 +956,28 @@ int mod_main (flux_t h, int argc, char **argv)
         flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
         return -1;
     }
-
-    if (ctx->prefix) {
-        asprintf (&final_name, "%s.%s.%ld", module_name, ctx->prefix, ctx->my_job_id);
-        asprintf (&my_sim_id, "%s.%ld", ctx->prefix, ctx->my_job_id);
-    } else {
-        asprintf (&final_name, "%s.%ld", module_name, ctx->my_job_id);
-        asprintf (&my_sim_id, "%ld", ctx->my_job_id);
+    if (flux_event_subscribe (h, "sched.childbirth") < 0) {
+        flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
+        return -1;
     }
 
-    asprintf (&my_sched_module, "sched.%s", my_sim_id);
+    if (ctx->prefix) {
+        asprintf (&module_full_name, "%s.%s.%ld", module_name, ctx->prefix, ctx->my_job_id);
+        asprintf (&ctx->my_sim_id, "%s.%ld", ctx->prefix, ctx->my_job_id);
+    } else {
+        asprintf (&module_full_name, "%s.%ld", module_name, ctx->my_job_id);
+        asprintf (&ctx->my_sim_id, "%ld", ctx->my_job_id);
+    }
+
+    asprintf (&my_sched_module, "sched.%s", ctx->my_sim_id);
 
     char *sim_exec_trigger = NULL, *sim_exec_run_star = NULL;
-    asprintf (&sim_exec_trigger, "sim_exec.%s.trigger", my_sim_id);
-    asprintf (&sim_exec_run_star, "sim_exec.%s.run.*", my_sim_id);
+    asprintf (&sim_exec_trigger, "sim_exec.%s.trigger", ctx->my_sim_id);
+    asprintf (&sim_exec_run_star, "sim_exec.%s.run.*", ctx->my_sim_id);
 
     struct flux_msg_handler_spec htab[] = {
         {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
+        {FLUX_MSGTYPE_EVENT, "sched.childbirth", childbirth_cb},
         {FLUX_MSGTYPE_REQUEST, sim_exec_trigger, trigger_cb},
         {FLUX_MSGTYPE_REQUEST, sim_exec_run_star, run_cb},
         FLUX_MSGHANDLER_TABLE_END,
@@ -809,9 +1002,9 @@ int mod_main (flux_t h, int argc, char **argv)
     }
 
     if (!ctx->prefix) {
-        send_alive_request (h, sim_h, final_name);
+        send_alive_request (h, sim_h, module_full_name);
     } else {
-        if (send_join_request (h, sim_h, final_name, -1) < 0) {
+        if (send_join_request (h, sim_h, module_full_name, -1) < 0) {
             flux_log (h, LOG_ERR, "failed to register with sim module");
             return -1;
         }
