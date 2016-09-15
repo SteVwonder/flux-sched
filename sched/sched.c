@@ -777,8 +777,10 @@ static int load_resources (ssrvctx_t *ctx)
             }
         }
         flux_log (ctx->h, LOG_DEBUG, "%s: number of nodes: %d", __FUNCTION__, num_nodes);
-        flux_log (ctx->h, LOG_DEBUG, "%s: Printing resource in root_resrc tree", __FUNCTION__);
-        resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
+        if (ctx->arg.verbosity > 0) {
+            flux_log (ctx->h, LOG_DEBUG, "%s: Printing resource in root_resrc tree", __FUNCTION__);
+            resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
+        }
         break;
 
     case RSREADER_RESRC:
@@ -1432,7 +1434,7 @@ static void handle_res_queue (ssrvctx_t *ctx)
 
     if (should_schedule_jobs) {
         int num_jobs_scheduled = schedule_jobs (ctx);
-        if (num_jobs_scheduled > 0) {
+        if (num_jobs_scheduled > 0 && ctx->arg.verbosity > 0) {
             flux_log (ctx->h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
             resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
         }
@@ -1473,7 +1475,7 @@ static void handle_slack_queue (ssrvctx_t *ctx)
         resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
         flux_log (ctx->h, LOG_DEBUG, "%s: will schedule jobs", __FUNCTION__);
         int num_jobs_scheduled = schedule_jobs (ctx);
-        if (num_jobs_scheduled > 0) {
+        if (num_jobs_scheduled > 0 && ctx->arg.verbosity > 0) {
             flux_log (ctx->h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
             resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
         }
@@ -2520,8 +2522,9 @@ int schedule_dynamic_job (ssrvctx_t *ctx, flux_lwj_t *job)
             goto next;
         }
         flux_log (h, LOG_DEBUG, "%s: Created resrc_reqst:", __FUNCTION__);
-        resrc_reqst_print (resrc_reqst);
-
+        if (ctx->arg.verbosity > 0) {
+            resrc_reqst_print (resrc_reqst);
+        }
         if ((found_trees = plugin->find_resources (h, ctx->rctx.root_resrc,
                                                      resrc_reqst))) {
             nnodes = resrc_tree_list_size (found_trees);
@@ -2679,7 +2682,7 @@ next:
         job = (flux_lwj_t*)zlist_next (ctx->i_queue);
     }
 
-    if (sc > 0) {
+    if (sc > 0 && ctx->arg.verbosity > 0) {
         flux_log (h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
         resrc_tree_flux_log (h, resrc_phys_tree (ctx->rctx.root_resrc));
     }
@@ -2740,7 +2743,7 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
             flux_log (h, LOG_DEBUG, "%s: All jobs (%d) submitted, scheduling jobs",
                       __FUNCTION__, jobsubcount);
             int num_jobs_scheduled = schedule_jobs (ctx);
-            if (num_jobs_scheduled > 0) {
+            if (num_jobs_scheduled > 0&& ctx->arg.verbosity > 0) {
                 flux_log (h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
                 resrc_tree_flux_log (h, resrc_phys_tree (ctx->rctx.root_resrc));
             }
@@ -2784,10 +2787,12 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
             } else {
                 flux_msg_destroy (msg);
             }
-            flux_log (h, LOG_DEBUG,
-                      "Released resources for job %"PRId64", printing root resrc tree:",
-                      job->lwj_id);
-            resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
+            if (ctx->arg.verbosity > 0) {
+                flux_log (h, LOG_DEBUG,
+                          "Released resources for job %"PRId64", printing root resrc tree:",
+                          job->lwj_id);
+                resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
+            }
         }
         q_move_to_cqueue (ctx, job);
         if (ctx->sctx.in_sim) {
@@ -3389,7 +3394,7 @@ new:
 #if 0
     flux_log (h, LOG_DEBUG, "%s: will now schedule jobs", __FUNCTION__);
     int num_jobs_scheduled = schedule_jobs (ctx);
-    if (num_jobs_scheduled > 0) {
+    if (num_jobs_scheduled > 0 && ctx->arg.verbosity > 0) {
         flux_log (h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
         resrc_tree_flux_log (h, resrc_phys_tree (ctx->rctx.root_resrc));
     }
