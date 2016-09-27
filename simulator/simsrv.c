@@ -254,18 +254,6 @@ static void join_cb (flux_t h,
     // clear next event so it is not freed below
     next_event = NULL;
 
-    // TODO: this is horribly hackish, improve the handshake to avoid
-    // this hardcoded # of modules. maybe use a timeout?  ZMQ provides
-    // support for polling etc with timeouts, should try that
-    static int num_modules = 3;
-    num_modules--;
-    if (num_modules <= 0) {
-        if (handle_next_event (ctx) < 0) {
-            flux_log (h, LOG_ERR, "failure while handling next event");
-            return;
-        }
-    }
-
 out:
     Jput (request);
     free (next_event);
@@ -420,10 +408,22 @@ static void alive_cb (flux_t h,
     flux_log (h, LOG_DEBUG, "sending start event again");
 }
 
+static void start_cb (flux_t h, flux_msg_handler_t *w, const flux_msg_t *msg, void *arg)
+{
+
+    flux_log (h, LOG_DEBUG, "Received sim.starttoken message");
+    ctx_t *ctx = getctx(h, 0);
+    if (handle_next_event (ctx) < 0) {
+        flux_log (h, LOG_ERR, "failure to start handling next event");
+        return;
+    }
+}
+
 static struct flux_msg_handler_spec htab[] = {
     {FLUX_MSGTYPE_REQUEST, "sim.join", join_cb},
     {FLUX_MSGTYPE_REQUEST, "sim.reply", reply_cb},
     {FLUX_MSGTYPE_REQUEST, "sim.alive", alive_cb},
+    {FLUX_MSGTYPE_REQUEST, "sim.starttoken", start_cb},
     {FLUX_MSGTYPE_EVENT, "rdl.update", rdl_update_cb},
     FLUX_MSGHANDLER_TABLE_END,
 };
