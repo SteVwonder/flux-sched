@@ -252,6 +252,12 @@ int resrc_release_allocation (resrc_t *resrc, int64_t rel_job);
 int resrc_release_all_reservations (resrc_t *resrc);
 
 /*
+ * Sets starttime to the start time of job_id's reservation
+ * Returns -1 if no reservation exists for job_id
+ */
+int resrc_reservation_starttime (resrc_t *resrc, int64_t job_id, int64_t *starttime);
+
+/*
  * Get epoch time
  */
 static inline int64_t epochtime ()

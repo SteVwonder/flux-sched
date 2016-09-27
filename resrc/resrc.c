@@ -1565,6 +1565,48 @@ ret:
     return rc;
 }
 
+// Sets starttime to the start time of job_id's reservation
+// Returns -1 if no reservation exists for job_id
+int resrc_reservation_starttime (resrc_t *resrc, int64_t job_id, int64_t *starttime)
+{
+    char *id_ptr = NULL;
+    size_t *size_ptr = NULL;
+    const char *window_json_str = NULL;
+    JSON window_json = NULL;
+    int rc = -1;
+
+    if (!resrc) {
+        goto ret;
+    }
+
+    id_ptr = xasprintf ("%"PRId64"", job_id);
+    size_ptr = zhash_lookup (resrc->reservtns, id_ptr);
+    /* Reservation doesn't exit for job */
+    if (!size_ptr) {
+        goto ret;
+    }
+
+    /* get the reservation window JSON */
+    window_json_str = (const char*) zhash_lookup (resrc->twindow, id_ptr);
+    if (!window_json_str) {
+        /* Job has a reservation but no twindow */
+        goto ret;
+    }
+    window_json = Jfromstr (window_json_str);
+    if (window_json == NULL) {
+        /* JSON failed to deserialize */
+        goto ret;
+    }
+    Jget_int64 (window_json, "starttime", starttime);
+    Jput (window_json);
+
+    rc = 0;
+ ret:
+    if (id_ptr)
+        free (id_ptr);
+    return rc;
+}
+
 void resrc_flux_log (flux_t h, resrc_t *resrc)
 {
     char *str = NULL;
