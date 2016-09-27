@@ -44,6 +44,7 @@ typedef struct {
     double execution_time;
     double io_time;
     double time_limit;
+    double predicted_runtime;
     int nnodes;
     int ncpus;
     int64_t io_rate;

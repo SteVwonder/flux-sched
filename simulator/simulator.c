@@ -137,6 +137,7 @@ job_t *blank_job ()
     job->execution_time = 0;
     job->io_time = 0;
     job->time_limit = 0;
+    job->predicted_runtime = 0;
     job->nnodes = 0;
     job->ncpus = 0;
     job->kvs_dir = NULL;
@@ -166,6 +167,8 @@ int put_job_in_kvs (job_t *job)
         kvsdir_put_int (job->kvs_dir, "ncpus", job->ncpus);
     if (!kvsdir_exists (job->kvs_dir, "io_rate"))
         kvsdir_put_int64 (job->kvs_dir, "io_rate", job->io_rate);
+    if (!kvsdir_exists (job->kvs_dir, "predicted_runtime"))
+        kvsdir_put_int64 (job->kvs_dir, "predicted_runtime", job->predicted_runtime);
 
     flux_t h = kvsdir_handle (job->kvs_dir);
     kvs_commit (h);
