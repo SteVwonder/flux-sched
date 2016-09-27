@@ -1482,6 +1482,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
                           resrc_type (resrc_reqst_resrc (resrc_reqst)),
                           job->lwj_id);
             } else {
+                resrc_reqst_clear_found (resrc_reqst);
                 rc = plugin->reserve_resources (h, &selected_tree, job->lwj_id,
                                                 starttime, job->req->walltime,
                                                 ctx->rctx.root_resrc,
@@ -1489,9 +1490,22 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
                 if (rc) {
                     resrc_tree_destroy (selected_tree, false);
                     job->resrc_tree = NULL;
-                } else
+                } else {
                     job->resrc_tree = selected_tree;
+                }
             }
+        }
+    } else {
+        resrc_reqst_clear_found (resrc_reqst);
+        rc = plugin->reserve_resources (h, &selected_tree, job->lwj_id,
+                                        starttime, job->req->walltime,
+                                        ctx->rctx.root_resrc,
+                                        resrc_reqst);
+        if (rc) {
+            resrc_tree_destroy (selected_tree, false);
+            job->resrc_tree = NULL;
+        } else {
+            job->resrc_tree = selected_tree;
         }
     }
     rc = 0;
