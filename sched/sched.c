@@ -1177,10 +1177,6 @@ static inline int bridge_rs2rank_tab_query (ssrvctx_t *ctx, resrc_t *r,
         rc = rs2rank_tab_query_by_sign (ctx->machs, resrc_name (r),
                                         resrc_digest (r), false, rank);
     }
-    if (rc == 0)
-        flux_log (ctx->h, LOG_INFO, "broker found, rank: %"PRIu32, *rank);
-    else
-        flux_log (ctx->h, LOG_ERR, "controlling broker not found!");
 
     return rc;
 }
@@ -1449,6 +1445,9 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
     if (!resrc_reqst)
         goto done;
 
+    flux_log (h, LOG_DEBUG, "%s: Looking for %"PRId64" %s(s) for job %"PRId64", ",
+              __FUNCTION__, nreqrd,
+              resrc_type (resrc_reqst_resrc (resrc_reqst)), job->lwj_id);
     if ((nfound = plugin->find_resources (h, ctx->rctx.root_resrc,
                                           resrc_reqst, &found_tree))) {
         flux_log (h, LOG_DEBUG, "Found %"PRId64" %s(s) for job %"PRId64", "
@@ -1725,6 +1724,9 @@ static int schedule_jobs (ssrvctx_t *ctx)
     while (!rc && job && (qdepth < ctx->arg.s_params.queue_depth)) {
         if (job->state == J_SCHEDREQ) {
             rc = schedule_job (ctx, job, starttime);
+        }
+        if (rc) {
+            flux_log (ctx->h, LOG_DEBUG, "%s: rc (%d) != 0, breaking out of loop", __FUNCTION__, rc);
         }
         job = (flux_lwj_t*)zlist_next (jobs);
         qdepth++;
