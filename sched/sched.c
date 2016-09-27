@@ -1518,6 +1518,189 @@ done:
     return rc;
 }
 
+static int reserve_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime, int64_t walltime)
+{
+    JSON req_res = NULL;
+    flux_t h = ctx->h;
+    int rc = -1;
+    int64_t nreqrd = 0;
+    resrc_reqst_t *resrc_reqst = NULL;
+    resrc_tree_t *found_tree = NULL;
+    resrc_tree_t *selected_tree = NULL;
+    struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
+
+    if (!plugin)
+        return rc;
+
+    /*
+     * Require at least one task per node, and
+     * Assume (for now) one task per core.
+     *
+     * At this point, our flux_lwj_t structure supplies a simple count
+     * of nodes and cores.  This is a short term solution that
+     * supports the typical request.  Until a more complex model is
+     * available, we will have to interpret the request along these
+     * most likely scenarios:
+     *
+     * - If only cores are requested, the number of nodes we find to
+     *   supply the requested cores does not matter to the user.
+     *
+     * - If only nodes are requested, we will return only nodes whose
+     *   cores are all idle.
+     *
+     * - If nodes and cores are requested, we will return the
+     *   requested number of nodes with at least the requested number
+     *   of cores on each node.  We will not attempt to provide a
+     *   balanced number of cores per node.
+     */
+    req_res = Jnew ();
+    if (job->req->nnodes > 0) {
+        JSON child_core = Jnew ();
+
+        Jadd_str (req_res, "type", "node");
+        Jadd_int64 (req_res, "req_qty", job->req->nnodes);
+        nreqrd = job->req->nnodes;
+
+        /* Since nodes are requested, make sure we look for at
+         * least one core on each node */
+        if (job->req->ncores < job->req->nnodes)
+            job->req->ncores = job->req->nnodes;
+        job->req->corespernode = (job->req->ncores + job->req->nnodes - 1) /
+            job->req->nnodes;
+        if (job->req->node_exclusive) {
+            Jadd_int64 (req_res, "req_size", 1);
+            Jadd_bool (req_res, "exclusive", true);
+        } else {
+            Jadd_int64 (req_res, "req_size", 0);
+            Jadd_bool (req_res, "exclusive", false);
+        }
+
+        Jadd_str (child_core, "type", "core");
+        Jadd_int64 (child_core, "req_qty", job->req->corespernode);
+        /* setting size == 1 devotes (all of) the core to the job */
+        Jadd_int64 (child_core, "req_size", 1);
+        /* setting exclusive to true prevents multiple jobs per core */
+        Jadd_bool (child_core, "exclusive", true);
+        Jadd_int64 (child_core, "starttime", starttime);
+        Jadd_int64 (child_core, "endtime", starttime + walltime);
+        json_object_object_add (req_res, "req_child", child_core);
+    } else if (job->req->ncores > 0) {
+        Jadd_str (req_res, "type", "core");
+        Jadd_int (req_res, "req_qty", job->req->ncores);
+        nreqrd = job->req->ncores;
+
+        Jadd_int64 (req_res, "req_size", 1);
+        /* setting exclusive to true prevents multiple jobs per core */
+        Jadd_bool (req_res, "exclusive", true);
+    } else
+        goto done;
+
+    Jadd_int64 (req_res, "starttime", starttime);
+    Jadd_int64 (req_res, "endtime", starttime + walltime);
+    resrc_reqst = resrc_reqst_from_json (req_res, NULL);
+    Jput (req_res);
+    if (!resrc_reqst)
+        goto done;
+
+    flux_log (h, LOG_DEBUG, "%s: Looking to reserve %"PRId64" %s(s) for job %"PRId64", ",
+              __FUNCTION__, nreqrd,
+              resrc_type (resrc_reqst_resrc (resrc_reqst)), job->lwj_id);
+    resrc_reqst_clear_found (resrc_reqst);
+    rc = plugin->reserve_resources (h, &selected_tree, job->lwj_id,
+                                    starttime, walltime,
+                                    ctx->rctx.root_resrc,
+                                    resrc_reqst);
+    if (rc) {
+        resrc_tree_destroy (selected_tree, false);
+        job->resrc_tree = NULL;
+    } else {
+        job->resrc_tree = selected_tree;
+    }
+    rc = 0;
+done:
+    if (resrc_reqst)
+        resrc_reqst_destroy (resrc_reqst);
+    if (found_tree)
+        resrc_tree_destroy (found_tree, false);
+
+    return rc;
+}
+
+static void print_job_reservation_starttimes (ssrvctx_t *ctx, char* predictor)
+{
+    int rc = 0;
+    int qdepth = 0;
+    flux_lwj_t *job = NULL;
+    zlist_t *jobs = ctx->p_queue;
+    int64_t starttime = (ctx->sctx.in_sim) ?
+        (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
+
+    for (job = zlist_first (jobs);
+         !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
+         job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
+        {
+            if (job->state != J_SCHEDREQ) {
+                continue;
+            } else if (!job->resrc_tree) {
+                flux_log (ctx->h, LOG_ERR, "%s: Job %"PRId64" is missing a resrc_tree",
+                          __FUNCTION__, job->lwj_id);
+                continue;
+            } else if (resrc_reservation_starttime (resrc_tree_resrc (job->resrc_tree), job->lwj_id, &starttime) < 0) {
+                flux_log (ctx->h, LOG_ERR, "%s: Job %"PRId64" is missing a reservation starttime",
+                          __FUNCTION__, job->lwj_id);
+                continue;
+            }
+            flux_log (ctx->h, LOG_DEBUG, "%s: %s predicted a starttime of %"PRId64" for job %"PRId64"", __FUNCTION__, predictor, starttime, job->lwj_id);
+            // TODO: delete job->resrc_tree?
+    }
+}
+
+static uint64_t get_predicted_job_runtime (flux_t h, int64_t lwj_id)
+{
+    int64_t predicted_runtime = INT16_MAX*8;
+    char *key = xasprintf ("lwj.%"PRId64".predicted_runtime", lwj_id);
+    if (kvs_get_int64 (h, key, &predicted_runtime) < 0) {
+        flux_log_error (h, "extract %s", key);
+    }
+    else {
+        flux_log (h, LOG_DEBUG, "extract %s: %"PRId64"", key, predicted_runtime);
+    }
+
+    if (predicted_runtime <= 0) {
+        predicted_runtime = 1;
+    }
+
+    free (key);
+    return predicted_runtime;
+}
+
+static void predict_job_starttimes (ssrvctx_t *ctx)
+{
+    int rc = 0;
+    int qdepth = 0;
+    flux_lwj_t *job = NULL;
+    struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
+    zlist_t *jobs = ctx->p_queue;
+    int64_t starttime = (ctx->sctx.in_sim) ?
+        (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
+    int64_t walltime = -1;
+
+    print_job_reservation_starttimes (ctx, "User");
+    resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
+    rc = plugin->sched_loop_setup (ctx->h);
+    for (job = zlist_first (jobs);
+         !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
+         job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
+        {
+            if (job->state == J_SCHEDREQ) {
+                walltime = get_predicted_job_runtime (ctx->h, job->lwj_id);
+                rc = reserve_job (ctx, job, starttime, walltime);
+            }
+    }
+    print_job_reservation_starttimes (ctx, "ML");
+    resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
+}
+
 static int schedule_jobs (ssrvctx_t *ctx)
 {
     int rc = 0;
@@ -1546,6 +1729,7 @@ static int schedule_jobs (ssrvctx_t *ctx)
         job = (flux_lwj_t*)zlist_next (jobs);
         qdepth++;
     }
+    predict_job_starttimes (ctx);
 
     return rc;
 }
