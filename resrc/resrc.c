@@ -41,6 +41,9 @@
 #include "resrc_reqst.h"
 #include "src/common/libutil/xzmalloc.h"
 
+#include <flux/core.h>
+#include "src/common/libutil/log.h"
+
 struct resrc {
     char *type;
     char *path;
@@ -995,6 +998,7 @@ char *resrc_to_string (resrc_t *resrc)
     char uuid[40];
     char *property;
     char *tag;
+    char *window_ptr;
     size_t *size_ptr;
     size_t len;
     FILE *ss;
@@ -1026,6 +1030,15 @@ char *resrc_to_string (resrc_t *resrc)
         while (tag) {
             fprintf (ss, ", %s", (char *)zhash_cursor (resrc->tags));
             tag = zhash_next (resrc->tags);
+        }
+    }
+    if (zhash_size (resrc->twindow)) {
+        fprintf (ss, ", twindows");
+        window_ptr = zhash_first (resrc->twindow);
+        while (window_ptr) {
+            fprintf (ss, ", %s: %s",
+                    (char *)zhash_cursor (resrc->twindow), window_ptr);
+            window_ptr = zhash_next (resrc->twindow);
         }
     }
     if (zhash_size (resrc->allocs)) {
@@ -1550,6 +1563,14 @@ int resrc_release_all_reservations (resrc_t *resrc)
     }
 ret:
     return rc;
+}
+
+void resrc_flux_log (flux_t h, resrc_t *resrc)
+{
+    char *str = NULL;
+    str = resrc_to_string (resrc);
+    flux_log (h, LOG_DEBUG, "%s", str);
+    free (str);
 }
 
 /*

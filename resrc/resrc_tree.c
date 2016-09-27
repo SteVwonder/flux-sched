@@ -430,6 +430,31 @@ void resrc_tree_list_unstage_resources (resrc_tree_list_t *rtl)
     }
 }
 
+void resrc_tree_flux_log (flux_t h, resrc_tree_t *rt)
+{
+    if (!rt) {
+        flux_log (h, LOG_ERR, "%s: NULL resrc_tree passed in", __FUNCTION__);
+        return;
+    }
+    resrc_flux_log (h, resrc_tree_resrc (rt));
+    resrc_tree_t *child;
+    for (child = resrc_tree_list_first (resrc_tree_children (rt));
+         child;
+         child = resrc_tree_list_next (resrc_tree_children (rt))) {
+            resrc_tree_flux_log (h, child);
+    }
+}
+
+void resrc_tree_list_flux_log (flux_t h, resrc_tree_list_t *tree_list)
+{
+    resrc_tree_t *curr_tree = NULL;
+    for (curr_tree = resrc_tree_list_first (tree_list);
+         curr_tree;
+         curr_tree = resrc_tree_list_next (tree_list)) {
+        resrc_tree_flux_log (h, curr_tree);
+    }
+}
+
 /*
  * vi: ts=4 sw=4 expandtab
  */

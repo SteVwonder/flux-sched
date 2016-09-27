@@ -164,5 +164,7 @@ int resrc_tree_list_release_all_reservations (resrc_tree_list_t *rtl);
  */
 void resrc_tree_list_unstage_resources (resrc_tree_list_t *rtl);
 
+void resrc_tree_flux_log (flux_t h, resrc_tree_t *rt);
+void resrc_tree_list_flux_log (flux_t h, resrc_tree_list_t *tree_list);
 
 #endif /* !FLUX_RESRC_TREE_H */

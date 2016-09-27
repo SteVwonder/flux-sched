@@ -11,10 +11,10 @@ noinst_LTLIBRARIES = libflux-resrc.la
 noinst_HEADERS = resrc.h resrc_tree.h resrc_flow.h resrc_reqst.h
 
 libflux_resrc_la_SOURCES = resrc.c resrc_tree.c resrc_flow.c resrc_reqst.c
-libflux_resrc_la_CFLAGS = $(AM_CFLAGS) -I$(top_srcdir)/rdl
+libflux_resrc_la_CFLAGS = $(AM_CFLAGS) -I$(top_srcdir)/rdl $(FLUX_CORE_CFLAGS)
 libflux_resrc_la_LIBADD = $(top_builddir)/rdl/libflux-rdl.la \
     $(top_builddir)/src/common/libutil/libutil.la \
-    $(JSON_LIBS) $(CZMQ_LIBS)
+    $(JSON_LIBS) $(CZMQ_LIBS) $(FLUX_CORE_LIBS)
 libflux_resrc_la_LDFLAGS = $(AM_LDFLAGS) $(fluxlib_ldflags) \
     -Wl,--version-script=$(srcdir)/resrc_version.map
 

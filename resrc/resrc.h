@@ -6,6 +6,7 @@
  */
 
 #include <uuid/uuid.h>
+#include <flux/core.h>
 
 #define TIME_MAX INT64_MAX
 
@@ -258,5 +259,6 @@ static inline int64_t epochtime ()
     return (int64_t) time (NULL);
 }
 
+void resrc_flux_log (flux_t h, resrc_t *resrc);
 
 #endif /* !FLUX_RESRC_H */
