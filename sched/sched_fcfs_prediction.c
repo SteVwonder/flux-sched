@@ -317,6 +317,7 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
     int64_t prev_completion_time = -1;
     resrc_tree_t *found_tree = NULL;
     zlist_t *completion_times = zlist_new ();
+    int i = 0;
 
     if (!resrc || !resrc_reqst) {
         flux_log (h, LOG_ERR, "%s: invalid arguments", __FUNCTION__);
@@ -344,7 +345,7 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
     flux_log (h, LOG_DEBUG, "%s: %zu times to consider", __FUNCTION__, zlist_size (completion_times));
     for (completion_time = zlist_first (completion_times);
          completion_time && *completion_time < prev_job_starttime;
-         completion_time = zlist_next (completion_times)) {
+         completion_time = zlist_next (completion_times), i++) {
         // Skip past jobs that complete before this job is allowed to start
         flux_log (h, LOG_DEBUG, "%s: Skipping past completion time %"PRId64" as a potential starttime for job %"PRId64" since the previous job started at %"PRId64"",
                   __FUNCTION__, *completion_time, job_id, prev_job_starttime);
@@ -352,11 +353,11 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
 
     for (;
          completion_time;
-         completion_time = zlist_next (completion_times)) {
+         completion_time = zlist_next (completion_times), i++) {
         /* Purge past times from consideration */
         if (*completion_time < starttime) {
-            flux_log (h, LOG_DEBUG, "%s: Skipping completion time %"PRId64" since the job starttime is %"PRId64"",
-                      __FUNCTION__, *completion_time, starttime);
+            flux_log (h, LOG_DEBUG, "%s: Skipping completion time %"PRId64" (#%d) since the job starttime is %"PRId64"",
+                      __FUNCTION__, *completion_time, i, starttime);
             continue;
         }
 
@@ -367,9 +368,9 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
         resrc_reqst_set_starttime (resrc_reqst, *completion_time + 1);
         resrc_reqst_set_endtime (resrc_reqst, *completion_time + 1 + walltime);
         flux_log (h, LOG_DEBUG, "Attempting to reserve %"PRId64" nodes for job "
-                  "%"PRId64" at time %"PRId64"",
+                  "%"PRId64" at time %"PRId64" (#%d)",
                   resrc_reqst_reqrd_qty (resrc_reqst), job_id,
-                  *completion_time + 1);
+                  *completion_time + 1, i);
 
         nfound = resrc_tree_search (resrc, resrc_reqst, &found_tree, true);
         flux_log (h, LOG_DEBUG, "%s: num found: %"PRId64", num requested %"PRId64"", __FUNCTION__, nfound, resrc_reqst_reqrd_qty (resrc_reqst));

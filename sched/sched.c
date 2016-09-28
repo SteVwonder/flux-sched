@@ -1445,7 +1445,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
     if (!resrc_reqst)
         goto done;
 
-    flux_log (h, LOG_DEBUG, "%s: Looking for %"PRId64" %s(s) for job %"PRId64", ",
+    flux_log (h, LOG_DEBUG, "%s: Looking for %"PRId64" %s(s) for job %"PRId64"",
               __FUNCTION__, nreqrd,
               resrc_type (resrc_reqst_resrc (resrc_reqst)), job->lwj_id);
     if ((nfound = plugin->find_resources (h, ctx->rctx.root_resrc,

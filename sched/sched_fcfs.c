@@ -188,7 +188,6 @@ resrc_tree_t *select_resources (flux_t h, resrc_tree_t *found_tree,
                                        resrc_reqst_reqrd_size (resrc_reqst),
                                        resrc_reqst_graph_reqs (resrc_reqst));
                     resrc_reqst_add_found (resrc_reqst, 1);
-                    flux_log (h, LOG_DEBUG, "selected %s", resrc_name (resrc));
                 } else {
                     resrc_tree_destroy (selected_tree, false);
                 }
@@ -198,7 +197,6 @@ resrc_tree_t *select_resources (flux_t h, resrc_tree_t *found_tree,
             resrc_stage_resrc (resrc, resrc_reqst_reqrd_size (resrc_reqst),
                                resrc_reqst_graph_reqs (resrc_reqst));
             resrc_reqst_add_found (resrc_reqst, 1);
-            flux_log (h, LOG_DEBUG, "selected %s", resrc_name (resrc));
         }
     } else if (resrc_tree_num_children (found_tree)) {
         /*
