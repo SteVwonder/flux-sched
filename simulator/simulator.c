@@ -163,8 +163,8 @@ int put_job_in_kvs (job_t *job)
         kvsdir_put_double (job->kvs_dir, "time_limit", job->time_limit);
     if (!kvsdir_exists (job->kvs_dir, "nnodes"))
         kvsdir_put_int (job->kvs_dir, "nnodes", job->nnodes);
-    if (!kvsdir_exists (job->kvs_dir, "ncpus"))
-        kvsdir_put_int (job->kvs_dir, "ncpus", job->ncpus);
+    if (!kvsdir_exists (job->kvs_dir, "ntasks"))
+        kvsdir_put_int (job->kvs_dir, "ntasks", job->ncpus);
     if (!kvsdir_exists (job->kvs_dir, "io_rate"))
         kvsdir_put_int64 (job->kvs_dir, "io_rate", job->io_rate);
     if (!kvsdir_exists (job->kvs_dir, "predicted_runtime"))

@@ -110,11 +110,10 @@ int insert_into_job (job_t *job, char *column_name, char *value)
         job->submit_time = atof (value);
     } else if (!strcmp (column_name, "Elapsed")) {
         job->execution_time = convert_time_to_sec (value);
-    } else if (!strncmp (column_name, "PredRuntime", 10)) {
+    } else if (!strcmp (column_name, "PredRuntime")) {
         job->predicted_runtime = convert_time_to_sec (value);
-    } else if (!strncmp (column_name,
-                         "IORate(MB)",
-                         10)) {  // ignore the \n at the end using strncmp
+    } else if (!strcmp (column_name,
+                        "IORate(MB)")) {
         job->io_rate = atol (value);
     }
     return 0;
@@ -131,6 +130,12 @@ int populate_header (char *header_line, zlist_t *header_list)
         zlist_append (header_list, token_copy);
         token = strtok (NULL, ",");
     }
+
+    // Replace newline in last column header with null char
+    token = zlist_last (header_list);
+    char *newline_pos;
+    if ((newline_pos = strchr (token, '\n')) != NULL)
+        *newline_pos = '\0';
     return 0;
 }
 
@@ -203,9 +208,8 @@ int parse_job_csv (flux_t h, char *filename, zlist_t *jobs)
 int schedule_next_job (flux_t h, sim_state_t *sim_state)
 {
     const char *resp_json_str = NULL;
-    JSON req_json = NULL, resp_json = NULL, event_json = NULL;
+    JSON req_json = NULL, resp_json = NULL;
     flux_rpc_t *rpc = NULL;
-    flux_msg_t *msg = NULL;
     kvsdir_t *dir = NULL;
     job_t *job = NULL;
     int64_t new_jobid = -1;
@@ -250,20 +254,30 @@ int schedule_next_job (flux_t h, sim_state_t *sim_state)
     // Update lwj.%jobid%'s state in the kvs to "submitted"
     if (kvs_get_dir (h, &dir, "lwj.%lu", new_jobid) < 0)
         log_err_exit ("kvs_get_dir (id=%lu)", new_jobid);
-    kvsdir_put_string (dir, "state", "submitted");
+    //kvsdir_put_string (dir, "state", "submitted");
     job->kvs_dir = dir;
     put_job_in_kvs (job);
     kvs_commit (h);
 
+    JSON jcb = Jnew ();
+    JSON jcb_state_pair = Jnew();
+    Jadd_int (jcb_state_pair, JSC_STATE_PAIR_NSTATE, J_SUBMITTED);
+    Jadd_obj (jcb, JSC_STATE_PAIR, jcb_state_pair);
+    const char *jcb_str = Jtostr (jcb);
+    jsc_update_jcb (h, new_jobid, JSC_STATE_PAIR, jcb_str);
+    Jput (jcb_state_pair);
+    Jput (jcb);
+
     // Send "submitted" event
-    event_json = Jnew();
-    Jadd_int64 (event_json, "lwj", new_jobid);
-    if (!(msg = flux_event_encode ("wreck.state.submitted", Jtostr (event_json)))
-        || flux_send (h, msg, 0) < 0) {
-        return -1;
-    }
-    Jput (event_json);
-    flux_msg_destroy (msg);
+    /* JSON event_json = NULL;    flux_msg_t *msg = NULL; */
+    /* event_json = Jnew(); */
+    /* Jadd_int64 (event_json, "lwj", new_jobid); */
+    /* if (!(msg = flux_event_encode ("wreck.state.submitted", Jtostr (event_json))) */
+    /*     || flux_send (h, msg, 0) < 0) { */
+    /*     return -1; */
+    /* } */
+    /* Jput (event_json); */
+    /* flux_msg_destroy (msg); */
 
     // Update event timers in reply (submit and sched)
     new_sched_mod_time = (double *)zhash_lookup (timers, "sched");
@@ -279,10 +293,6 @@ int schedule_next_job (flux_t h, sim_state_t *sim_state)
     else
         *new_submit_mod_time = *new_sched_mod_time + .0001;
     flux_log (h, LOG_INFO, "submitted job %"PRId64" (%d in csv)", new_jobid, job->id);
-    flux_log (h,
-              LOG_DEBUG,
-              "next submit event will occur at %f",
-              *new_submit_mod_time);
 
     // Cleanup
     free_job (job);
@@ -320,6 +330,8 @@ static void trigger_cb (flux_t h,
     JSON o = NULL;
     const char *json_str = NULL;
     sim_state_t *sim_state = NULL;
+    double next_event_time = get_next_submit_time();
+    int schedule_rc = 0;
 
     if (flux_msg_get_payload_json (msg, &json_str) < 0 || json_str == NULL
         || !(o = Jfromstr (json_str))) {
@@ -336,7 +348,14 @@ static void trigger_cb (flux_t h,
 
     // Handle the trigger
     sim_state = json_to_sim_state (o);
-    schedule_next_job (h, sim_state);
+    while (!schedule_rc && next_event_time <= sim_state->sim_time) {
+        schedule_rc = schedule_next_job (h, sim_state);
+        next_event_time = get_next_submit_time();
+    }
+    flux_log (h,
+              LOG_DEBUG,
+              "next submit event will occur at %f",
+              next_event_time);
     send_reply_request (h, module_name, sim_state);
 
     // Cleanup
