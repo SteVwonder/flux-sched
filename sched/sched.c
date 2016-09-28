@@ -1650,7 +1650,7 @@ static void print_job_reservation_starttimes (ssrvctx_t *ctx, char* predictor)
                 continue;
             }
             flux_log (ctx->h, LOG_DEBUG, "%s: %s predicted a starttime of %"PRId64" for job %"PRId64"", __FUNCTION__, predictor, starttime, job->lwj_id);
-            // TODO: delete job->resrc_tree?
+            resrc_tree_destroy (job->resrc_tree, false);
     }
 }
 
