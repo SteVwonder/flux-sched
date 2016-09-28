@@ -1691,7 +1691,10 @@ static void predict_job_starttimes (ssrvctx_t *ctx)
          !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
          job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
         {
-            if (job->state == J_SCHEDREQ) {
+            if (job->state == J_SELECTED) {
+                if (job->starttime > starttime)
+                    starttime = job->starttime;
+            } else if (job->state == J_SCHEDREQ) {
                 walltime = get_predicted_job_runtime (ctx->h, job->lwj_id);
                 rc = reserve_job (ctx, job, starttime, walltime);
             }
