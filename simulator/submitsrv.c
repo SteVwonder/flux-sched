@@ -111,7 +111,7 @@ int insert_into_job (job_t *job, char *column_name, char *value)
     } else if (!strcmp (column_name, "Elapsed")) {
         job->execution_time = convert_time_to_sec (value);
     } else if (!strcmp (column_name, "PredRuntime")) {
-        job->predicted_runtime = convert_time_to_sec (value);
+        job->predicted_runtime = atoi (value);
     } else if (!strcmp (column_name,
                         "IORate(MB)")) {
         job->io_rate = atol (value);

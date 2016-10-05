@@ -275,7 +275,7 @@ static __inline__ void
 myJput (void* o)
 {
     if (o)
-        json_object_put ((JSON)o);
+        Jput ((JSON)o);
 }
 
 size_t resrc_available_during_range (resrc_t *resrc, int64_t range_starttime,
@@ -341,8 +341,10 @@ size_t resrc_available_during_range (resrc_t *resrc, int64_t range_starttime,
             /* If the sample requires exclusive access and we are
              * here, then we now know that exclusivity cannot be
              * granted over the requested range.  Leave now. */
-            if (exclusive)
+            if (exclusive) {
+                Jput (window_json);
                 goto ret;
+            }
 
             alloc_ptr = (size_t*)zhash_lookup (resrc->allocs, id_ptr);
             reservtn_ptr = (size_t*)zhash_lookup (resrc->reservtns, id_ptr);
@@ -352,10 +354,12 @@ size_t resrc_available_during_range (resrc_t *resrc, int64_t range_starttime,
                 Jadd_str (window_json, "job_id", id_ptr);
                 zlist_append (matching_windows, window_json);
                 zlist_freefn (matching_windows, window_json, myJput, true);
-            } else
+            } else {
                 Jput (window_json);
-        } else
+            }
+        } else {
             Jput (window_json);
+        }
 
         id_ptr = zlist_next (window_keys);
     }
@@ -1011,10 +1015,10 @@ char *resrc_to_string (resrc_t *resrc)
     uuid_unparse (resrc->uuid, uuid);
     fprintf (ss, "resrc type: %s, path: %s, basename: %s, name: %s, digest: %s, "
              "id: %"PRId64", state: %s, "
-             "uuid: %s, size: %"PRIu64", avail: %"PRIu64"",
+             "uuid: %s, size: %zd, avail: %zd, staged: %zd",
              resrc->type, resrc->path, resrc->basename, resrc->name,
              resrc->digest, resrc->id, resrc_state (resrc),
-             uuid, resrc->size, resrc->available);
+             uuid, resrc->size, resrc->available, resrc->staged);
     if (zhash_size (resrc->properties)) {
         fprintf (ss, ", properties:");
         property = zhash_first (resrc->properties);

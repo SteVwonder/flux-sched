@@ -44,7 +44,19 @@
 
 static zlist_t *allocation_completion_times = NULL;
 static zlist_t *reservation_times = NULL;
-static int64_t prev_job_starttime = -1;
+static int64_t prev_alloc_starttime = -1;
+static int64_t prev_reservation_starttime = -1;
+const static int64_t max_reservation_depth = MAX_RESERVATION;
+static int64_t curr_reservation_depth = 0;
+
+static int64_t get_max_prev_starttime ()
+{
+    //TODO: use a max func or ternary op
+    int64_t max_prev_starttime = prev_alloc_starttime;
+    if (prev_reservation_starttime > prev_alloc_starttime)
+        max_prev_starttime = prev_reservation_starttime;
+    return max_prev_starttime;
+}
 
 #if CZMQ_VERSION < CZMQ_MAKE_VERSION(3, 0, 1)
 static bool compare_int64_ascending (void *item1, void *item2)
@@ -84,16 +96,17 @@ int sched_loop_setup (flux_t h)
         reservation_times = zlist_new ();
     else
         zlist_purge (reservation_times);
-    prev_job_starttime = -1;
-
+    prev_reservation_starttime = -1;
+    curr_reservation_depth = 0;
 
     int64_t *completion_time = NULL;
     for (completion_time = zlist_first (allocation_completion_times);
          completion_time;
          completion_time = zlist_next (allocation_completion_times)) {
-        if (*completion_time < prev_job_starttime) {
-            flux_log (h, LOG_DEBUG, "%s: Removing completion time %"PRId64" from zlist since the previous job starttime is %"PRId64"",
-                      __FUNCTION__, *completion_time, prev_job_starttime);
+        if (*completion_time < prev_alloc_starttime) {
+            flux_log (h, LOG_DEBUG,
+                      "%s: completion time %"PRId64" < previous job starttime %"PRId64", removing from zlist",
+                      __FUNCTION__, *completion_time, prev_alloc_starttime);
             zlist_remove (allocation_completion_times, completion_time);
         }
     }
@@ -209,7 +222,8 @@ static resrc_tree_t *internal_select_resources (flux_t h, resrc_tree_t *found_tr
                                      resrc_reqst_children (resrc_reqst),
                                      selected_tree)) {
                     resrc_stage_resrc (resrc,
-                                       resrc_reqst_reqrd_size (resrc_reqst));
+                                       resrc_reqst_reqrd_size (resrc_reqst),
+                                       resrc_reqst_graph_reqs (resrc_reqst));
                     resrc_reqst_add_found (resrc_reqst, 1);
                 } else {
                     resrc_tree_destroy (selected_tree, false);
@@ -217,7 +231,8 @@ static resrc_tree_t *internal_select_resources (flux_t h, resrc_tree_t *found_tr
             }
         } else {
             selected_tree = resrc_tree_new (selected_parent, resrc);
-            resrc_stage_resrc (resrc, resrc_reqst_reqrd_size (resrc_reqst));
+            resrc_stage_resrc (resrc, resrc_reqst_reqrd_size (resrc_reqst),
+                                       resrc_reqst_graph_reqs (resrc_reqst));
             resrc_reqst_add_found (resrc_reqst, 1);
         }
     } else if (resrc_tree_num_children (found_tree)) {
@@ -235,8 +250,9 @@ static resrc_tree_t *internal_select_resources (flux_t h, resrc_tree_t *found_tr
         //resrc_flux_log (h, resrc);
         selected_tree = resrc_tree_new (selected_parent, resrc);
         children = resrc_tree_children (found_tree);
-        child_tree = resrc_tree_list_first (children);
-        while (child_tree) {
+        for (child_tree = resrc_tree_list_first (children);
+             child_tree;
+             child_tree = resrc_tree_list_next (children)) {
             if (internal_select_resources (h, child_tree, resrc_reqst, selected_tree) &&
                 resrc_reqst_nfound (resrc_reqst) >=
                 resrc_reqst_reqrd_qty (resrc_reqst)) {
@@ -247,7 +263,6 @@ static resrc_tree_t *internal_select_resources (flux_t h, resrc_tree_t *found_tr
                 }
                 break;
             }
-            child_tree = resrc_tree_list_next (children);
         }
     }
 
@@ -268,12 +283,16 @@ resrc_tree_t *select_resources (flux_t h, resrc_tree_t *found_tree,
                                 resrc_tree_t *selected_parent)
 {
     int64_t reqst_starttime = resrc_reqst_starttime (resrc_reqst);
-    if (reqst_starttime < prev_job_starttime) {
-        flux_log (h, LOG_DEBUG, "%s: request starttime (%"PRId64") < prev_job_startttime (%"PRId64"), skipping",
-                  __FUNCTION__, reqst_starttime, prev_job_starttime);
+    int64_t max_prev_starttime = get_max_prev_starttime();
+    if (reqst_starttime < max_prev_starttime) {
+        flux_log (h, LOG_DEBUG, "%s: request starttime (%"PRId64") < max_prev_startttime (%"PRId64"), skipping",
+                  __FUNCTION__, reqst_starttime, max_prev_starttime);
         return resrc_tree_new (selected_parent, NULL);
     }
 
+    flux_log (h, LOG_DEBUG,
+              "%s: request starttime (%"PRId64") >= max_prev_startttime (%"PRId64"), attempting to select resources",
+              __FUNCTION__, reqst_starttime, max_prev_starttime);
     return internal_select_resources (h, found_tree, resrc_reqst, selected_parent);
 }
 
@@ -292,7 +311,7 @@ int allocate_resources (flux_t h, resrc_tree_t *selected_tree, int64_t job_id,
             zlist_freefn (allocation_completion_times, completion_time, free, true);
             flux_log (h, LOG_DEBUG, "Allocated job %"PRId64" from %"PRId64" to "
                       "%"PRId64"", job_id, starttime, *completion_time);
-            prev_job_starttime = starttime;
+            prev_alloc_starttime = starttime;
         }
     }
 
@@ -324,6 +343,11 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
         goto ret;
     }
 
+    if (curr_reservation_depth >= max_reservation_depth) {
+        goto ret;
+    }
+    curr_reservation_depth++;
+
     if (*selected_tree) {
         resrc_tree_destroy (*selected_tree, false);
         *selected_tree = NULL;
@@ -342,13 +366,16 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
 
     zlist_sort (completion_times, compare_int64_ascending);
 
+    int64_t max_prev_starttime = get_max_prev_starttime();
+
     flux_log (h, LOG_DEBUG, "%s: %zu times to consider", __FUNCTION__, zlist_size (completion_times));
     for (completion_time = zlist_first (completion_times);
-         completion_time && *completion_time < prev_job_starttime;
+         completion_time && *completion_time < max_prev_starttime;
          completion_time = zlist_next (completion_times), i++) {
         // Skip past jobs that complete before this job is allowed to start
-        flux_log (h, LOG_DEBUG, "%s: Skipping past completion time %"PRId64" as a potential starttime for job %"PRId64" since the previous job started at %"PRId64"",
-                  __FUNCTION__, *completion_time, job_id, prev_job_starttime);
+        /* flux_log (h, LOG_DEBUG, */
+        /*           "%s: completion_time %"PRId64" (#%d) < max_prev_starttime %"PRId64", skipping", */
+        /*           __FUNCTION__, *completion_time, i, max_prev_starttime); */
     }
 
     for (;
@@ -356,8 +383,9 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
          completion_time = zlist_next (completion_times), i++) {
         /* Purge past times from consideration */
         if (*completion_time < starttime) {
-            flux_log (h, LOG_DEBUG, "%s: Skipping completion time %"PRId64" (#%d) since the job starttime is %"PRId64"",
-                      __FUNCTION__, *completion_time, i, starttime);
+            /* flux_log (h, LOG_DEBUG, */
+            /*           "%s: completion_time %"PRId64" (#%d) < starttime %"PRId64", skipping", */
+            /*           __FUNCTION__, *completion_time, i, starttime); */
             continue;
         }
 
@@ -372,17 +400,22 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
                   resrc_reqst_reqrd_qty (resrc_reqst), job_id,
                   *completion_time + 1, i);
 
+        resrc_reqst_clear_found (resrc_reqst);
+        resrc_tree_unstage_resources (resrc_phys_tree (resrc));
         nfound = resrc_tree_search (resrc, resrc_reqst, &found_tree, true);
         flux_log (h, LOG_DEBUG, "%s: num found: %"PRId64", num requested %"PRId64"", __FUNCTION__, nfound, resrc_reqst_reqrd_qty (resrc_reqst));
         if (nfound >= resrc_reqst_reqrd_qty (resrc_reqst)) {
             resrc_reqst_clear_found (resrc_reqst);
+            resrc_tree_unstage_resources (resrc_phys_tree (resrc));
             *selected_tree = internal_select_resources (h, found_tree, resrc_reqst, NULL);
-            resrc_tree_destroy (found_tree, false);
             if (*selected_tree) {
                 rc = resrc_tree_reserve (*selected_tree, job_id,
                                          *completion_time + 1,
                                          *completion_time + 1 + walltime);
                 if (rc) {
+                    flux_log (h, LOG_ERR, "%s: resrc_tree_reserve returned %d, not reserving", __FUNCTION__, rc);
+                    resrc_tree_flux_log (h, *selected_tree);
+                    resrc_tree_unstage_resources (*selected_tree);
                     resrc_tree_destroy (*selected_tree, false);
                     *selected_tree = NULL;
                 } else {
@@ -399,10 +432,16 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
                     *time = *completion_time + 1;
                     rc = zlist_append (reservation_times, time);
                     zlist_freefn (reservation_times, time, free, true);
-                    prev_job_starttime = *completion_time + 1;
+                    prev_reservation_starttime = *completion_time + 1;
                 }
                 break;
+            } else {
+                flux_log (h, LOG_DEBUG, "%s: select_resources returned NULL, not reserving", __FUNCTION__);
             }
+        }
+        if (found_tree) {
+            resrc_tree_destroy (found_tree, false);
+            found_tree = NULL;
         }
         prev_completion_time = *completion_time;
     }

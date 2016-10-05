@@ -105,6 +105,7 @@ typedef struct {
     char         *uri;
     char         *userplugin;
     char         *userplugin_opts;
+    char         *results_dir;
     bool          sim;
     bool          schedonce;          /* Use resources only once */
     bool          fail_on_error;      /* Fail immediately on error */
@@ -193,6 +194,7 @@ static inline void ssrvarg_init (ssrvarg_t *arg)
     arg->uri = NULL;
     arg->userplugin = NULL;
     arg->userplugin_opts = NULL;
+    arg->results_dir = NULL;
     arg->sim = false;
     arg->schedonce = false;
     arg->fail_on_error = false;
@@ -210,6 +212,8 @@ static inline void ssrvarg_free (ssrvarg_t *arg)
         free (arg->userplugin);
     if (arg->userplugin_opts)
         free (arg->userplugin_opts);
+    if (arg->results_dir)
+        free (arg->results_dir);
 }
 
 static inline int ssrvarg_process_args (int argc, char **argv, ssrvarg_t *a)
@@ -240,6 +244,8 @@ static inline int ssrvarg_process_args (int argc, char **argv, ssrvarg_t *a)
             a->userplugin_opts = xstrdup (strstr (argv[i], "=") + 1);
         } else if (!strncmp ("sched-params=", argv[i], sizeof ("sched-params"))) {
             sprms = xstrdup (strstr (argv[i], "=") + 1);
+        } else if (!strncmp ("results-dir=", argv[i], sizeof ("results-dir"))) {
+            a->results_dir = xstrdup (strstr (argv[i], "=") + 1);
         } else {
             rc = -1;
             errno = EINVAL;
@@ -1625,6 +1631,30 @@ done:
     return rc;
 }
 
+static int get_job_reservation_starttime (resrc_tree_t *resrc_tree, int64_t jobid, int64_t *starttime)
+{
+    int rc = -1;
+
+    if (resrc_reservation_starttime (resrc_tree_resrc (resrc_tree), jobid, starttime) >= 0) {
+        rc = 0;
+        goto done;
+    }
+
+    resrc_tree_list_t *children = resrc_tree_children (resrc_tree);
+    resrc_tree_t *child = NULL;
+    for (child = resrc_tree_list_first (children);
+         child;
+         child = resrc_tree_list_next (children)) {
+        if (get_job_reservation_starttime (child, jobid, starttime) >= 0) {
+            rc = 0;
+            goto done;
+        }
+    }
+
+ done:
+    return rc;
+}
+
 static void print_job_reservation_starttimes (ssrvctx_t *ctx, char* predictor)
 {
     int rc = 0;
@@ -1633,25 +1663,54 @@ static void print_job_reservation_starttimes (ssrvctx_t *ctx, char* predictor)
     zlist_t *jobs = ctx->p_queue;
     int64_t starttime = (ctx->sctx.in_sim) ?
         (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
+    char *dir = NULL;
+    char *filename = NULL;
+    static zhash_t *outfiles = NULL;
+    FILE *outfile = NULL;
+    int hacky_count = 0;
+
+    if (!outfiles) {
+        outfiles = zhash_new ();
+    }
+
+    outfile = zhash_lookup (outfiles, predictor);
+    if (!outfile) {
+        if (ctx->arg.results_dir) {
+            dir = ctx->arg.results_dir;
+        } else {
+            dir = ".";
+        }
+
+        asprintf (&filename, "%s/%s_predictions.out", dir, predictor);
+        outfile = fopen (filename, "w");
+        zhash_insert (outfiles, predictor, outfile);
+        flux_log (ctx->h, LOG_DEBUG, "%s: Saving %s predictions to %s", __FUNCTION__, predictor, filename);
+        free (filename);
+    }
 
     for (job = zlist_first (jobs);
-         !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
+         !rc && job && (qdepth < ctx->arg.s_params.queue_depth) && hacky_count < MAX_RESERVATION;
          job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
         {
             if (job->state != J_SCHEDREQ) {
+                fprintf (outfile, "%f, %"PRId64", %"PRId64"\n", ctx->sctx.sim_state->sim_time, job->lwj_id, job->starttime);
                 continue;
             } else if (!job->resrc_tree) {
-                flux_log (ctx->h, LOG_ERR, "%s: Job %"PRId64" is missing a resrc_tree",
-                          __FUNCTION__, job->lwj_id);
+                hacky_count++;
+                flux_log (ctx->h, LOG_ERR, "%s: Job %"PRId64" is missing a resrc_tree (predictor: %s)",
+                          __FUNCTION__, job->lwj_id, predictor);
                 continue;
-            } else if (resrc_reservation_starttime (resrc_tree_resrc (job->resrc_tree), job->lwj_id, &starttime) < 0) {
-                flux_log (ctx->h, LOG_ERR, "%s: Job %"PRId64" is missing a reservation starttime",
-                          __FUNCTION__, job->lwj_id);
+            } else if (get_job_reservation_starttime (job->resrc_tree, job->lwj_id, &starttime) < 0) {
+                flux_log (ctx->h, LOG_ERR, "%s: Job %"PRId64" is missing a reservation starttime (predictor: %s)",
+                          __FUNCTION__, job->lwj_id, predictor);
                 continue;
             }
             flux_log (ctx->h, LOG_DEBUG, "%s: %s predicted a starttime of %"PRId64" for job %"PRId64"", __FUNCTION__, predictor, starttime, job->lwj_id);
+            fprintf (outfile, "%f, %"PRId64", %"PRId64"\n", ctx->sctx.sim_state->sim_time, job->lwj_id, starttime);
             resrc_tree_destroy (job->resrc_tree, false);
     }
+
+    fflush (outfile);
 }
 
 static uint64_t get_predicted_job_runtime (flux_t h, int64_t lwj_id)
@@ -1673,6 +1732,24 @@ static uint64_t get_predicted_job_runtime (flux_t h, int64_t lwj_id)
     return predicted_runtime;
 }
 
+static double get_actual_job_runtime (flux_t h, int64_t lwj_id)
+{
+    double execution_time = INT16_MAX*8;
+    char *key = xasprintf ("lwj.%"PRId64".execution_time", lwj_id);
+    if (kvs_get_double (h, key, &execution_time) < 0) {
+        flux_log_error (h, "extract %s", key);
+    }
+    else {
+        flux_log (h, LOG_DEBUG, "extract %s: %f", key, execution_time);
+    }
+
+    if (execution_time <= 0) {
+        execution_time = 1;
+    }
+
+    free (key);
+    return execution_time;
+}
 static void predict_job_starttimes (ssrvctx_t *ctx)
 {
     int rc = 0;
@@ -1684,14 +1761,28 @@ static void predict_job_starttimes (ssrvctx_t *ctx)
         (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
     int64_t walltime = -1;
 
+    int count = 0;
+    for (job = zlist_first (jobs), qdepth = 0;
+         !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
+         job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
+        {
+            if (job->state == J_SCHEDREQ) {
+                count++;
+            }
+    }
+    flux_log (ctx->h, LOG_DEBUG, "%s: total jobs in p_queue: %zu", __FUNCTION__, zlist_size (ctx->p_queue));
+    flux_log (ctx->h, LOG_DEBUG, "%s: pending jobs in p_queue: %d", __FUNCTION__, count);
+
+    flux_log (ctx->h, LOG_DEBUG, "%s: User predictions:", __FUNCTION__);
     print_job_reservation_starttimes (ctx, "User");
     resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
     rc = plugin->sched_loop_setup (ctx->h);
-    for (job = zlist_first (jobs);
+    for (job = zlist_first (jobs), qdepth=0;
          !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
          job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
         {
             if (job->state == J_SELECTED) {
+                // Optimization: don't try and schedule a job before a just allocated job
                 if (job->starttime > starttime)
                     starttime = job->starttime;
             } else if (job->state == J_SCHEDREQ) {
@@ -1699,8 +1790,25 @@ static void predict_job_starttimes (ssrvctx_t *ctx)
                 rc = reserve_job (ctx, job, starttime, walltime);
             }
     }
+    flux_log (ctx->h, LOG_DEBUG, "%s: ML predictions:", __FUNCTION__);
     print_job_reservation_starttimes (ctx, "ML");
     resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
+    rc = plugin->sched_loop_setup (ctx->h);
+    for (job = zlist_first (jobs), qdepth=0;
+         !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
+         job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
+        {
+            if (job->state == J_SELECTED) {
+                // Optimization: don't try and schedule a job before a just allocated job
+                if (job->starttime > starttime)
+                    starttime = job->starttime;
+            } else if (job->state == J_SCHEDREQ) {
+                walltime = get_actual_job_runtime (ctx->h, job->lwj_id);
+                rc = reserve_job (ctx, job, starttime, walltime);
+            }
+    }
+    flux_log (ctx->h, LOG_DEBUG, "%s: 'Perfect knowledge' predictions:", __FUNCTION__);
+    print_job_reservation_starttimes (ctx, "perfectKnowledge");
 }
 
 static int schedule_jobs (ssrvctx_t *ctx)
