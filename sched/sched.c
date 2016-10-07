@@ -69,6 +69,7 @@ static void res_event_cb (flux_t h, flux_msg_handler_t *w,
                           const flux_msg_t *msg, void *arg);
 static int job_status_cb (const char *jcbstr, void *arg, int errnum);
 
+typedef int64_t (*RuntimePredictor)(flux_t h, int64_t lwj_id);
 
 /******************************************************************************
  *                                                                            *
@@ -1713,7 +1714,7 @@ static void print_job_reservation_starttimes (ssrvctx_t *ctx, char* predictor)
     fflush (outfile);
 }
 
-static uint64_t get_predicted_job_runtime (flux_t h, int64_t lwj_id)
+static int64_t get_predicted_job_runtime (flux_t h, int64_t lwj_id)
 {
     int64_t predicted_runtime = INT16_MAX*8;
     char *key = xasprintf ("lwj.%"PRId64".predicted_runtime", lwj_id);
@@ -1732,7 +1733,7 @@ static uint64_t get_predicted_job_runtime (flux_t h, int64_t lwj_id)
     return predicted_runtime;
 }
 
-static double get_actual_job_runtime (flux_t h, int64_t lwj_id)
+static int64_t get_actual_job_runtime (flux_t h, int64_t lwj_id)
 {
     double execution_time = INT16_MAX*8;
     char *key = xasprintf ("lwj.%"PRId64".execution_time", lwj_id);
@@ -1750,67 +1751,62 @@ static double get_actual_job_runtime (flux_t h, int64_t lwj_id)
     free (key);
     return execution_time;
 }
-static void predict_job_starttimes (ssrvctx_t *ctx)
+
+static int64_t get_user_predicted_job_runtime (flux_t h, int64_t lwj_id)
+{
+    int64_t user_runtime = INT16_MAX*8;
+    char *key = xasprintf ("lwj.%"PRId64".time_limit", lwj_id);
+    if (kvs_get_int64 (h, key, &user_runtime) < 0) {
+        flux_log_error (h, "extract %s", key);
+    }
+    else {
+        flux_log (h, LOG_DEBUG, "extract %s: %"PRId64"", key, user_runtime);
+    }
+
+    if (user_runtime <= 0) {
+        user_runtime = 1;
+    }
+
+    free (key);
+    return user_runtime;
+}
+
+static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, RuntimePredictor pred_func)
 {
     int rc = 0;
     int qdepth = 0;
     flux_lwj_t *job = NULL;
-    struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
     zlist_t *jobs = ctx->p_queue;
+    struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
     int64_t starttime = (ctx->sctx.in_sim) ?
         (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
     int64_t walltime = -1;
 
-    int count = 0;
-    for (job = zlist_first (jobs), qdepth = 0;
+    resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
+    rc = plugin->sched_loop_setup (ctx->h);
+    for (job = zlist_first (jobs), qdepth=0;
          !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
          job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
         {
-            if (job->state == J_SCHEDREQ) {
-                count++;
+            if (job->state == J_SELECTED) {
+                // Optimization: don't try and schedule a job before a just allocated job
+                if (job->starttime > starttime)
+                    starttime = job->starttime;
+            } else if (job->state == J_SCHEDREQ) {
+                walltime = pred_func (ctx->h, job->lwj_id);
+                rc = reserve_job (ctx, job, starttime, walltime);
             }
     }
-    flux_log (ctx->h, LOG_DEBUG, "%s: total jobs in p_queue: %zu", __FUNCTION__, zlist_size (ctx->p_queue));
-    flux_log (ctx->h, LOG_DEBUG, "%s: pending jobs in p_queue: %d", __FUNCTION__, count);
+    flux_log (ctx->h, LOG_DEBUG, "%s: %s predictions:", __FUNCTION__, pred_label);
+    print_job_reservation_starttimes (ctx, pred_label);
+}
 
+static void make_all_predictions (ssrvctx_t *ctx)
+{
     flux_log (ctx->h, LOG_DEBUG, "%s: User predictions:", __FUNCTION__);
     print_job_reservation_starttimes (ctx, "User");
-    resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
-
-    rc = plugin->sched_loop_setup (ctx->h);
-    for (job = zlist_first (jobs), qdepth=0;
-         !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
-         job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
-        {
-            if (job->state == J_SELECTED) {
-                // Optimization: don't try and schedule a job before a just allocated job
-                if (job->starttime > starttime)
-                    starttime = job->starttime;
-            } else if (job->state == J_SCHEDREQ) {
-                walltime = get_predicted_job_runtime (ctx->h, job->lwj_id);
-                rc = reserve_job (ctx, job, starttime, walltime);
-            }
-    }
-    flux_log (ctx->h, LOG_DEBUG, "%s: ML predictions:", __FUNCTION__);
-    print_job_reservation_starttimes (ctx, "ML");
-    resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
-
-    rc = plugin->sched_loop_setup (ctx->h);
-    for (job = zlist_first (jobs), qdepth=0;
-         !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
-         job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
-        {
-            if (job->state == J_SELECTED) {
-                // Optimization: don't try and schedule a job before a just allocated job
-                if (job->starttime > starttime)
-                    starttime = job->starttime;
-            } else if (job->state == J_SCHEDREQ) {
-                walltime = get_actual_job_runtime (ctx->h, job->lwj_id);
-                rc = reserve_job (ctx, job, starttime, walltime);
-            }
-    }
-    flux_log (ctx->h, LOG_DEBUG, "%s: 'Perfect knowledge' predictions:", __FUNCTION__);
-    print_job_reservation_starttimes (ctx, "perfectKnowledge");
+    predict_job_starttimes (ctx, "ML", get_predicted_job_runtime);
+    predict_job_starttimes (ctx, "perfectKnowledge", get_actual_job_runtime);
 }
 
 static int schedule_jobs (ssrvctx_t *ctx)
@@ -1844,7 +1840,7 @@ static int schedule_jobs (ssrvctx_t *ctx)
         job = (flux_lwj_t*)zlist_next (jobs);
         qdepth++;
     }
-    predict_job_starttimes (ctx);
+    make_all_predictions (ctx);
 
     return rc;
 }
