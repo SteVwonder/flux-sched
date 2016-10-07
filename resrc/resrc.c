@@ -1348,7 +1348,7 @@ int resrc_allocate_resource (resrc_t *resrc, int64_t job_id, int64_t starttime,
         goto ret;
     }
 
-    if (starttime)
+    if (starttime >= 0)
         rc = resrc_allocate_resource_in_time (resrc, job_id, starttime, endtime);
     else
         rc = resrc_allocate_resource_now (resrc, job_id);
@@ -1460,7 +1460,7 @@ int resrc_reserve_resource (resrc_t *resrc, int64_t job_id, int64_t starttime,
         goto ret;
     }
 
-    if (starttime)
+    if (starttime >= 0)
         rc = resrc_reserve_resource_in_time (resrc, job_id, starttime, endtime);
     else
         rc = resrc_reserve_resource_now (resrc, job_id);
