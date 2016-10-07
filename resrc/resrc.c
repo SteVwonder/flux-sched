@@ -1549,10 +1549,9 @@ int resrc_release_all_reservations (resrc_t *resrc)
             if ((resrc->state == RESOURCE_ALLOCATED) ||
                 (resrc->state == RESOURCE_RESERVED))
                 resrc->available += *size_ptr;
-            else {
-                id_ptr = (char *)zhash_cursor (resrc->reservtns);
+            id_ptr = (char *)zhash_cursor (resrc->reservtns);
+            if (id_ptr)
                 zhash_delete (resrc->twindow, id_ptr);
-            }
             size_ptr = zhash_next (resrc->reservtns);
         }
         zhash_destroy (&resrc->reservtns);
