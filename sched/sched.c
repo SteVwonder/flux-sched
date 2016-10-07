@@ -1696,7 +1696,6 @@ static void print_job_reservation_starttimes (ssrvctx_t *ctx, char* predictor)
                 fprintf (outfile, "%f, %"PRId64", %"PRId64"\n", ctx->sctx.sim_state->sim_time, job->lwj_id, job->starttime);
                 continue;
             } else if (!job->resrc_tree) {
-                hacky_count++;
                 flux_log (ctx->h, LOG_ERR, "%s: Job %"PRId64" is missing a resrc_tree (predictor: %s)",
                           __FUNCTION__, job->lwj_id, predictor);
                 continue;
@@ -1705,7 +1704,8 @@ static void print_job_reservation_starttimes (ssrvctx_t *ctx, char* predictor)
                           __FUNCTION__, job->lwj_id, predictor);
                 continue;
             }
-            flux_log (ctx->h, LOG_DEBUG, "%s: %s predicted a starttime of %"PRId64" for job %"PRId64"", __FUNCTION__, predictor, starttime, job->lwj_id);
+            hacky_count++;
+            flux_log (ctx->h, LOG_DEBUG, "%s: %s predicted a starttime of %"PRId64" for job %"PRId64" (hacky count == %d)", __FUNCTION__, predictor, starttime, job->lwj_id, hacky_count);
             fprintf (outfile, "%f, %"PRId64", %"PRId64"\n", ctx->sctx.sim_state->sim_time, job->lwj_id, starttime);
             resrc_tree_destroy (job->resrc_tree, false);
     }
@@ -1776,6 +1776,7 @@ static void predict_job_starttimes (ssrvctx_t *ctx)
     flux_log (ctx->h, LOG_DEBUG, "%s: User predictions:", __FUNCTION__);
     print_job_reservation_starttimes (ctx, "User");
     resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
+
     rc = plugin->sched_loop_setup (ctx->h);
     for (job = zlist_first (jobs), qdepth=0;
          !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
@@ -1793,6 +1794,7 @@ static void predict_job_starttimes (ssrvctx_t *ctx)
     flux_log (ctx->h, LOG_DEBUG, "%s: ML predictions:", __FUNCTION__);
     print_job_reservation_starttimes (ctx, "ML");
     resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
+
     rc = plugin->sched_loop_setup (ctx->h);
     for (job = zlist_first (jobs), qdepth=0;
          !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
