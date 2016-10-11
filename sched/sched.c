@@ -1388,7 +1388,7 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, resrc_t *root_resrc, 
 {
     JSON req_res = NULL;
     flux_t h = ctx->h;
-    int rc = -1;
+    int rc = -1, child_rc = -1;
     int64_t nfound = 0;
     int64_t nreqrd = 0;
     resrc_reqst_t *resrc_reqst = NULL;
@@ -1506,21 +1506,24 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, resrc_t *root_resrc, 
                           "%"PRId64"", nreqrd,
                           resrc_type (resrc_reqst_resrc (resrc_reqst)),
                           job->lwj_id);
+                rc = 0;
             } else {
                 resrc_reqst_clear_found (resrc_reqst);
-                rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
+                child_rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                                 starttime, job->req->walltime,
                                                 root_resrc,
                                                 resrc_reqst);
-                if (rc) {
+                if (child_rc) {
                     resrc_tree_destroy (selected_tree, false);
                     job->resrc_tree = NULL;
                 } else {
                     job->resrc_tree = selected_tree;
+                    rc = 1;
                 }
             }
         }
     } else {
+        flux_log (h, LOG_ERR, "%s: find_resources failed to find anything, attempting to reserve", __FUNCTION__);
         resrc_reqst_clear_found (resrc_reqst);
         rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                         starttime, job->req->walltime,
@@ -1531,9 +1534,10 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, resrc_t *root_resrc, 
             job->resrc_tree = NULL;
         } else {
             job->resrc_tree = selected_tree;
+            rc = 1;
         }
     }
-    rc = 0;
+
 done:
     if (resrc_reqst)
         resrc_reqst_destroy (resrc_reqst);
@@ -1795,16 +1799,13 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
     int rc = 0;
     int qdepth = 0;
     flux_lwj_t *job = NULL;
-    zlist_t *jobs = ctx->p_queue;
+    zlist_t *pending_jobs = ctx->p_queue, *running_jobs = ctx->r_queue;
     int64_t starttime = (ctx->sctx.in_sim) ?
         (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
-    int64_t walltime = -1;
+    int64_t pred_walltime = -1;
     struct sched_plugin *plugin = NULL;
     sched_ctx_t *plugin_ctx = NULL;
 
-    for (job = zlist_first (jobs), qdepth=0;
-         !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
-         job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
     flux_log (ctx->h, LOG_DEBUG, "%s: Copying resrc_tree for %s predictions", __FUNCTION__, pred_label);
     resrc_tree_t *copied_resrc_tree = resrc_tree_deserialize (serialized_resrc_tree, NULL);
     if (!copied_resrc_tree) {
@@ -1819,14 +1820,22 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
     plugin = sched_plugin_get (ctx->loader);
     plugin_ctx = plugin->create_ctx (ctx->h);
     rc = plugin->sched_loop_setup (ctx->h, plugin_ctx);
+    for (job = zlist_first (pending_jobs), qdepth=0;
+         (rc >= 0) && job && (qdepth < ctx->arg.s_params.queue_depth);
+         job = (flux_lwj_t*)zlist_next (pending_jobs), qdepth++)
         {
             if (job->state == J_SELECTED) {
                 // Optimization: don't try and schedule a job before a just allocated job
                 if (job->starttime > starttime)
                     starttime = job->starttime;
             } else if (job->state == J_SCHEDREQ) {
-                walltime = pred_func (ctx->h, job->lwj_id);
+                pred_walltime = pred_func (ctx->h, job->lwj_id);
                 rc = reserve_job (ctx, plugin_ctx, copied_root_resrc, job, starttime, pred_walltime);
+                if (rc != 0) {
+                    flux_log (ctx->h, LOG_ERR,
+                              "%s: failed to reserve a currenty pending job (rc=%d)",
+                              __FUNCTION__, rc);
+                }
             }
     }
     flux_log (ctx->h, LOG_DEBUG, "%s: %s predictions:", __FUNCTION__, pred_label);
@@ -1867,11 +1876,11 @@ static int schedule_jobs (ssrvctx_t *ctx)
         return -1;
     rc = plugin->sched_loop_setup (ctx->h, plugin_ctx);
     job = zlist_first (jobs);
-    while (!rc && job && (qdepth < ctx->arg.s_params.queue_depth)) {
+    while (rc >= 0 && job && (qdepth < ctx->arg.s_params.queue_depth)) {
         if (job->state == J_SCHEDREQ) {
             rc = schedule_job (ctx, plugin_ctx, root_resrc, job, starttime);
         }
-        if (rc) {
+        if (rc < 0) {
             flux_log (ctx->h, LOG_DEBUG, "%s: rc (%d) != 0, breaking out of loop", __FUNCTION__, rc);
         }
         job = (flux_lwj_t*)zlist_next (jobs);

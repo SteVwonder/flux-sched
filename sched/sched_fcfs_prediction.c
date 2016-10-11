@@ -346,7 +346,7 @@ int reserve_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t **selected_tree,
                        int64_t starttime, int64_t walltime, resrc_t *resrc,
                        resrc_reqst_t *resrc_reqst)
 {
-    int rc = -1;
+    int rc = -1, reserve_rc = -1;
     int64_t *completion_time = NULL;
     int64_t nfound = 0;
     int64_t prev_completion_time = -1;
@@ -425,15 +425,16 @@ int reserve_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t **selected_tree,
             resrc_tree_unstage_resources (resrc_phys_tree (resrc));
             *selected_tree = internal_select_resources (h, found_tree, resrc_reqst, NULL);
             if (*selected_tree) {
-                rc = resrc_tree_reserve (*selected_tree, job_id,
+                reserve_rc = resrc_tree_reserve (*selected_tree, job_id,
                                          *completion_time + 1,
                                          *completion_time + 1 + walltime);
-                if (rc) {
+                if (reserve_rc) {
                     flux_log (h, LOG_ERR, "%s: resrc_tree_reserve returned %d, not reserving", __FUNCTION__, rc);
                     resrc_tree_flux_log (h, *selected_tree);
                     resrc_tree_unstage_resources (*selected_tree);
                     resrc_tree_destroy (*selected_tree, false);
                     *selected_tree = NULL;
+                    rc = -1;
                 } else {
                     flux_log (h, LOG_DEBUG, "Reserved %"PRId64" nodes for job "
                               "%"PRId64" from %"PRId64" to %"PRId64"",
@@ -449,6 +450,7 @@ int reserve_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t **selected_tree,
                     zlist_append (ctx->reservation_times, time);
                     zlist_freefn (ctx->reservation_times, time, free, true);
                     ctx->prev_reservation_starttime = *completion_time + 1;
+                    rc = 0;
                 }
                 break;
             } else {
