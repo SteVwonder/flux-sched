@@ -463,8 +463,14 @@ int reserve_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t **selected_tree,
         }
         prev_completion_time = *completion_time;
     }
-    zlist_destroy (&completion_times);
+
 ret:
+    if (completion_times) {
+        zlist_destroy (&completion_times);
+    }
+    if (found_tree) {
+        resrc_tree_destroy (found_tree, false);
+    }
     return rc;
 }
 
