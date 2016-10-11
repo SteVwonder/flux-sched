@@ -58,6 +58,9 @@
 #define ENABLE_TIMER_EVENT 0
 #define SCHED_UNIMPL -1
 
+JSON serialized_resrc_tree = NULL;
+
+
 #if ENABLE_TIMER_EVENT
 static int timer_event_cb (flux_t h, void *arg);
 #endif
@@ -755,6 +758,11 @@ static int load_resources (ssrvctx_t *ctx)
         break;
     }
 
+    serialized_resrc_tree = Jnew ();
+    if (resrc_tree_serialize (serialized_resrc_tree, resrc_phys_tree (ctx->rctx.root_resrc)) < 0) {
+        flux_log (ctx->h, LOG_ERR, "%s: failed to serialized resrc_tree", __FUNCTION__);
+    }
+
 done:
     return rc;
 }
@@ -1376,7 +1384,7 @@ static int req_tpexec_run (flux_t h, flux_lwj_t *job)
  * are found than the job requires, and if the job asks to reserve
  * resources, then those resources will be reserved.
  */
-int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job, int64_t starttime)
+int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, resrc_t *root_resrc, flux_lwj_t *job, int64_t starttime)
 {
     JSON req_res = NULL;
     flux_t h = ctx->h;
@@ -1464,7 +1472,7 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job, int6
     flux_log (h, LOG_DEBUG, "%s: Looking for %"PRId64" %s(s) for job %"PRId64"",
               __FUNCTION__, nreqrd,
               resrc_type (resrc_reqst_resrc (resrc_reqst)), job->lwj_id);
-    if ((nfound = plugin->find_resources (h, ctx->rctx.root_resrc,
+    if ((nfound = plugin->find_resources (h, root_resrc,
                                           resrc_reqst, &found_tree))) {
         flux_log (h, LOG_DEBUG, "Found %"PRId64" %s(s) for job %"PRId64", "
                   "required: %"PRId64"", nfound,
@@ -1484,6 +1492,7 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job, int6
                 job->starttime = starttime;
                 job->state = J_SELECTED;
                 job->resrc_tree = selected_tree;
+                if (root_resrc == ctx->rctx.root_resrc) {
                 if (req_tpexec_allocate (ctx, job) != 0) {
                     flux_log (h, LOG_ERR,
                               "failed to request allocate for job %"PRId64"",
@@ -1491,6 +1500,7 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job, int6
                     resrc_tree_destroy (job->resrc_tree, false);
                     job->resrc_tree = NULL;
                     goto done;
+                }
                 }
                 flux_log (h, LOG_DEBUG, "Allocated %"PRId64" %s(s) for job "
                           "%"PRId64"", nreqrd,
@@ -1500,7 +1510,7 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job, int6
                 resrc_reqst_clear_found (resrc_reqst);
                 rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                                 starttime, job->req->walltime,
-                                                ctx->rctx.root_resrc,
+                                                root_resrc,
                                                 resrc_reqst);
                 if (rc) {
                     resrc_tree_destroy (selected_tree, false);
@@ -1514,7 +1524,7 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job, int6
         resrc_reqst_clear_found (resrc_reqst);
         rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                         starttime, job->req->walltime,
-                                        ctx->rctx.root_resrc,
+                                        root_resrc,
                                         resrc_reqst);
         if (rc) {
             resrc_tree_destroy (selected_tree, false);
@@ -1533,7 +1543,7 @@ done:
     return rc;
 }
 
-static int reserve_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job, int64_t starttime, int64_t walltime)
+static int reserve_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, resrc_t *root_resrc, flux_lwj_t *job, int64_t starttime, int64_t walltime)
 {
     JSON req_res = NULL;
     flux_t h = ctx->h;
@@ -1623,7 +1633,7 @@ static int reserve_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job
     resrc_reqst_clear_found (resrc_reqst);
     rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                     starttime, walltime,
-                                    ctx->rctx.root_resrc,
+                                    root_resrc,
                                     resrc_reqst);
     if (rc) {
         resrc_tree_destroy (selected_tree, false);
@@ -1792,10 +1802,20 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
     struct sched_plugin *plugin = NULL;
     sched_ctx_t *plugin_ctx = NULL;
 
-    resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
     for (job = zlist_first (jobs), qdepth=0;
          !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
          job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
+    flux_log (ctx->h, LOG_DEBUG, "%s: Copying resrc_tree for %s predictions", __FUNCTION__, pred_label);
+    resrc_tree_t *copied_resrc_tree = resrc_tree_deserialize (serialized_resrc_tree, NULL);
+    if (!copied_resrc_tree) {
+        flux_log (ctx->h, LOG_ERR, "%s: failed to deserialize resrc_tree", __FUNCTION__);
+        return;
+    }
+    resrc_t *copied_root_resrc = resrc_tree_resrc (copied_resrc_tree);
+    if (!copied_root_resrc) {
+        flux_log (ctx->h, LOG_ERR, "%s: failed to get root_resrc from deserialized resrc_tree", __FUNCTION__);
+        return;
+    }
     plugin = sched_plugin_get (ctx->loader);
     plugin_ctx = plugin->create_ctx (ctx->h);
     rc = plugin->sched_loop_setup (ctx->h, plugin_ctx);
@@ -1806,11 +1826,13 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
                     starttime = job->starttime;
             } else if (job->state == J_SCHEDREQ) {
                 walltime = pred_func (ctx->h, job->lwj_id);
-                rc = reserve_job (ctx, plugin_ctx, job, starttime, pred_walltime);
+                rc = reserve_job (ctx, plugin_ctx, copied_root_resrc, job, starttime, pred_walltime);
             }
     }
     flux_log (ctx->h, LOG_DEBUG, "%s: %s predictions:", __FUNCTION__, pred_label);
     print_job_reservation_starttimes (ctx, pred_label);
+
+    resrc_tree_destroy (copied_resrc_tree, true);
     plugin->destroy_ctx (plugin_ctx);
 }
 
@@ -1838,15 +1860,16 @@ static int schedule_jobs (ssrvctx_t *ctx)
     zlist_t *jobs = ctx->p_queue;
     int64_t starttime = (ctx->sctx.in_sim) ?
         (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
+    resrc_t *root_resrc = ctx->rctx.root_resrc;
 
-    resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
+    resrc_tree_release_all_reservations (resrc_phys_tree (root_resrc));
     if (!plugin)
         return -1;
     rc = plugin->sched_loop_setup (ctx->h, plugin_ctx);
     job = zlist_first (jobs);
     while (!rc && job && (qdepth < ctx->arg.s_params.queue_depth)) {
         if (job->state == J_SCHEDREQ) {
-            rc = schedule_job (ctx, plugin_ctx, job, starttime);
+            rc = schedule_job (ctx, plugin_ctx, root_resrc, job, starttime);
         }
         if (rc) {
             flux_log (ctx->h, LOG_DEBUG, "%s: rc (%d) != 0, breaking out of loop", __FUNCTION__, rc);
