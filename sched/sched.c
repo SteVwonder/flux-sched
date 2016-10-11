@@ -144,6 +144,48 @@ typedef struct {
  *                                                                            *
  ******************************************************************************/
 
+static void destroy_lwj (flux_lwj_t *job)
+{
+    if (job->req)
+        free (job->req);
+    if (job->resrc_tree)
+        resrc_tree_destroy (job->resrc_tree, false);
+    free (job);
+}
+
+static flux_res_t *copy_req (flux_res_t *orig)
+{
+    flux_res_t *res = NULL;
+
+    if ( !(res = (flux_res_t *) xzmalloc (sizeof (flux_res_t))))
+        oom ();
+
+    res->nnodes = orig->nnodes;
+    res->ncores = orig->ncores;
+    res->corespernode = orig->corespernode;
+    res->walltime = orig->walltime;
+    res->node_exclusive = orig->node_exclusive;
+
+    return res;
+}
+
+static flux_lwj_t *copy_lwj (flux_lwj_t *orig)
+{
+    flux_lwj_t *job = NULL;
+
+    if ( !(job = (flux_lwj_t *) xzmalloc (sizeof (*job))))
+        oom ();
+
+    job->lwj_id = orig->lwj_id;
+    job->state = orig->state;
+    job->starttime = orig->starttime;
+    job->enqueue_pos = orig->enqueue_pos;
+    job->resrc_tree = orig->resrc_tree;
+    job->req = copy_req (orig->req);
+
+    return job;
+}
+
 static inline void sched_params_default (sched_params_t *params)
 {
     params->queue_depth = SCHED_PARAM_Q_DEPTH_DEFAULT;
@@ -1679,7 +1721,7 @@ static int get_job_reservation_starttime (resrc_tree_t *resrc_tree, int64_t jobi
     return rc;
 }
 
-static void print_job_reservation_starttimes (ssrvctx_t *ctx, char* predictor)
+static void print_job_reservation_starttimes (ssrvctx_t *ctx, const char* predictor)
 {
     int rc = 0;
     int qdepth = 0;
@@ -1798,7 +1840,7 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
 {
     int rc = 0;
     int qdepth = 0;
-    flux_lwj_t *job = NULL;
+    flux_lwj_t *job = NULL, *job_copy = NULL;
     zlist_t *pending_jobs = ctx->p_queue, *running_jobs = ctx->r_queue;
     int64_t starttime = (ctx->sctx.in_sim) ?
         (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
@@ -1817,17 +1859,79 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
         flux_log (ctx->h, LOG_ERR, "%s: failed to get root_resrc from deserialized resrc_tree", __FUNCTION__);
         return;
     }
+
     plugin = sched_plugin_get (ctx->loader);
     plugin_ctx = plugin->create_ctx (ctx->h);
+
+    // Reschedule all currently running jobs
     rc = plugin->sched_loop_setup (ctx->h, plugin_ctx);
+    for (job = zlist_first (running_jobs);
+         (rc == 0) && job;
+         job = (flux_lwj_t*)zlist_next (running_jobs))
+        {
+            if (job->state == J_RUNNING) {
+                // Grab the predicted runtime
+                pred_walltime = pred_func (ctx->h, job->lwj_id);
+
+                // If the time already run > predicted runtime,
+                // don't schedule the job, skip it (optimziation)
+                if (ctx->sctx.sim_state->sim_time - job->starttime <= pred_walltime) {
+                    continue;
+                } else {
+                    // copy the job struct, change the walltime,
+                    // schedule the job, then cleanup
+                    job_copy = copy_lwj (job);
+                    job_copy->req->walltime = pred_walltime;
+                    job_copy->resrc_tree = NULL;
+                    job_copy->state = J_SCHEDREQ;
+                    flux_log (ctx->h, LOG_DEBUG, "%s (%s): adding existing allocation (%"PRId64") to resrc with updated walltime",
+                              __FUNCTION__, pred_label, job_copy->lwj_id);
+                    rc = schedule_job (ctx, plugin_ctx, copied_root_resrc, job_copy, job->starttime);
+                    if (rc != 0) {
+                        flux_log (ctx->h, LOG_ERR,
+                                  "%s: failed to schedule & allocate a currently running job (rc=%d)",
+                                  __FUNCTION__, rc);
+                    }
+                    destroy_lwj (job_copy);
+                    job_copy = NULL;
+                }
+            } else {
+                flux_log (ctx->h, LOG_ERR,
+                          "%s: non-running job (%"PRId64")found in r_queue",
+                          __FUNCTION__, job->lwj_id);
+            }
+        }
+
+    // Schedule all jobs that were selected to run.  Make reservations
+    // for jobs in the pending queue.  Reservations are made up until
+    // some threshold/stop condition.
     for (job = zlist_first (pending_jobs), qdepth=0;
          (rc >= 0) && job && (qdepth < ctx->arg.s_params.queue_depth);
          job = (flux_lwj_t*)zlist_next (pending_jobs), qdepth++)
         {
             if (job->state == J_SELECTED) {
+                // No need for fancy additional calculations. Just grab
+                // the predicted runtime, copy the job struct, change
+                // the walltime, and schedule the job
+                pred_walltime = pred_func (ctx->h, job->lwj_id);
+                job_copy = copy_lwj (job);
+                job_copy->req->walltime = pred_walltime;
+                job_copy->resrc_tree = NULL;
+                job_copy->state = J_SCHEDREQ;
+                schedule_job (ctx, plugin_ctx, copied_root_resrc, job_copy, starttime);
+                if (rc != 0) {
+                    flux_log (ctx->h, LOG_ERR,
+                              "%s: failed to schedule & allocate a job selected to run (rc=%d)",
+                              __FUNCTION__, rc);
+                }
+                destroy_lwj (job_copy);
+                job_copy = NULL;
+#if 0
+                // TODO: try and reintegrate this optimzation
                 // Optimization: don't try and schedule a job before a just allocated job
                 if (job->starttime > starttime)
                     starttime = job->starttime;
+#endif
             } else if (job->state == J_SCHEDREQ) {
                 pred_walltime = pred_func (ctx->h, job->lwj_id);
                 rc = reserve_job (ctx, plugin_ctx, copied_root_resrc, job, starttime, pred_walltime);
