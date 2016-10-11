@@ -405,6 +405,49 @@ void resrc_reqst_print (resrc_reqst_t *resrc_reqst)
     }
 }
 
+static void resrc_reqst_to_string_helper (resrc_reqst_t *resrc_reqst, FILE* ss)
+{
+    if (resrc_reqst) {
+        char *shared = resrc_reqst->exclusive ? "exclusive" : "shared";
+
+        fprintf (ss, "%"PRId64" of %"PRId64" %s ", resrc_reqst->nfound,
+                resrc_reqst->reqrd_qty, shared);
+        char *resrc_str = resrc_to_string (resrc_reqst->resrc);
+        fprintf (ss, "%s\n", resrc_str);
+        free (resrc_str);
+        // TODO: add graph support
+        //resrc_graph_req_print (resrc_reqst->g_reqs);
+        if (resrc_reqst_num_children (resrc_reqst)) {
+            resrc_reqst_t *child = resrc_reqst_list_first
+                (resrc_reqst->children);
+            while (child) {
+                resrc_reqst_to_string_helper (child, ss);
+                child = resrc_reqst_list_next (resrc_reqst->children);
+            }
+        }
+    }
+}
+
+char *resrc_reqst_to_string (resrc_reqst_t *resrc_reqst)
+{
+    char *buf = NULL;
+    FILE *ss = NULL;
+    size_t len;
+
+    if (!resrc_reqst)
+        return NULL;
+    if (!(ss = open_memstream (&buf, &len)))
+        return NULL;
+
+    resrc_reqst_to_string_helper (resrc_reqst, ss);
+
+    fclose (ss);
+    if (buf[len-1] == '\n') {
+        buf[len-1] = '\0';
+    }
+    return buf;
+}
+
 /***********************************************************************
  * Resource request list
  ***********************************************************************/

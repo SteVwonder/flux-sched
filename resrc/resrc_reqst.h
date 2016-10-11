@@ -171,4 +171,6 @@ int64_t resrc_tree_search (resrc_t *resrc_in, resrc_reqst_t *resrc_reqst,
                            resrc_tree_t **found_tree, bool available);
 
 
+char *resrc_reqst_to_string (resrc_reqst_t *resrc_reqst);
+
 #endif /* !FLUX_RESRC_REQST_H */
