@@ -128,6 +128,7 @@ typedef struct {
     rdlctx_t      rctx;               /* RDL context */
     simctx_t      sctx;               /* simulator context */
     struct sched_plugin_loader *loader; /* plugin loader */
+    sched_ctx_t *plugin_ctx;  /* plugin context */
     flux_watcher_t *before;
     flux_watcher_t *after;
     flux_watcher_t *idle;
@@ -333,6 +334,10 @@ static void freectx (void *arg)
         zlist_destroy (&(ctx->sctx.jsc_queue));
     if (ctx->sctx.timer_queue)
         zlist_destroy (&(ctx->sctx.timer_queue));
+    if (ctx->plugin_ctx) {
+        struct sched_plugin *plugin = sched_plugin_get(ctx->loader);
+        plugin->destroy_ctx (ctx->plugin_ctx);
+    }
     if (ctx->loader)
         sched_plugin_loader_destroy (ctx->loader);
     if (ctx->before)
@@ -370,6 +375,7 @@ static ssrvctx_t *getctx (flux_t h)
         ctx->sctx.res_queue = NULL;
         ctx->sctx.jsc_queue = NULL;
         ctx->sctx.timer_queue = NULL;
+        ctx->plugin_ctx = NULL;
         ctx->loader = NULL;
         ctx->before = NULL;
         ctx->after = NULL;
@@ -459,9 +465,12 @@ static int plugin_process_args (ssrvctx_t *ctx, char *userplugin_opts)
     int rc = -1;
     char *argz = NULL;
     size_t argz_len = 0;
-    struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
     const sched_params_t *sp = &(ctx->arg.s_params);
+    struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
 
+    if (!plugin)
+        flux_log (ctx->h, LOG_ERR, "%s: failed to get plugin from loader", __FUNCTION__);
+    ctx->plugin_ctx = plugin->create_ctx (ctx->h);
     if (userplugin_opts)
         argz_create_sep (userplugin_opts, ',', &argz, &argz_len);
     if (plugin->process_args (ctx->h, argz, argz_len, sp) < 0)
@@ -1367,7 +1376,7 @@ static int req_tpexec_run (flux_t h, flux_lwj_t *job)
  * are found than the job requires, and if the job asks to reserve
  * resources, then those resources will be reserved.
  */
-int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
+int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job, int64_t starttime)
 {
     JSON req_res = NULL;
     flux_t h = ctx->h;
@@ -1464,10 +1473,10 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
 
         resrc_tree_unstage_resources (found_tree);
         resrc_reqst_clear_found (resrc_reqst);
-        if ((selected_tree = plugin->select_resources (h, found_tree,
+        if ((selected_tree = plugin->select_resources (h, plugin_ctx, found_tree,
                                                        resrc_reqst, NULL))) {
             if (resrc_reqst_all_found (resrc_reqst)) {
-                plugin->allocate_resources (h, selected_tree, job->lwj_id,
+                plugin->allocate_resources (h, plugin_ctx, selected_tree, job->lwj_id,
                                             starttime, starttime +
                                             job->req->walltime);
                 /* Scheduler specific job transition */
@@ -1489,7 +1498,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
                           job->lwj_id);
             } else {
                 resrc_reqst_clear_found (resrc_reqst);
-                rc = plugin->reserve_resources (h, &selected_tree, job->lwj_id,
+                rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                                 starttime, job->req->walltime,
                                                 ctx->rctx.root_resrc,
                                                 resrc_reqst);
@@ -1503,7 +1512,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
         }
     } else {
         resrc_reqst_clear_found (resrc_reqst);
-        rc = plugin->reserve_resources (h, &selected_tree, job->lwj_id,
+        rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                         starttime, job->req->walltime,
                                         ctx->rctx.root_resrc,
                                         resrc_reqst);
@@ -1524,7 +1533,7 @@ done:
     return rc;
 }
 
-static int reserve_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime, int64_t walltime)
+static int reserve_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, flux_lwj_t *job, int64_t starttime, int64_t walltime)
 {
     JSON req_res = NULL;
     flux_t h = ctx->h;
@@ -1612,7 +1621,7 @@ static int reserve_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime, int6
               __FUNCTION__, nreqrd,
               resrc_type (resrc_reqst_resrc (resrc_reqst)), job->lwj_id);
     resrc_reqst_clear_found (resrc_reqst);
-    rc = plugin->reserve_resources (h, &selected_tree, job->lwj_id,
+    rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                     starttime, walltime,
                                     ctx->rctx.root_resrc,
                                     resrc_reqst);
@@ -1777,16 +1786,19 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
     int qdepth = 0;
     flux_lwj_t *job = NULL;
     zlist_t *jobs = ctx->p_queue;
-    struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
     int64_t starttime = (ctx->sctx.in_sim) ?
         (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
     int64_t walltime = -1;
+    struct sched_plugin *plugin = NULL;
+    sched_ctx_t *plugin_ctx = NULL;
 
     resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
-    rc = plugin->sched_loop_setup (ctx->h);
     for (job = zlist_first (jobs), qdepth=0;
          !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
          job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
+    plugin = sched_plugin_get (ctx->loader);
+    plugin_ctx = plugin->create_ctx (ctx->h);
+    rc = plugin->sched_loop_setup (ctx->h, plugin_ctx);
         {
             if (job->state == J_SELECTED) {
                 // Optimization: don't try and schedule a job before a just allocated job
@@ -1794,11 +1806,12 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
                     starttime = job->starttime;
             } else if (job->state == J_SCHEDREQ) {
                 walltime = pred_func (ctx->h, job->lwj_id);
-                rc = reserve_job (ctx, job, starttime, walltime);
+                rc = reserve_job (ctx, plugin_ctx, job, starttime, pred_walltime);
             }
     }
     flux_log (ctx->h, LOG_DEBUG, "%s: %s predictions:", __FUNCTION__, pred_label);
     print_job_reservation_starttimes (ctx, pred_label);
+    plugin->destroy_ctx (plugin_ctx);
 }
 
 static void make_all_predictions (ssrvctx_t *ctx)
@@ -1815,6 +1828,7 @@ static int schedule_jobs (ssrvctx_t *ctx)
     int qdepth = 0;
     flux_lwj_t *job = NULL;
     struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
+    sched_ctx_t *plugin_ctx = ctx->plugin_ctx;
     /* Prioritizing the job queue is left to an external agent.  In
      * this way, the scheduler's activities are pared down to just
      * scheduling activies.
@@ -1828,11 +1842,11 @@ static int schedule_jobs (ssrvctx_t *ctx)
     resrc_tree_release_all_reservations (resrc_phys_tree (ctx->rctx.root_resrc));
     if (!plugin)
         return -1;
-    rc = plugin->sched_loop_setup (ctx->h);
+    rc = plugin->sched_loop_setup (ctx->h, plugin_ctx);
     job = zlist_first (jobs);
     while (!rc && job && (qdepth < ctx->arg.s_params.queue_depth)) {
         if (job->state == J_SCHEDREQ) {
-            rc = schedule_job (ctx, job, starttime);
+            rc = schedule_job (ctx, plugin_ctx, job, starttime);
         }
         if (rc) {
             flux_log (ctx->h, LOG_DEBUG, "%s: rc (%d) != 0, breaking out of loop", __FUNCTION__, rc);

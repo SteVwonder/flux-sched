@@ -100,6 +100,18 @@ static struct sched_plugin *plugin_create (flux_t h, void *dso)
         flux_log (h, LOG_ERR, "can't load process_args: %s", strerr);
         goto error;
     }
+    plugin->create_ctx = dlsym (dso, "create_ctx");
+    strerr = dlerror();
+    if (strerr || !plugin->create_ctx || !*plugin->create_ctx) {
+        flux_log (h, LOG_ERR, "can't load create_ctx: %s", strerr);
+        goto error;
+    }
+    plugin->destroy_ctx = dlsym (dso, "destroy_ctx");
+    strerr = dlerror();
+    if (strerr || !plugin->destroy_ctx || !*plugin->destroy_ctx) {
+        flux_log (h, LOG_ERR, "can't load destroy_ctx: %s", strerr);
+        goto error;
+    }
     plugin->dso = dso;
     return plugin;
 error:

@@ -70,6 +70,7 @@ typedef struct {
     bool delay_sched;        /* delay scheduling on individual job event */
 } sched_params_t;
 
+typedef struct sched_ctx_struct sched_ctx_t;
 
 /*
  * The following defines the default values for all of the scheduling

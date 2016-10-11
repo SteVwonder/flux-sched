@@ -6,5 +6,7 @@
     select_resources;
     mod_name;
     process_args;
+    create_ctx;
+    destroy_ctx;
   local: *;
 };

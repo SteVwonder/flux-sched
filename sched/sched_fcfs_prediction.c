@@ -42,19 +42,21 @@
 #include "resrc_reqst.h"
 #include "scheduler.h"
 
-static zlist_t *allocation_completion_times = NULL;
-static zlist_t *reservation_times = NULL;
-static int64_t prev_alloc_starttime = -1;
-static int64_t prev_reservation_starttime = -1;
-const static int64_t max_reservation_depth = MAX_RESERVATION;
-static int64_t curr_reservation_depth = 0;
+struct sched_ctx_struct {
+    zlist_t *allocation_completion_times;
+    zlist_t *reservation_times;
+    int64_t prev_alloc_starttime ;
+    int64_t prev_reservation_starttime;
+    int64_t curr_reservation_depth;
+    int64_t max_reservation_depth;
+};
 
-static int64_t get_max_prev_starttime ()
+static int64_t get_max_prev_starttime (sched_ctx_t *ctx)
 {
     //TODO: use a max func or ternary op
-    int64_t max_prev_starttime = prev_alloc_starttime;
-    if (prev_reservation_starttime > prev_alloc_starttime)
-        max_prev_starttime = prev_reservation_starttime;
+    int64_t max_prev_starttime = ctx->prev_alloc_starttime;
+    if (ctx->prev_reservation_starttime > ctx->prev_alloc_starttime)
+        max_prev_starttime = ctx->prev_reservation_starttime;
     return max_prev_starttime;
 }
 
@@ -80,7 +82,7 @@ static bool select_children (flux_t h, resrc_tree_list_t *children,
                              resrc_reqst_list_t *reqst_children,
                              resrc_tree_t *selected_parent);
 
-resrc_tree_t *select_resources (flux_t h, resrc_tree_t *found_tree,
+resrc_tree_t *select_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t *found_tree,
                                 resrc_reqst_t *resrc_reqst,
                                 resrc_tree_t *selected_parent);
 
@@ -88,26 +90,29 @@ static resrc_tree_t *internal_select_resources (flux_t h, resrc_tree_t *found_tr
                                 resrc_reqst_t *resrc_reqst,
                                 resrc_tree_t *selected_parent);
 
-int sched_loop_setup (flux_t h)
+int sched_loop_setup (flux_t h, sched_ctx_t* ctx)
 {
-    if (!allocation_completion_times)
-        allocation_completion_times = zlist_new ();
-    if (!reservation_times)
-        reservation_times = zlist_new ();
-    else
-        zlist_purge (reservation_times);
-    prev_reservation_starttime = -1;
-    curr_reservation_depth = 0;
+    if (!ctx) {
+        flux_log (h, LOG_ERR, "%s: invalid arguments", __FUNCTION__);
+        return -1;
+    }
+
+    zlist_purge (ctx->reservation_times);
+    ctx->prev_reservation_starttime = -1;
+    ctx->curr_reservation_depth = 0;
+
+    flux_log (h, LOG_DEBUG, "%s: %zu items in allocation_completion_times",
+              __FUNCTION__, zlist_size (ctx->allocation_completion_times));
 
     int64_t *completion_time = NULL;
-    for (completion_time = zlist_first (allocation_completion_times);
+    for (completion_time = zlist_first (ctx->allocation_completion_times);
          completion_time;
-         completion_time = zlist_next (allocation_completion_times)) {
-        if (*completion_time < prev_alloc_starttime) {
+         completion_time = zlist_next (ctx->allocation_completion_times)) {
+        if (*completion_time < ctx->prev_alloc_starttime) {
             flux_log (h, LOG_DEBUG,
                       "%s: completion time %"PRId64" < previous job starttime %"PRId64", removing from zlist",
-                      __FUNCTION__, *completion_time, prev_alloc_starttime);
-            zlist_remove (allocation_completion_times, completion_time);
+                      __FUNCTION__, *completion_time, ctx->prev_alloc_starttime);
+            zlist_remove (ctx->allocation_completion_times, completion_time);
         }
     }
 
@@ -278,12 +283,18 @@ static resrc_tree_t *internal_select_resources (flux_t h, resrc_tree_t *found_tr
  *          selected_parent - parent of the selected resource tree
  * Returns: a resource tree of however many resources were selected
  */
-resrc_tree_t *select_resources (flux_t h, resrc_tree_t *found_tree,
+resrc_tree_t *select_resources (flux_t h, sched_ctx_t* ctx, resrc_tree_t *found_tree,
                                 resrc_reqst_t *resrc_reqst,
                                 resrc_tree_t *selected_parent)
 {
+    if (!ctx) {
+        flux_log (h, LOG_ERR, "%s: invalid arguments", __FUNCTION__);
+        return NULL;
+    }
+
     int64_t reqst_starttime = resrc_reqst_starttime (resrc_reqst);
-    int64_t max_prev_starttime = get_max_prev_starttime();
+    int64_t max_prev_starttime = get_max_prev_starttime (ctx);
+
     if (reqst_starttime < max_prev_starttime) {
         flux_log (h, LOG_DEBUG, "%s: request starttime (%"PRId64") < max_prev_startttime (%"PRId64"), skipping",
                   __FUNCTION__, reqst_starttime, max_prev_starttime);
@@ -296,10 +307,15 @@ resrc_tree_t *select_resources (flux_t h, resrc_tree_t *found_tree,
     return internal_select_resources (h, found_tree, resrc_reqst, selected_parent);
 }
 
-int allocate_resources (flux_t h, resrc_tree_t *selected_tree, int64_t job_id,
+int allocate_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t *selected_tree, int64_t job_id,
                         int64_t starttime, int64_t endtime)
 {
     int rc = -1;
+
+    if (!ctx) {
+        flux_log (h, LOG_ERR, "%s: invalid arguments", __FUNCTION__);
+        return -1;
+    }
 
     if (selected_tree) {
         rc = resrc_tree_allocate (selected_tree, job_id, starttime, endtime);
@@ -307,11 +323,11 @@ int allocate_resources (flux_t h, resrc_tree_t *selected_tree, int64_t job_id,
         if (!rc) {
             int64_t *completion_time = xzmalloc (sizeof(int64_t));
             *completion_time = endtime;
-            rc = zlist_append (allocation_completion_times, completion_time);
-            zlist_freefn (allocation_completion_times, completion_time, free, true);
+            rc = zlist_append (ctx->allocation_completion_times, completion_time);
+            zlist_freefn (ctx->allocation_completion_times, completion_time, free, true);
             flux_log (h, LOG_DEBUG, "Allocated job %"PRId64" from %"PRId64" to "
                       "%"PRId64"", job_id, starttime, *completion_time);
-            prev_alloc_starttime = starttime;
+            ctx->prev_alloc_starttime = starttime;
         }
     }
 
@@ -326,7 +342,7 @@ int allocate_resources (flux_t h, resrc_tree_t *selected_tree, int64_t job_id,
  * available, reserve those, and return the pointer to the selected
  * tree.
  */
-int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
+int reserve_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t **selected_tree, int64_t job_id,
                        int64_t starttime, int64_t walltime, resrc_t *resrc,
                        resrc_reqst_t *resrc_reqst)
 {
@@ -338,35 +354,35 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
     zlist_t *completion_times = zlist_new ();
     int i = 0;
 
-    if (!resrc || !resrc_reqst) {
+    if (!resrc || !resrc_reqst || !ctx) {
         flux_log (h, LOG_ERR, "%s: invalid arguments", __FUNCTION__);
         goto ret;
     }
 
-    if (curr_reservation_depth >= max_reservation_depth) {
+    if (ctx->curr_reservation_depth >= ctx->max_reservation_depth) {
         goto ret;
     }
-    curr_reservation_depth++;
+    ctx->curr_reservation_depth++;
 
     if (*selected_tree) {
         resrc_tree_destroy (*selected_tree, false);
         *selected_tree = NULL;
     }
 
-    for (completion_time = zlist_first (allocation_completion_times);
+    for (completion_time = zlist_first (ctx->allocation_completion_times);
          completion_time;
-         completion_time = zlist_next (allocation_completion_times)) {
+         completion_time = zlist_next (ctx->allocation_completion_times)) {
         zlist_append (completion_times, completion_time);
     }
-    for (completion_time = zlist_first (reservation_times);
+    for (completion_time = zlist_first (ctx->reservation_times);
          completion_time;
-         completion_time = zlist_next (reservation_times)) {
+         completion_time = zlist_next (ctx->reservation_times)) {
         zlist_append (completion_times, completion_time);
     }
 
     zlist_sort (completion_times, compare_int64_ascending);
 
-    int64_t max_prev_starttime = get_max_prev_starttime();
+    int64_t max_prev_starttime = get_max_prev_starttime (ctx);
 
     flux_log (h, LOG_DEBUG, "%s: %zu times to consider", __FUNCTION__, zlist_size (completion_times));
     for (completion_time = zlist_first (completion_times);
@@ -426,13 +442,13 @@ int reserve_resources (flux_t h, resrc_tree_t **selected_tree, int64_t job_id,
                               *completion_time + 1 + walltime);
                     int64_t *time = xzmalloc (sizeof(int64_t));
                     *time = *completion_time + 1 + walltime;
-                    rc = zlist_append (reservation_times, time);
-                    zlist_freefn (reservation_times, time, free, true);
+                    zlist_append (ctx->reservation_times, time);
+                    zlist_freefn (ctx->reservation_times, time, free, true);
                     time = xzmalloc (sizeof(int64_t));
                     *time = *completion_time + 1;
-                    rc = zlist_append (reservation_times, time);
-                    zlist_freefn (reservation_times, time, free, true);
-                    prev_reservation_starttime = *completion_time + 1;
+                    zlist_append (ctx->reservation_times, time);
+                    zlist_freefn (ctx->reservation_times, time, free, true);
+                    ctx->prev_reservation_starttime = *completion_time + 1;
                 }
                 break;
             } else {
@@ -455,6 +471,33 @@ int process_args (flux_t h, char *argz, size_t argz_len, const sched_params_t *s
     return 0;
 }
 
+sched_ctx_t *create_ctx (flux_t h)
+{
+    sched_ctx_t *ctx = malloc (sizeof (sched_ctx_t));
+
+    ctx->allocation_completion_times = zlist_new ();
+    ctx->reservation_times = zlist_new ();
+
+    ctx->curr_reservation_depth = -1;
+    ctx->prev_alloc_starttime = -1;
+    ctx->prev_reservation_starttime = -1;
+    ctx->max_reservation_depth = MAX_RESERVATION;
+
+    return ctx;
+}
+
+void destroy_ctx (sched_ctx_t *ctx)
+{
+    if (!ctx)
+        return;
+
+    if (ctx->allocation_completion_times)
+        zlist_destroy (&ctx->allocation_completion_times);
+    if (ctx->reservation_times)
+        zlist_destroy (&ctx->reservation_times);
+
+    free (ctx);
+}
 
 MOD_NAME ("sched.fcfs-prediction");
 

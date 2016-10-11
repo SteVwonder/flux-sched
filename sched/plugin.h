@@ -8,25 +8,25 @@ struct sched_plugin {
     char         *name;               /* Name of plugin */
     char         *path;               /* Path to plugin dso */
 
-    int                  (*sched_loop_setup)(flux_t h);
+    int                  (*sched_loop_setup)(flux_t h, sched_ctx_t *ctx);
 
     int64_t              (*find_resources)(flux_t h,
                                            resrc_t *resrc,
                                            resrc_reqst_t *resrc_reqst,
                                            resrc_tree_t **found_tree);
 
-    resrc_tree_t *       (*select_resources)(flux_t h,
+    resrc_tree_t *       (*select_resources)(flux_t h, sched_ctx_t *ctx,
                                              resrc_tree_t *found_tree,
                                              resrc_reqst_t *resrc_reqst,
                                              resrc_tree_t *selected_parent);
 
-    int                  (*allocate_resources)(flux_t h,
+    int                  (*allocate_resources)(flux_t h, sched_ctx_t *ctx,
                                                resrc_tree_t *rt,
                                                int64_t job_id,
                                                int64_t starttime,
                                                int64_t endtime);
 
-    int                  (*reserve_resources)(flux_t h,
+    int                  (*reserve_resources)(flux_t h, sched_ctx_t *ctx,
                                               resrc_tree_t **selected_tree,
                                               int64_t job_id,
                                               int64_t starttime,
@@ -38,6 +38,9 @@ struct sched_plugin {
                                          char *argz,
                                          size_t argz_len,
                                          const sched_params_t *params);
+
+    sched_ctx_t *        (*create_ctx)(flux_t h);
+    void                 (*destroy_ctx)(sched_ctx_t *ctx);
 };
 
 /* Create/destroy the plugin loader apparatus.
