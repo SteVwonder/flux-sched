@@ -266,5 +266,6 @@ static inline int64_t epochtime ()
 }
 
 void resrc_flux_log (flux_t h, resrc_t *resrc);
+void resrc_set_phys_tree (resrc_t *resrc, resrc_tree_t *resrc_tree);
 
 #endif /* !FLUX_RESRC_H */

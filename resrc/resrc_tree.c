@@ -455,6 +455,21 @@ void resrc_tree_list_flux_log (flux_t h, resrc_tree_list_t *tree_list)
     }
 }
 
+void resrc_tree_set_phys_tree (resrc_tree_t *resrc_tree)
+{
+    if (!resrc_tree)
+        return;
+
+    resrc_set_phys_tree (resrc_tree_resrc (resrc_tree), resrc_tree);
+
+    resrc_tree_t *child = NULL;
+    for (child = resrc_tree_list_first (resrc_tree_children (resrc_tree));
+         child;
+         child = resrc_tree_list_next (resrc_tree_children (resrc_tree))) {
+            resrc_tree_set_phys_tree (child);
+    }
+}
+
 /*
  * vi: ts=4 sw=4 expandtab
  */

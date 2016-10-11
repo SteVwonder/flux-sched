@@ -1618,6 +1618,12 @@ void resrc_flux_log (flux_t h, resrc_t *resrc)
     free (str);
 }
 
+void resrc_set_phys_tree (resrc_t *resrc, resrc_tree_t *resrc_tree)
+{
+    if (resrc)
+        resrc->phys_tree = resrc_tree;
+}
+
 /*
  * vi: ts=4 sw=4 expandtab
  */

@@ -1854,6 +1854,7 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
         flux_log (ctx->h, LOG_ERR, "%s: failed to deserialize resrc_tree", __FUNCTION__);
         return;
     }
+    resrc_tree_set_phys_tree (copied_resrc_tree);
     resrc_t *copied_root_resrc = resrc_tree_resrc (copied_resrc_tree);
     if (!copied_root_resrc) {
         flux_log (ctx->h, LOG_ERR, "%s: failed to get root_resrc from deserialized resrc_tree", __FUNCTION__);

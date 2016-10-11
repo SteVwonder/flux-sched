@@ -166,5 +166,6 @@ void resrc_tree_list_unstage_resources (resrc_tree_list_t *rtl);
 
 void resrc_tree_flux_log (flux_t h, resrc_tree_t *rt);
 void resrc_tree_list_flux_log (flux_t h, resrc_tree_list_t *tree_list);
+void resrc_tree_set_phys_tree (resrc_tree_t *resrc_tree);
 
 #endif /* !FLUX_RESRC_TREE_H */
