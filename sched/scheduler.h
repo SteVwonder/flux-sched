@@ -83,7 +83,6 @@ typedef struct sched_ctx_struct sched_ctx_t;
 #define SCHED_PARAM_Q_DEPTH_DEFAULT 200
 //#define SCHED_PARAM_Q_DEPTH_DEFAULT 50
 #define SCHED_PARAM_DELAY_DEFAULT true
-#define ITERS_BETWEEN_PREDICTIONS 25
 
 const sched_params_t *sched_params_get (flux_t h);
 

@@ -116,6 +116,7 @@ int insert_into_job (job_t *job, char *column_name, char *value)
                         "IORate(MB)")) {
         job->io_rate = atol (value);
     }
+
     return 0;
 }
 
@@ -181,6 +182,21 @@ int parse_job_csv (flux_t h, char *filename, zlist_t *jobs)
             insert_into_job (curr_job, curr_column, token);
             token = strtok (NULL, ",");
             curr_column = zlist_next (header);
+        }
+        if (curr_job->execution_time > curr_job->time_limit) {
+            flux_log (h, LOG_ERR, "%s: Job %d has an execution time (%f) > than time_limit (%f)",
+                      __FUNCTION__, curr_job->id, curr_job->execution_time, curr_job->time_limit);
+            curr_job->execution_time = curr_job->time_limit;
+        }
+        if (curr_job->predicted_runtime > curr_job->time_limit) {
+            flux_log (h, LOG_ERR, "%s: Job %d has a predicted runtime (%f) > than time_limit (%f)",
+                      __FUNCTION__, curr_job->id, curr_job->predicted_runtime, curr_job->time_limit);
+            curr_job->predicted_runtime = curr_job->time_limit;
+        }
+        if (curr_job->submit_time < 0) {
+            flux_log (h, LOG_ERR, "%s: Job %d has a submit time (%f) < 0, setting to 0",
+                      __FUNCTION__, curr_job->id, curr_job->submit_time);
+            curr_job->submit_time = 0;
         }
         zlist_append (jobs, curr_job);
         fget_rc = fgets (curr_line, MAX_LINE_LEN, fp);

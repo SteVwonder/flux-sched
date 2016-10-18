@@ -1888,7 +1888,12 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
 
                 // If the time already run > predicted runtime,
                 // don't schedule the job, skip it (optimziation)
-                if (ctx->sctx.sim_state->sim_time - job->starttime <= pred_walltime) {
+                if (ctx->sctx.sim_state->sim_time - job->starttime > pred_walltime) {
+                    flux_log (ctx->h, LOG_DEBUG,
+                              "%s (%s): skipping the rescheduleing of a running job (%"PRId64") that is predicted to already be complete,"
+                              " starttime: %"PRId64", pred_walltime: %"PRId64", sim_time: %f",
+                              __FUNCTION__, pred_label, job->lwj_id,
+                              job->starttime, pred_walltime, ctx->sctx.sim_state->sim_time);
                     continue;
                 } else {
                     // copy the job struct, change the walltime,
@@ -1918,6 +1923,7 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
     // Schedule all jobs that were selected to run.  Make reservations
     // for jobs in the pending queue.  Reservations are made up until
     // some threshold/stop condition.
+    flux_log (ctx->h, LOG_DEBUG, "%s: processing pending jobs for %s predictions", __FUNCTION__, pred_label);
     for (job = zlist_first (pending_jobs), qdepth=0;
          (rc >= 0) && job && (qdepth < ctx->arg.s_params.queue_depth);
          job = (flux_lwj_t*)zlist_next (pending_jobs), qdepth++)
