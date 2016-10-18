@@ -352,6 +352,7 @@ int reserve_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t **selected_tree,
     int64_t prev_completion_time = -1;
     resrc_tree_t *found_tree = NULL;
     zlist_t *completion_times = zlist_new ();
+    int64_t *current_starttime = NULL;
     int i = 0;
 
     if (!resrc || !resrc_reqst || !ctx) {
@@ -380,9 +381,20 @@ int reserve_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t **selected_tree,
         zlist_append (completion_times, completion_time);
     }
 
-    zlist_sort (completion_times, compare_int64_ascending);
-
+    // TODO: subtract 1
     int64_t max_prev_starttime = get_max_prev_starttime (ctx);
+    // Include the current time or prev_starttime (which is newer) as
+    // a considered time
+    current_starttime = malloc (sizeof(int64_t));
+    if (max_prev_starttime > starttime)
+        *current_starttime = max_prev_starttime;
+    else
+        *current_starttime = starttime;
+    flux_log (h, LOG_DEBUG, "max_prev_starttime: %"PRId64", starttiem: %"PRId64"", max_prev_starttime, starttime);
+    flux_log (h, LOG_DEBUG, "Adding %"PRId64" to times to consider", *current_starttime);
+    zlist_append (completion_times, current_starttime);
+
+    zlist_sort (completion_times, compare_int64_ascending);
 
     flux_log (h, LOG_DEBUG, "%s: %zu times to consider", __FUNCTION__, zlist_size (completion_times));
     for (completion_time = zlist_first (completion_times);
@@ -445,10 +457,10 @@ int reserve_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t **selected_tree,
                     *time = *completion_time + 1 + walltime;
                     zlist_append (ctx->reservation_times, time);
                     zlist_freefn (ctx->reservation_times, time, free, true);
-                    time = xzmalloc (sizeof(int64_t));
-                    *time = *completion_time + 1;
-                    zlist_append (ctx->reservation_times, time);
-                    zlist_freefn (ctx->reservation_times, time, free, true);
+                    /* time = xzmalloc (sizeof(int64_t)); */
+                    /* *time = *completion_time + 1; */
+                    /* zlist_append (ctx->reservation_times, time); */
+                    /* zlist_freefn (ctx->reservation_times, time, free, true); */
                     ctx->prev_reservation_starttime = *completion_time + 1;
                     rc = 0;
                 }
@@ -467,6 +479,9 @@ int reserve_resources (flux_t h, sched_ctx_t *ctx, resrc_tree_t **selected_tree,
 ret:
     if (completion_times) {
         zlist_destroy (&completion_times);
+    }
+    if (current_starttime) {
+        free (current_starttime);
     }
     if (found_tree) {
         resrc_tree_destroy (found_tree, false);
