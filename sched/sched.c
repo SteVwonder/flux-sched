@@ -124,6 +124,7 @@ typedef struct {
     zhash_t      *job_index;          /* For fast job lookup for all queues*/
     zlist_t      *p_queue;            /* Pending job priority queue */
     bool          pq_state;           /* schedulable state change in p_queue */
+    bool          pq_submitted;
     zlist_t      *r_queue;            /* Running job queue */
     zlist_t      *c_queue;            /* Complete/cancelled job queue */
     machs_t      *machs;              /* Helps resolve resources to ranks */
@@ -405,6 +406,7 @@ static ssrvctx_t *getctx (flux_t h)
         if (!(ctx->p_queue = zlist_new ()))
             oom ();
         ctx->pq_state = false;
+        ctx->pq_submitted = false;
         if (!(ctx->r_queue = zlist_new ()))
             oom ();
         if (!(ctx->c_queue = zlist_new ()))
@@ -583,6 +585,7 @@ static int q_mark_schedulability (ssrvctx_t *ctx, flux_lwj_t *job)
     if (ctx->pq_state == false
         && job->enqueue_pos <= ctx->arg.s_params.queue_depth) {
         ctx->pq_state = true;
+        ctx->pq_submitted = true;
         return 0;
     }
     return -1;
@@ -1551,6 +1554,12 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, resrc_t *root_resrc, 
                 rc = 0;
             } else {
                 resrc_reqst_clear_found (resrc_reqst);
+                if (!ctx->pq_submitted) {
+                    if (selected_tree) {
+                        resrc_tree_destroy (selected_tree, false);
+                    }
+                    goto done;
+                }
                 child_rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                                 starttime, job->req->walltime,
                                                 root_resrc,
@@ -1565,8 +1574,11 @@ int schedule_job (ssrvctx_t *ctx, sched_ctx_t *plugin_ctx, resrc_t *root_resrc, 
             }
         }
     } else {
-        flux_log (h, LOG_ERR, "%s: find_resources failed to find anything, attempting to reserve", __FUNCTION__);
         resrc_reqst_clear_found (resrc_reqst);
+        if (!ctx->pq_submitted) {
+            goto done;
+        }
+        flux_log (h, LOG_DEBUG, "%s: find_resources failed to find anything, attempting to reserve", __FUNCTION__);
         rc = plugin->reserve_resources (h, plugin_ctx, &selected_tree, job->lwj_id,
                                         starttime, job->req->walltime,
                                         root_resrc,
@@ -1733,7 +1745,6 @@ static void print_job_reservation_starttimes (ssrvctx_t *ctx, const char* predic
     char *filename = NULL;
     static zhash_t *outfiles = NULL;
     FILE *outfile = NULL;
-    int hacky_count = 0;
 
     if (!outfiles) {
         outfiles = zhash_new ();
@@ -1755,7 +1766,7 @@ static void print_job_reservation_starttimes (ssrvctx_t *ctx, const char* predic
     }
 
     for (job = zlist_first (jobs);
-         !rc && job && (qdepth < ctx->arg.s_params.queue_depth) && hacky_count < MAX_RESERVATION;
+         !rc && job && (qdepth < ctx->arg.s_params.queue_depth);
          job = (flux_lwj_t*)zlist_next (jobs), qdepth++)
         {
             if (job->state != J_SCHEDREQ) {
@@ -1770,8 +1781,8 @@ static void print_job_reservation_starttimes (ssrvctx_t *ctx, const char* predic
                           __FUNCTION__, job->lwj_id, predictor);
                 continue;
             }
-            hacky_count++;
-            flux_log (ctx->h, LOG_DEBUG, "%s: %s predicted a starttime of %"PRId64" for job %"PRId64" (hacky count == %d)", __FUNCTION__, predictor, starttime, job->lwj_id, hacky_count);
+            flux_log (ctx->h, LOG_DEBUG, "%s: %s predicted a starttime of %"PRId64" for job %"PRId64" (qdepth: %d)",
+                      __FUNCTION__, predictor, starttime, job->lwj_id, qdepth);
             fprintf (outfile, "%f, %"PRId64", %"PRId64"\n", ctx->sctx.sim_state->sim_time, job->lwj_id, starttime);
             resrc_tree_destroy (job->resrc_tree, false);
     }
@@ -1866,6 +1877,7 @@ static void predict_job_starttimes (ssrvctx_t *ctx, const char *pred_label, Runt
 
     // Reschedule all currently running jobs
     rc = plugin->sched_loop_setup (ctx->h, plugin_ctx);
+    flux_log (ctx->h, LOG_DEBUG, "%s: processing running jobs for %s predictions", __FUNCTION__, pred_label);
     for (job = zlist_first (running_jobs);
          (rc == 0) && job;
          job = (flux_lwj_t*)zlist_next (running_jobs))
@@ -1991,7 +2003,6 @@ static int schedule_jobs (ssrvctx_t *ctx)
         job = (flux_lwj_t*)zlist_next (jobs);
         qdepth++;
     }
-    make_all_predictions (ctx);
 
     return rc;
 }
@@ -2182,7 +2193,13 @@ static void ev_check_cb (flux_reactor_t *r, flux_watcher_t *w, int ev, void *a)
     if (ctx->pq_state) {
         flux_log (ctx->h, LOG_DEBUG, "check callback about to schedule jobs.");
         ctx->pq_state = false;
-        schedule_jobs (ctx);
+        if (zlist_size (ctx->p_queue) > 0) {
+            schedule_jobs (ctx);
+            if (ctx->pq_submitted && zlist_size (ctx->p_queue) > 0) {
+                make_all_predictions (ctx);
+                ctx->pq_submitted = false;
+            }
+        }
     }
 }
 

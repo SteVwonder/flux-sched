@@ -489,7 +489,7 @@ sched_ctx_t *create_ctx (flux_t h)
     ctx->curr_reservation_depth = -1;
     ctx->prev_alloc_starttime = -1;
     ctx->prev_reservation_starttime = -1;
-    ctx->max_reservation_depth = MAX_RESERVATION;
+    ctx->max_reservation_depth = SCHED_PARAM_Q_DEPTH_DEFAULT;
 
     return ctx;
 }
