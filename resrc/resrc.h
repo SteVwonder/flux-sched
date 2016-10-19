@@ -255,7 +255,7 @@ int resrc_release_all_reservations (resrc_t *resrc);
  * Sets starttime to the start time of job_id's reservation
  * Returns -1 if no reservation exists for job_id
  */
-int resrc_reservation_starttime (resrc_t *resrc, int64_t job_id, int64_t *starttime);
+int resrc_job_endtime (resrc_t *resrc, int64_t job_id, int64_t *endtime);
 
 /*
  * Get epoch time
