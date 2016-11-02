@@ -958,7 +958,10 @@ needs:
         flux_log (h, LOG_DEBUG, "%s: Added need: = %s, ncores was: %ld, and walltime was= %ld", __FUNCTION__, Jtostr (req_res), job->req->ncores, job->req->walltime);
 
         char *key;
-        asprintf (&key, "need%d", jcount);
+        if (asprintf (&key, "need%d", jcount) < 0) {
+            flux_log (ctx->h, LOG_ERR, "(%s): create need key failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
         Jadd_ar_obj (r, req_res);
 
         //Jput (req_res);
@@ -1210,7 +1213,10 @@ static int return_idle_slack_resources (ssrvctx_t *ctx)
         }
         flux_log (h, LOG_DEBUG, "%s: Resource is return ready - %ss", __FUNCTION__, resrc_path (resrc));
         char *jobid_str = NULL;
-        asprintf (&jobid_str, "%ld", jobid);
+        if (asprintf (&jobid_str, "%ld", jobid) < 0) {
+            flux_log (ctx->h, LOG_ERR, "(%s): create jobid str failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
         char *juidarry = zhash_lookup (jobid_uuid_hash, jobid_str);
         if (juidarry) {
             JSON j = Jfromstr (juidarry);
@@ -1293,7 +1299,10 @@ static int add_job_complete_time (ssrvctx_t *ctx, flux_lwj_t *job)
     char *complete_key = NULL;
     double sim_time = ctx->sctx.sim_state->sim_time;
 
-    asprintf(&complete_key, "lwj.%"PRId64".complete_time", job->lwj_id);
+    if (asprintf (&complete_key, "lwj.%"PRId64".complete_time", job->lwj_id) < 0) {
+            flux_log (ctx->h, LOG_ERR, "(%s): create complete_key failed: %s",
+                      __FUNCTION__, strerror (errno));
+    }
     if (kvs_put_double (ctx->h, complete_key, sim_time) < 0) {
         flux_log_error (ctx->h, "%s: kvs_commit", __FUNCTION__);
         goto out;
@@ -1353,9 +1362,15 @@ static void set_next_event_slack_wrapper (ssrvctx_t *ctx, int jobid)
     if ((jobid < 0) && (ctx->my_job_id == 0)) return;
 
     if (jobid < 0) {
-        asprintf (&module, "sched.%s", ctx->sctx.parent_id);
+        if (asprintf (&module, "sched.%s", ctx->sctx.parent_id) < 0) {
+            flux_log (ctx->h, LOG_ERR, "(%s): create module str failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
     } else {
-        asprintf (&module, "sched.%s.%d", ctx->sctx.next_prefix, jobid);
+        if (asprintf (&module, "sched.%s.%d", ctx->sctx.next_prefix, jobid) < 0) {
+            flux_log (ctx->h, LOG_ERR, "(%s): create module str failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
     }
     flux_log (ctx->h, LOG_DEBUG,
               "%s: setting up next event for %s based on slack event",
@@ -1377,7 +1392,10 @@ static void set_next_event_timer_wrapper (ssrvctx_t *ctx)
     char *module = NULL;
     flux_log (ctx->h, LOG_DEBUG, "%s: setting up next timer for timer module", __FUNCTION__);
 
-    asprintf (&module, "sim_timer.%s", ctx->sctx.next_prefix);
+    if (asprintf (&module, "sim_timer.%s", ctx->sctx.next_prefix) < 0) {
+        flux_log (ctx->h, LOG_ERR, "(%s): create module str failed: %s",
+                  __FUNCTION__, strerror (errno));
+    }
     set_next_event (module, ctx->sctx.sim_state);
 
     flux_log (ctx->h, LOG_DEBUG, "%s: setup next timer for module %s", __FUNCTION__, module);
@@ -1501,7 +1519,10 @@ static void check_completion (ssrvctx_t *ctx)
             set_next_event_slack_wrapper (ctx, -1);
         }
         char *module = NULL;
-        asprintf (&module, "init_prog.%s", ctx->sctx.next_prefix);
+        if (asprintf (&module, "init_prog.%s", ctx->sctx.next_prefix) < 0) {
+            flux_log (ctx->h, LOG_ERR, "(%s): create module str failed: %s",
+                      __FUNCTION__, strerror (errno));
+}
         flux_log (ctx->h, LOG_DEBUG, "%s: setting timer event for %s", __FUNCTION__, module);
         set_next_event(module, ctx->sctx.sim_state);
         free (module);
@@ -1755,8 +1776,11 @@ static int reg_sim_events (ssrvctx_t *ctx)
     }
 
     char *schedtrigger, *schedtimer;
-    asprintf (&schedtrigger, "%s.trigger", ctx->sctx.module_name);
-    asprintf (&schedtimer, "%s.timer", ctx->sctx.module_name);
+    if ((asprintf (&schedtrigger, "%s.trigger", ctx->sctx.module_name) < 0) ||
+        (asprintf (&schedtimer, "%s.timer", ctx->sctx.module_name) < 0)) {
+        flux_log (ctx->h, LOG_ERR, "(%s): create sched trigger str failed: %s",
+                  __FUNCTION__, strerror (errno));
+    }
 
     // TODO: move this htab outside of this function with topics we know a-priori
     // Then use add the dynamic ones one-by-one in this function
@@ -1875,12 +1899,18 @@ static int setup_sim (ssrvctx_t *ctx, bool sim)
     }
 
     if (ctx->arg.module_name_prefix) {
-        asprintf (&(ctx->sctx.module_name), "sched.%s.%ld", ctx->arg.module_name_prefix, ctx->my_job_id);
-        asprintf (&(ctx->sctx.next_prefix), "%s.%ld", ctx->arg.module_name_prefix, ctx->my_job_id);
-        asprintf (&(ctx->sctx.parent_id), "%s", ctx->arg.module_name_prefix);
+        if ((asprintf (&(ctx->sctx.module_name), "sched.%s.%ld", ctx->arg.module_name_prefix, ctx->my_job_id) < 0) ||
+            (asprintf (&(ctx->sctx.next_prefix), "%s.%ld", ctx->arg.module_name_prefix, ctx->my_job_id) < 0) ||
+            (asprintf (&(ctx->sctx.parent_id), "%s", ctx->arg.module_name_prefix) < 0)) {
+            flux_log (ctx->h, LOG_ERR, "(%s): setup module names failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
     } else {
-        asprintf (&(ctx->sctx.module_name), "sched.%ld", ctx->my_job_id);
-        asprintf (&(ctx->sctx.next_prefix), "%ld", ctx->my_job_id);
+        if ((asprintf (&(ctx->sctx.module_name), "sched.%ld", ctx->my_job_id) < 0) ||
+            (asprintf (&(ctx->sctx.next_prefix), "%ld", ctx->my_job_id) < 0)) {
+            flux_log (ctx->h, LOG_ERR, "(%s): setup module names failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
         ctx->sctx.parent_id = NULL;
     }
 
@@ -1898,7 +1928,10 @@ static int setup_sim (ssrvctx_t *ctx, bool sim)
         ctx->sctx.sim_h = ctx->h;
     }
 
-    asprintf (&my_simexec_module, "sim_exec.%s", ctx->sctx.next_prefix);
+    if (asprintf (&my_simexec_module, "sim_exec.%s", ctx->sctx.next_prefix) < 0) {
+        flux_log (ctx->h, LOG_ERR, "(%s): create sim_exec module str failed: %s",
+                  __FUNCTION__, strerror (errno));
+    }
 
     rc = 0;
 done:
@@ -3552,7 +3585,10 @@ static void req_askresources_cb (flux_t h, flux_msg_handler_t *w, const flux_msg
         }
         if (leasee != 0) {
             char *leasee_str;
-            asprintf (&leasee_str, "%ld", leasee);
+            if (asprintf (&leasee_str, "%ld", leasee) < 0) {
+                flux_log (ctx->h, LOG_ERR, "(%s): create leasee_str failed: %s",
+                          __FUNCTION__, strerror (errno));
+            }
             JSON da = NULL;
             if (!(Jget_obj (juid, leasee_str, &da))) {
                 // add new entry

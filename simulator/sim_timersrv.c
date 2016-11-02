@@ -211,14 +211,20 @@ int mod_main (flux_t h, int argc, char **argv)
     ctx->is_root = (prefix == NULL);
 
     if (prefix) {
-        asprintf (&ctx->module_name, "sim_timer.%s.%ld", prefix, jobid);
-        asprintf (&ctx->my_sim_id, "%s.%ld", prefix, jobid);
-        asprintf (&ctx->sched_timer_topic, "sched.%s.%ld.timer", prefix, jobid);
+        if ((asprintf (&ctx->module_name, "sim_timer.%s.%ld", prefix, jobid) < 0) ||
+            (asprintf (&ctx->my_sim_id, "%s.%ld", prefix, jobid) < 0) ||
+            (asprintf (&ctx->sched_timer_topic, "sched.%s.%ld.timer", prefix, jobid) < 0)) {
+            flux_log (ctx->h, LOG_ERR, "(%s): setup module names failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
         free (prefix);
     } else {
-        asprintf (&ctx->module_name, "sim_timer.%ld", jobid);
-        asprintf (&ctx->my_sim_id, "%ld", jobid);
-        asprintf (&ctx->sched_timer_topic, "sched.%ld.timer", jobid);
+        if ((asprintf (&ctx->module_name, "sim_timer.%ld", jobid) < 0) ||
+            (asprintf (&ctx->my_sim_id, "%ld", jobid) < 0) ||
+            (asprintf (&ctx->sched_timer_topic, "sched.%ld.timer", jobid) < 0)) {
+            flux_log (ctx->h, LOG_ERR, "(%s): setup module names failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
     }
 
     if (flux_event_subscribe (h, "sim.start") < 0) {
@@ -227,7 +233,10 @@ int mod_main (flux_t h, int argc, char **argv)
     }
 
     char *timertrigger;
-    asprintf (&timertrigger, "%s.trigger", ctx->module_name);
+    if (asprintf (&timertrigger, "%s.trigger", ctx->module_name) < 0) {
+        flux_log (ctx->h, LOG_ERR, "(%s): setup trigger name failed: %s",
+                  __FUNCTION__, strerror (errno));
+    }
     flux_log (h, LOG_DEBUG, "trigger function : %s", timertrigger);
 
     struct flux_msg_handler_spec htab1[] = {

@@ -186,7 +186,7 @@ int put_job_in_kvs (job_t *job)
     }
 
     kvsdir_destroy (job->kvs_dir);
-    kvs_get_dir (h, &job->kvs_dir, dir_key);
+    kvs_get_dir (h, &job->kvs_dir, "%s", dir_key);
     free (dir_key);
 
     return 0;

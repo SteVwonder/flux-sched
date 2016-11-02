@@ -250,6 +250,7 @@ static int set_event_timer (ctx_t *ctx, const char *mod_name, double timer_value
     return 0;
 }
 
+#ifdef DYNAMIC_SCHEDULING
 // Set the timer for "module" to happen relatively soon
 // If the mod is sim_timer, it shouldn't happen immediately
 static void set_next_event (ctx_t *ctx, const char *module)
@@ -264,7 +265,7 @@ static void set_next_event (ctx_t *ctx, const char *module)
 
     set_event_timer (ctx, module, next_event);
 }
-
+#endif
 
 static int archive_job (ctx_t *ctx, job_t *job)
 {
@@ -304,7 +305,7 @@ static int complete_job (ctx_t *ctx, job_t *job, double completion_time)
     kvs_dir_key = strdup(kvsdir_key(job->kvs_dir));
     kvsdir_destroy (job->kvs_dir);
     archive_job (ctx, job);
-    kvs_get_dir (ctx->h, &job->kvs_dir, kvs_dir_key);
+    kvs_get_dir (ctx->h, &job->kvs_dir, "%s", kvs_dir_key);
     update_job_state (ctx, job->id, job->kvs_dir, J_COMPLETE, completion_time);
     set_event_timer (ctx, my_sched_module, ctx->sim_state->sim_time + .00001);
     kvsdir_put_double (job->kvs_dir, "complete_time", completion_time);
@@ -809,7 +810,10 @@ static void set_next_event_childbirth_wrapper (ctx_t *ctx, int jobid)
     flux_log (ctx->h, LOG_DEBUG, "%s: setting up next event for child (%d) scheduler module", __FUNCTION__, jobid);
 
     char *module = NULL;
-    asprintf (&module, "sched.%s.%d", ctx->my_sim_id, jobid);
+    if (asprintf (&module, "sched.%s.%d", ctx->my_sim_id, jobid) < 0) {
+        flux_log (ctx->h, LOG_ERR, "(%s): module name create failed: %s",
+                  __FUNCTION__, strerror (errno));
+    }
 
     double next_event = sim_state->sim_time + 1.0;
     double *timer = zhash_lookup (sim_state->timers, module);
@@ -837,7 +841,10 @@ static void set_next_event_timer_wrapper (ctx_t *ctx, int jobid)
     char *module = NULL;
     flux_log (ctx->h, LOG_DEBUG, "%s: setting up next timer for timer module", __FUNCTION__);
 
-    asprintf (&module, "sim_timer.%s.%d", ctx->my_sim_id, jobid);
+    if (asprintf (&module, "sim_timer.%s.%d", ctx->my_sim_id, jobid) < 0) {
+        flux_log (ctx->h, LOG_ERR, "(%s): module name create failed: %s",
+                  __FUNCTION__, strerror (errno));
+    }
     set_next_event (ctx, module);
 
     flux_log (ctx->h, LOG_DEBUG, "%s: setup next timer for module %s", __FUNCTION__, module);
@@ -950,8 +957,8 @@ int mod_main (flux_t h, int argc, char **argv)
             sim_uri = xstrdup (strstr (argv[i], "=") + 1);
         }
     }
-    flux_log (h, LOG_DEBUG, "jobid and prefix have been read\n");   
- 
+    flux_log (h, LOG_DEBUG, "jobid and prefix have been read\n");
+
     if (flux_event_subscribe (h, "sim.start") < 0) {
         flux_log (h, LOG_ERR, "subscribing to event: %s", strerror (errno));
         return -1;
@@ -962,18 +969,30 @@ int mod_main (flux_t h, int argc, char **argv)
     }
 
     if (ctx->prefix) {
-        asprintf (&module_full_name, "%s.%s.%ld", module_name, ctx->prefix, ctx->my_job_id);
-        asprintf (&ctx->my_sim_id, "%s.%ld", ctx->prefix, ctx->my_job_id);
+        if ((asprintf (&module_full_name, "%s.%s.%ld", module_name, ctx->prefix, ctx->my_job_id) < 0) ||
+            (asprintf (&ctx->my_sim_id, "%s.%ld", ctx->prefix, ctx->my_job_id) < 0)) {
+            flux_log (ctx->h, LOG_ERR, "(%s): setup module name and id failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
     } else {
-        asprintf (&module_full_name, "%s.%ld", module_name, ctx->my_job_id);
-        asprintf (&ctx->my_sim_id, "%ld", ctx->my_job_id);
+        if ((asprintf (&module_full_name, "%s.%ld", module_name, ctx->my_job_id) < 0) ||
+            (asprintf (&ctx->my_sim_id, "%ld", ctx->my_job_id) < 0)) {
+            flux_log (ctx->h, LOG_ERR, "(%s): setup module name and id failed: %s",
+                      __FUNCTION__, strerror (errno));
+        }
     }
 
-    asprintf (&my_sched_module, "sched.%s", ctx->my_sim_id);
+    if (asprintf (&my_sched_module, "sched.%s", ctx->my_sim_id) < 0) {
+        flux_log (ctx->h, LOG_ERR, "(%s): setup sched name failed: %s",
+                  __FUNCTION__, strerror (errno));
+    }
 
     char *sim_exec_trigger = NULL, *sim_exec_run_star = NULL;
-    asprintf (&sim_exec_trigger, "sim_exec.%s.trigger", ctx->my_sim_id);
-    asprintf (&sim_exec_run_star, "sim_exec.%s.run.*", ctx->my_sim_id);
+    if ((asprintf (&sim_exec_trigger, "sim_exec.%s.trigger", ctx->my_sim_id) < 0) ||
+        (asprintf (&sim_exec_run_star, "sim_exec.%s.run.*", ctx->my_sim_id) < 0)) {
+        flux_log (ctx->h, LOG_ERR, "(%s): setup sim_exec module names failed: %s",
+                  __FUNCTION__, strerror (errno));
+    }
 
     struct flux_msg_handler_spec htab[] = {
         {FLUX_MSGTYPE_EVENT, "sim.start", start_cb},
