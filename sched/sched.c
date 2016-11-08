@@ -1852,6 +1852,7 @@ static int64_t get_actual_job_runtime (flux_t h, int64_t lwj_id)
     return execution_time;
 }
 
+/*
 static int64_t get_user_predicted_job_runtime (flux_t h, int64_t lwj_id)
 {
     int64_t user_runtime = INT16_MAX*8;
@@ -1870,6 +1871,7 @@ static int64_t get_user_predicted_job_runtime (flux_t h, int64_t lwj_id)
     free (key);
     return user_runtime;
 }
+*/
 
 static void predict_job_endtimes (ssrvctx_t *ctx, const char *pred_label, RuntimePredictor pred_func)
 {
