@@ -1159,6 +1159,7 @@ static int send_to_parent (ssrvctx_t *ctx, JSON jmsg, char *service)
  */
 static int reap_child_slack_resources (ssrvctx_t *ctx, flux_lwj_t *job)
 {
+#ifdef DYNAMIC_SCHEDULING
     /*
      * TODO: this performance stinks, utilize a structure in the job's
      * slackinfo to avoid having to search the entire resrc tree, and
@@ -1191,7 +1192,7 @@ static int reap_child_slack_resources (ssrvctx_t *ctx, flux_lwj_t *job)
                               ctx->slctx.resource_out_count);
                 }
         }
-
+#endif
     return 0;
 }
 
@@ -2772,13 +2773,18 @@ static int action (ssrvctx_t *ctx, flux_lwj_t *job, job_state_t newstate)
         flux_log (h, LOG_INFO, "Job %ld going from submitted to pending", job->lwj_id);
         VERIFY (trans (J_SCHEDREQ, J_SCHEDREQ, &(job->state)));
         jobsubcount++;
-        if (jobsubcount == jobcount) {
+        if (ctx->sctx.in_sim && jobsubcount == jobcount) {
             flux_log (h, LOG_DEBUG, "%s: All jobs (%d) submitted, scheduling jobs",
                       __FUNCTION__, jobsubcount);
             int num_jobs_scheduled = schedule_jobs (ctx);
             if (num_jobs_scheduled > 0&& ctx->arg.verbosity > 0) {
                 flux_log (h, LOG_DEBUG, "%s: jobs were scheduled, printing rdl:", __FUNCTION__);
                 resrc_tree_flux_log (h, resrc_phys_tree (ctx->rctx.root_resrc));
+            }
+        } else if (!ctx->sctx.in_sim) {
+            int num_jobs_scheduled = schedule_jobs (ctx);
+            if (ctx->arg.verbosity > 0) {
+                flux_log (h, LOG_DEBUG, "%s: %d jobs were scheduled", __FUNCTION__, num_jobs_scheduled);
             }
         }
         break;
@@ -2887,8 +2893,8 @@ bad_transition:
 static void res_event_cb (flux_t h, flux_msg_handler_t *w,
                           const flux_msg_t *msg, void *arg)
 {
-#ifdef DYNAMIC_SCHEDULING
     ssrvctx_t *ctx = getctx (h);
+#ifdef DYNAMIC_SCHEDULING
 
     flux_log (h, LOG_DEBUG, "%s: Resource event, job completion detected", __FUNCTION__);
 
@@ -2951,11 +2957,12 @@ static void res_event_cb (flux_t h, flux_msg_handler_t *w,
                   __FUNCTION__, ctx->slctx.resource_out_count);
         ctx->slctx.wait_until_return = 1;
     }
+#else
+    schedule_jobs (ctx);
 #endif
     //Jput (ao);
     //Jput (jao);
 
-    //schedule_jobs (getctx ((flux_t)arg));
 
     return;
 }
