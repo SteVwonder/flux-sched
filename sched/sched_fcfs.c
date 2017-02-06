@@ -84,10 +84,6 @@ resrc_tree_list_t *find_resources (flux_t h, resrc_t *resrc,
         flux_log (h, LOG_DEBUG, "children fail");
     }
 
-    if (resrc_reqst_set_starttime (resrc_reqst, 0) ||
-        resrc_reqst_set_endtime (resrc_reqst, 0))
-        goto ret;
-
     nfound = resrc_tree_search (resrc_tree_children (resrc_tree), resrc_reqst,
                                 found_trees, true);
     if (!nfound) {
@@ -219,11 +215,6 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
     }
 
     reqrd_qty = resrc_reqst_reqrd_qty (resrc_reqst);
-    /*
-     * A start time of zero means that we are only interested in
-     * if the resource is available now.
-     */
-    resrc_reqst_set_starttime (resrc_reqst, 0);
     selected_res = resrc_tree_list_new ();
 
     rt = resrc_tree_list_first (found_trees);
@@ -268,7 +259,7 @@ resrc_tree_list_t *select_resources (flux_t h, resrc_tree_list_t *found_trees,
 int allocate_resources (flux_t h, resrc_tree_list_t *rtl, int64_t job_id,
                         int64_t starttime, int64_t endtime)
 {
-    int rc = resrc_tree_list_allocate (rtl, job_id, 0, 0);
+    int rc = resrc_tree_list_allocate (rtl, job_id, starttime, endtime);
     return rc;
 }
 
@@ -278,7 +269,7 @@ int reserve_resources (flux_t h, resrc_tree_list_t *rtl, int64_t job_id,
 {
     int rc = -1;
 
-    if (rtl && !(rc = resrc_tree_list_reserve (rtl, job_id, 0, 0)))
+    if (rtl && !(rc = resrc_tree_list_reserve (rtl, job_id, starttime, starttime+walltime)))
         flux_log (h, LOG_DEBUG, "Reserved %"PRId64" nodes for job %"PRId64"",
                   resrc_tree_list_size (rtl), job_id);
     return rc;
