@@ -76,7 +76,6 @@ typedef struct {
     int64_t starttime;
 
     int32_t     is_hierarchical; /*!< is job hierarchical */
-    char        *hfile; /*!< file pointer to hierarchical jobs */
     char        *contact; /*!< Contact information when it is an instance */
 
     flux_slackinfo_t   *slackinfo; /*!< hierarchical job slack state information */
