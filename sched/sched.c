@@ -1892,13 +1892,6 @@ static int setup_sim (ssrvctx_t *ctx, bool sim)
     ctx->sctx.sim_h = NULL;
     resrc_set_sim_mode();
 
-    if (ctx->arg.my_job_id) {
-        ctx->my_job_id = ctx->arg.my_job_id;
-        flux_log (ctx->h, LOG_DEBUG, "my_job_id has been successfully set: %ld", ctx->my_job_id);
-    } else {
-        flux_log (ctx->h, LOG_DEBUG, "my_job_id was not set at the command line");
-    }
-
     if (ctx->arg.module_name_prefix) {
         if ((asprintf (&(ctx->sctx.module_name), "sched.%s.%ld", ctx->arg.module_name_prefix, ctx->my_job_id) < 0) ||
             (asprintf (&(ctx->sctx.next_prefix), "%s.%ld", ctx->arg.module_name_prefix, ctx->my_job_id) < 0) ||
@@ -2020,6 +2013,13 @@ done:
 static inline int bridge_set_execmode (ssrvctx_t *ctx)
 {
     int rc = 0;
+    if (ctx->arg.my_job_id) {
+        ctx->my_job_id = ctx->arg.my_job_id;
+        flux_log (ctx->h, LOG_DEBUG, "my_job_id has been successfully set: %ld", ctx->my_job_id);
+    } else {
+        flux_log (ctx->h, LOG_DEBUG, "my_job_id was not set at the command line");
+    }
+
     if (ctx->arg.sim && setup_sim (ctx, ctx->arg.sim) != 0) {
         flux_log (ctx->h, LOG_ERR, "failed to setup sim mode");
         rc = -1;
