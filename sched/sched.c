@@ -2156,6 +2156,7 @@ static int build_contain_req (ssrvctx_t *ctx, flux_lwj_t *job, JSON arr)
     uint32_t rank = 0;
     resrc_tree_t *nd = NULL;
     resrc_t *r = NULL;
+    int64_t corespernode = -1;
 
     for (nd = resrc_tree_list_first (job->resrc_trees); nd;
             nd = resrc_tree_list_next (job->resrc_trees)) {
@@ -2164,8 +2165,14 @@ static int build_contain_req (ssrvctx_t *ctx, flux_lwj_t *job, JSON arr)
             || bridge_rs2rank_tab_query (ctx, r, &rank) != 0)
             goto done;
 
-        build_contain_1node_req (job->req->corespernode, rank, arr);
-    }
+        if (job->is_hierarchical) {
+            corespernode = 1;
+        } else {
+            corespernode = job->req->corespernode;
+        }
+        build_contain_1node_req (corespernode, rank, arr);
+        flux_log (ctx->h, LOG_DEBUG, "%s: hostname=%s, corespernode=%"PRId64", rank=%u",
+                  __FUNCTION__, resrc_name (r), job->req->corespernode, rank);
     rc = 0;
 done:
     return rc;
@@ -2211,6 +2218,23 @@ static int req_tpexec_allocate (ssrvctx_t *ctx, flux_lwj_t *job)
         flux_log (h, LOG_ERR, "error updating jcb");
         goto done;
     }
+    if (job->is_hierarchical) {
+        JSON o = Jnew ();
+        Jput (jcb);
+        jcb = Jnew ();
+
+        Jadd_int64 (o, JSC_RDESC_NNODES, job->req->nnodes);
+        Jadd_int64 (o, JSC_RDESC_NTASKS, job->req->nnodes);
+        Jadd_int64 (o, JSC_RDESC_WALLTIME, job->req->walltime);
+        json_object_object_add (jcb, JSC_RDESC, o);
+        jcbstr = Jtostr (jcb);
+
+        if (jsc_update_jcb (h, job->lwj_id, JSC_RDESC, jcbstr) != 0) {
+            flux_log (h, LOG_ERR, "error updating jcb");
+            goto done;
+        }
+    }
+
     //Jput (arr);
     if ((update_state (h, job->lwj_id, job->state, J_ALLOCATED)) != 0) {
         flux_log (h, LOG_ERR, "failed to update the state of job %"PRId64"",
