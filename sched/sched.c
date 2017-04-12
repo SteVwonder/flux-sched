@@ -2158,6 +2158,14 @@ static int build_contain_req (ssrvctx_t *ctx, flux_lwj_t *job, JSON arr)
     resrc_tree_t *nd = NULL;
     resrc_t *r = NULL;
     int64_t corespernode = -1;
+    char cpumask_key[100];
+    char cpumask_val[100];
+    char *cpumask_str_ptr = NULL;
+    JSON reqobj= NULL;
+    resrc_reqst_t *req = NULL;
+    resrc_tree_list_t *core_list = NULL;
+    resrc_tree_t *curr_core = NULL;
+    int num_cores = 0;
 
     for (nd = resrc_tree_list_first (job->resrc_trees); nd;
             nd = resrc_tree_list_next (job->resrc_trees)) {
@@ -2174,6 +2182,48 @@ static int build_contain_req (ssrvctx_t *ctx, flux_lwj_t *job, JSON arr)
         build_contain_1node_req (corespernode, rank, arr);
         flux_log (ctx->h, LOG_DEBUG, "%s: hostname=%s, corespernode=%"PRId64", rank=%u",
                   __FUNCTION__, resrc_name (r), job->req->corespernode, rank);
+        // code that inserts the cpumask at lwj.<lwjid>.rank.<rank>.cpumask
+        // Leverages snippets from cpuset-str.[ch] to turn core ids into cstr
+        // Leverages snippets from rsreader.c to find all cores under the given node
+        sprintf (cpumask_key, "lwj-active.%"PRId64".rank.%u.cpumask", job->lwj_id, rank);
+
+        reqobj = Jnew ();
+        Jadd_str (reqobj, "type", "core");
+        Jadd_int (reqobj, "req_qty", 1);
+        req = resrc_reqst_from_json (reqobj, NULL);
+        core_list = resrc_tree_list_new ();
+        num_cores = resrc_tree_search (resrc_tree_children (nd), req, core_list, false);
+        resrc_reqst_destroy (req);
+        Jput (reqobj);
+
+        assert (num_cores > 0);
+
+        // TODO: can be optimized to aggregate runs using "-". Could
+        // create a cpu_set_t then convert to cstr or just directly
+        // build the cstr in a smarter way.
+        cpumask_str_ptr = cpumask_val;
+        for (curr_core = resrc_tree_list_first (core_list);
+             curr_core;
+             curr_core = resrc_tree_list_next (core_list)) {
+
+             sprintf (cpumask_str_ptr, "%"PRId64",",
+                      resrc_id (resrc_tree_resrc (curr_core)));
+             // Move ptr to the end of the str we just sprint'd
+             while (*cpumask_str_ptr != 0) {
+                  cpumask_str_ptr++;
+             }
+        }
+        // Delete the trailing comma
+        cpumask_str_ptr--;
+        *cpumask_str_ptr = 0;
+
+        resrc_tree_list_destroy (core_list, false);
+        kvs_put_string (ctx->h, cpumask_key, cpumask_val);
+        flux_log (ctx->h, LOG_DEBUG, "%s: CPUMASK, key: %s, val: %s",
+                  __FUNCTION__, cpumask_key, cpumask_val);
+    }
+    // kvs commit shouldn't be necessary here since a kvs commit will
+    // be necessary later on when the job state is updated
     rc = 0;
 done:
     return rc;
