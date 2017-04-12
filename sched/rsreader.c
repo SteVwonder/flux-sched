@@ -120,6 +120,7 @@ static int find_all_sockets_cores (resrc_tree_t *node, int *nsocks, int *ncs)
     st = resrc_tree_list_new ();
     *nsocks = resrc_tree_search (resrc_tree_children (node), req, st, false);
     resrc_reqst_destroy (req);
+    resrc_tree_list_destroy (st, false);
     Jput (reqobj);
 
     reqobj = Jnew ();
@@ -128,6 +129,7 @@ static int find_all_sockets_cores (resrc_tree_t *node, int *nsocks, int *ncs)
     ct = resrc_tree_list_new ();
     *ncs = resrc_tree_search (resrc_tree_children (node), req, ct, false);
     resrc_reqst_destroy (req);
+    resrc_tree_list_destroy (ct, false);
     Jput (reqobj);
 
     return (*nsocks > 0 && *ncs > 0) ? 0 : -1;
