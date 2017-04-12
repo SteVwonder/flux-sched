@@ -316,7 +316,7 @@ void resrc_reqst_print (resrc_reqst_t *resrc_reqst)
     if (resrc_reqst) {
         char *shared = resrc_reqst->exclusive ? "exclusive" : "shared";
 
-        printf ("%"PRId64" of %"PRId64" %s\n", resrc_reqst->nfound,
+        fprintf (stderr, "%"PRId64" of %"PRId64" %s -- ", resrc_reqst->nfound,
                 resrc_reqst->reqrd_qty, shared);
         resrc_print_resource (resrc_reqst->resrc);
         if (resrc_reqst_num_children (resrc_reqst)) {
@@ -398,6 +398,8 @@ static bool match_child (resrc_tree_list_t *r_trees, resrc_reqst_t *resrc_reqst,
     bool found = false;
     bool success = false;
 
+    fprintf (stderr, "Current reqst: ");
+    resrc_reqst_print (resrc_reqst);
     resrc_tree = resrc_tree_list_first (r_trees);
     while (resrc_tree) {
         found = false;
@@ -477,6 +479,8 @@ static bool match_children (resrc_tree_list_t *r_trees,
         found = false;
 
         if (match_child (r_trees, resrc_reqst, parent_tree, available)) {
+            fprintf (stderr, "Child matched, nfound: %"PRId64", reqd_qty: %"PRId64"\n",
+                     resrc_reqst->nfound, resrc_reqst->reqrd_qty);
             if (resrc_reqst->nfound >= resrc_reqst->reqrd_qty)
                 found = true;
         }

@@ -450,7 +450,7 @@ static inline int fill_hierarchical_req (flux_t h, flux_lwj_t *j)
     }
 
     kvsdir_get (dir, "cmdline", &cmdline_str);
-    flux_log (h, LOG_INFO, "cmdline from sched = %s", cmdline_str);
+    flux_log (h, LOG_DEBUG, "cmdline from sched = %s", cmdline_str);
 
 
     if (kvsdir_get_int (dir, "is_hierarchical", &(j->is_hierarchical)) < 0) {
@@ -2117,13 +2117,13 @@ static inline int bridge_rs2rank_tab_query (ssrvctx_t *ctx, resrc_t *r,
         */
         rc = 0;
     } else {
-        flux_log (ctx->h, LOG_INFO, "hostname: %s, digest: %s", resrc_name (r),
+        flux_log (ctx->h, LOG_DEBUG, "hostname: %s, digest: %s", resrc_name (r),
                                      resrc_digest (r));
         rc = rs2rank_tab_query_by_sign (ctx->machs, resrc_name (r), resrc_digest (r),
                                         false, rank);
     }
     if (rc == 0)
-        flux_log (ctx->h, LOG_INFO, "broker found, rank: %"PRIu32, *rank);
+        flux_log (ctx->h, LOG_DEBUG, "broker found, rank: %"PRIu32, *rank);
     else
         flux_log (ctx->h, LOG_ERR, "controlling broker not found!");
 
