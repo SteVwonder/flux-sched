@@ -827,6 +827,7 @@ static int load_resources (ssrvctx_t *ctx)
             goto done;
         }
         /* linking has already been done by build_hwloc_rs2rank above */
+        resrc_tree_idle_resources (resrc_phys_tree (ctx->rctx.root_resrc));
         if (ctx->arg.verbosity > 0) {
             flux_log (ctx->h, LOG_INFO, "resrc state after hwloc read");
             resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
