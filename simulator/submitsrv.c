@@ -105,11 +105,11 @@ int insert_into_job (job_t *job, char *column_name, char *value)
     } else if (!strcmp (column_name, "NCPUS")) {
         job->ncpus = atoi (value);
     } else if (!strcmp (column_name, "Timelimit")) {
-        job->time_limit = convert_time_to_sec (value);
+        job->time_limit = atoi (value);
     } else if (!strcmp (column_name, "Submit")) {
         job->submit_time = atof (value);
     } else if (!strcmp (column_name, "Elapsed")) {
-        job->execution_time = convert_time_to_sec (value);
+        job->execution_time = atoi (value);
     } else if (!strcmp (column_name, "PredRuntime")) {
         job->predicted_runtime = atoi (value);
     } else if (!strcmp (column_name,
