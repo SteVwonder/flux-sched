@@ -150,11 +150,11 @@ int put_job_in_kvs (job_t *job)
         return -1;
 
     if (!kvsdir_exists (job->kvs_dir, "user"))
-        kvsdir_put_string (job->kvs_dir, "user", job->user);
+        kvsdir_put_string (job->kvs_dir, "user", job->user ? job->user : "");
     if (!kvsdir_exists (job->kvs_dir, "jobname"))
-        kvsdir_put_string (job->kvs_dir, "jobname", job->jobname);
+        kvsdir_put_string (job->kvs_dir, "jobname", job->jobname ? job->jobname : "");
     if (!kvsdir_exists (job->kvs_dir, "account"))
-        kvsdir_put_string (job->kvs_dir, "account", job->account);
+        kvsdir_put_string (job->kvs_dir, "account", job->account ? job->account : "");
     if (!kvsdir_exists (job->kvs_dir, "submit_time"))
         kvsdir_put_double (job->kvs_dir, "submit_time", job->submit_time);
     if (!kvsdir_exists (job->kvs_dir, "execution_time"))
