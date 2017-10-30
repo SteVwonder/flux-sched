@@ -454,10 +454,24 @@ size_t resrc_size_allocs (resrc_t *resrc)
     return 0;
 }
 
+zhash_t *resrc_get_allocs (resrc_t *resrc)
+{
+    if (resrc)
+        return resrc->allocs;
+    return 0;
+}
+
 size_t resrc_size_reservtns (resrc_t *resrc)
 {
     if (resrc)
         return zhash_size (resrc->reservtns);
+    return 0;
+}
+
+zhash_t *resrc_get_reservtns (resrc_t *resrc)
+{
+    if (resrc)
+        return resrc->reservtns;
     return 0;
 }
 
@@ -1554,6 +1568,35 @@ int resrc_release_all_reservations (resrc_t *resrc)
     }
 ret:
     return rc;
+}
+
+void resrc_get_earliest_reservtn (resrc_t *resrc, const char **job_id_str, size_t *reservtn_size)
+{
+    zlistx_t *start_windows = zlistx_new ();
+    zlistx_set_comparator (start_windows, compare_windows_starttime);
+    window_t *window = NULL;
+    const char *id_ptr = NULL;
+    for (window = zhashx_first (resrc->twindow);
+         window;
+         window = zhashx_next (resrc->twindow)) {
+        id_ptr = zhashx_cursor (resrc->twindow);
+        if (!strcmp (id_ptr, "0")) {
+            /* This is the resource lifetime entry and should not be
+             * evaluated as an allocation or reservation entry */
+            continue;
+        }
+        zlistx_add_end (start_windows, window);
+    }
+    zlistx_sort (start_windows);
+
+    window = zlistx_first (start_windows);
+    if (window) {
+        *job_id_str = zlistx_cursor (start_windows);
+        *reservtn_size = *(size_t*)zhash_lookup (resrc->reservtns, window->job_id);
+    } else {
+        *job_id_str = "";
+        *reservtn_size = 0;
+    }
 }
 
 /*

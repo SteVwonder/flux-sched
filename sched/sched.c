@@ -101,6 +101,7 @@ typedef struct {
     char         *uri;
     char         *userplugin;
     char         *userplugin_opts;
+    char         *results_dir;
     bool          sim;
     bool          schedonce;          /* Use resources only once */
     bool          fail_on_error;      /* Fail immediately on error */
@@ -189,6 +190,7 @@ static inline void ssrvarg_init (ssrvarg_t *arg)
     arg->uri = NULL;
     arg->userplugin = NULL;
     arg->userplugin_opts = NULL;
+    arg->results_dir = NULL;
     arg->sim = false;
     arg->schedonce = false;
     arg->fail_on_error = false;
@@ -206,6 +208,8 @@ static inline void ssrvarg_free (ssrvarg_t *arg)
         free (arg->userplugin);
     if (arg->userplugin_opts)
         free (arg->userplugin_opts);
+    if (arg->results_dir)
+        free (arg->results_dir);
 }
 
 static inline int ssrvarg_process_args (int argc, char **argv, ssrvarg_t *a)
@@ -236,6 +240,8 @@ static inline int ssrvarg_process_args (int argc, char **argv, ssrvarg_t *a)
             a->userplugin_opts = xstrdup (strstr (argv[i], "=") + 1);
         } else if (!strncmp ("sched-params=", argv[i], sizeof ("sched-params"))) {
             sprms = xstrdup (strstr (argv[i], "=") + 1);
+        } else if (!strncmp ("results-dir=", argv[i], sizeof ("results-dir"))) {
+            a->results_dir = xstrdup (strstr (argv[i], "=") + 1);
         } else {
             rc = -1;
             errno = EINVAL;
@@ -1535,6 +1541,120 @@ done:
     return rc;
 }
 
+struct job_util_t
+{
+    int allocated_nodes;
+    int reserved_nodes;
+    int job_id;
+    char *job_id_str;
+};
+typedef struct job_util_t job_util_t;
+static job_util_t *job_util_create(int job_id);
+static void job_util_destroy(job_util_t *util);
+
+static job_util_t *job_util_create (int job_id)
+{
+    job_util_t *util = calloc (1, sizeof (*util));
+    if (!util) {
+        errno = ENOMEM;
+        goto error;
+    }
+    util->job_id = job_id;
+    asprintf (&util->job_id_str, "%d", job_id);
+    return util;
+ error:
+    job_util_destroy (util);
+    return NULL;
+}
+
+static void job_util_destroy (job_util_t *util)
+{
+    if (util) {
+        free (util->job_id_str);
+        free (util);
+    }
+}
+
+static void calculate_utilization (flux_t *h, resrc_tree_t *rt, zhashx_t *util_hash)
+{
+    resrc_t *resrc = resrc_tree_resrc (rt);
+    if (!strncmp("node", resrc_type (resrc), 5)) {
+        // is a node, stop and calculate contributions to utilization
+        const char *job_id_str;
+        job_util_t *job_util;
+        size_t *alloc_size;
+        zhash_t *allocs = resrc_get_allocs (resrc);
+        if (resrc_size_allocs (resrc) > 1) {
+            flux_log (h, LOG_WARNING,
+                      "%s: more than one allocation on %s, results might be wonky",
+                      __FUNCTION__, resrc_name (resrc));
+        }
+        for (alloc_size = zhash_first (allocs);
+             alloc_size;
+             alloc_size = zhash_next (allocs))
+            {
+                job_id_str = zhash_cursor (allocs);
+                job_util = zhashx_lookup (util_hash, job_id_str);
+                if (*alloc_size > 1) {
+                    flux_log (h, LOG_WARNING,
+                              "%s: %s has an allocation with a size of %zd, results might be wonky",
+                              __FUNCTION__, resrc_name (resrc), *alloc_size);
+                }
+                job_util->allocated_nodes += *alloc_size;
+            }
+        size_t earliest_reservtn_size = 0;
+        resrc_get_earliest_reservtn (resrc, &job_id_str, &earliest_reservtn_size);
+        if (earliest_reservtn_size > 0) {
+            job_util = zhashx_lookup (util_hash, job_id_str);
+            job_util->reserved_nodes += earliest_reservtn_size;
+        }
+    } else { // is not a node, keep recursing down
+        resrc_tree_list_t* children = resrc_tree_children (rt);
+        resrc_tree_t *child;
+        for (child = resrc_tree_list_first (children);
+             child;
+             child = resrc_tree_list_next (children))
+            {
+                calculate_utilization (h, child, util_hash);
+            }
+    }
+}
+
+static void populate_util_hash (zlist_t* jobs, zhashx_t *util_hash)
+{
+    flux_lwj_t *job;
+    job_util_t *job_util;
+    for (job = zlist_first (jobs);
+         job;
+         job = zlist_next (jobs))
+        {
+            job_util = job_util_create (job->lwj_id);
+            zhashx_insert (util_hash, job_util->job_id_str, job_util);
+        }
+}
+
+static void record_utilization (ssrvctx_t *ctx)
+{
+    //flux_kvs_txn_t *kvs_txn = flux_kvs_txn_create ();
+    zhashx_t *util_hash = zhashx_new ();
+    populate_util_hash (ctx->p_queue, util_hash);
+    populate_util_hash (ctx->r_queue, util_hash);
+
+    calculate_utilization (ctx->h, resrc_tree_root (ctx->rsapi), util_hash);
+    const char *job_id_str;
+    job_util_t *job_util;
+    for (job_util = zhashx_first (util_hash);
+         job_util;
+         job_util = zhashx_next (util_hash))
+        {
+            job_id_str = zhashx_cursor (util_hash);
+            printf("%s has %d nodes allocation and %d nodes reserved at time %f\n",
+                   job_id_str, job_util->allocated_nodes, job_util->reserved_nodes,
+                   ctx->sctx.sim_state->sim_time);
+        }
+    zhashx_destroy (&util_hash);
+}
+
 static int schedule_jobs (ssrvctx_t *ctx)
 {
     int rc = 0;
@@ -1564,6 +1684,8 @@ static int schedule_jobs (ssrvctx_t *ctx)
         job = (flux_lwj_t*)zlist_next (jobs);
         qdepth++;
     }
+
+    record_utilization (ctx);
 
     return rc;
 }

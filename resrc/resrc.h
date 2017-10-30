@@ -7,6 +7,7 @@
 
 #include "resrc_api.h"
 #include <uuid/uuid.h>
+#include <czmq.h>
 
 #define TIME_MAX INT64_MAX
 
@@ -105,10 +106,17 @@ resrc_tree_t *resrc_phys_tree (resrc_t *resrc);
  */
 size_t resrc_size_allocs (resrc_t *resrc);
 
+zhash_t *resrc_get_allocs (resrc_t *resrc);
+
 /*
  * Return the number of jobs reserved for this resource
  */
 size_t resrc_size_reservtns (resrc_t *resrc);
+
+zhash_t *resrc_get_reservtns (resrc_t *resrc);
+
+void resrc_get_earliest_reservtn (resrc_t *resrc, const char **job_id_str,
+                                  size_t *reservtn_size);
 
 /*
  *  Insert item into twindow hash table with specified key and item.
@@ -243,6 +251,7 @@ int resrc_release_allocation (resrc_t *resrc, int64_t rel_job);
  * Supports both now and time-based reservations.
  */
 int resrc_release_all_reservations (resrc_t *resrc);
+
 
 /*
  * Get epoch time
