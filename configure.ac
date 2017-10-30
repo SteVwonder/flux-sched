@@ -70,6 +70,9 @@ AC_SUBST(fluxmoddir)
 AS_VAR_SET(schedplugindir, $libdir/flux/modules/sched)
 AC_SUBST(schedplugindir)
 
+AS_VAR_SET(simdir, $libdir/flux/modules/sim)
+AC_SUBST(simdir)
+
 AS_VAR_SET(fluxschedincludedir, $includedir/flux/sched)
 AC_SUBST(fluxschedincludedir)
 

@@ -7,8 +7,9 @@ AM_CPPFLAGS = -I$(top_srcdir) \
 CONF = $(top_srcdir)/conf/hype.lua
 JOBDATA=job_data/hype.csv
 
-noinst_LTLIBRARIES = libflux-sim.la \
-    simsrv.la sim_execsrv.la submitsrv.la
+noinst_LTLIBRARIES = libflux-sim.la
+
+sim_LTLIBRARIES = simsrv.la sim_execsrv.la submitsrv.la
 
 noinst_HEADERS = simulator.h
 
@@ -23,19 +24,19 @@ simsrv_la_SOURCES = simsrv.c
 simsrv_la_CFLAGS = $(AM_CFLAGS) $(AM_CPPFLAGS)
 simsrv_la_LIBADD = $(top_builddir)/resrc/libflux-resrc.la libflux-sim.la \
     $(FLUX_CORE_LIBS) $(JANSSON_LIBS) $(CZMQ_LIBS)
-simsrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module -rpath /nowhere
+simsrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module
 
 sim_execsrv_la_SOURCES = sim_execsrv.c
 sim_execsrv_la_CFLAGS = $(AM_CFLAGS) -I$(top_srcdir)/rdl
 sim_execsrv_la_LIBADD = $(top_builddir)/rdl/libflux-rdl.la \
     $(top_builddir)/resrc/libflux-resrc.la libflux-sim.la \
     $(FLUX_CORE_LIBS) $(JANSSON_LIBS) $(CZMQ_LIBS)
-sim_execsrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module -rpath /nowhere
+sim_execsrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module
 
 submitsrv_la_SOURCES = submitsrv.c
 submitsrv_la_CFLAGS = $(AM_CFLAGS)
 submitsrv_la_LIBADD = $(top_builddir)/resrc/libflux-resrc.la libflux-sim.la \
     $(FLUX_CORE_LIBS) $(JANSSON_LIBS) $(CZMQ_LIBS)
-submitsrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module -rpath /nowhere
+submitsrv_la_LDFLAGS = $(AM_LDFLAGS) $(fluxmod_ldflags) -module
 
 EXTRA_DIST = sim_version.map
