@@ -1168,9 +1168,7 @@ static inline int bridge_rs2rank_tab_query (ssrvctx_t *ctx, resrc_t *r,
         rc = rs2rank_tab_query_by_sign (ctx->machs, resrc_name (r),
                                         resrc_digest (r), false, rank);
     }
-    if (rc == 0)
-        flux_log (ctx->h, LOG_INFO, "broker found, rank: %"PRIu32, *rank);
-    else
+    if (rc != 0)
         flux_log (ctx->h, LOG_ERR, "controlling broker not found!");
 
     return rc;
@@ -1584,7 +1582,13 @@ static void calculate_utilization (flux_t *h, resrc_tree_t *rt, zhashx_t *util_h
         job_util_t *job_util;
         size_t *alloc_size;
         zhash_t *allocs = resrc_get_allocs (resrc);
-        if (resrc_size_allocs (resrc) > 1) {
+        size_t num_allocs = resrc_size_allocs(resrc);
+        /* size_t num_reservtns = resrc_size_reservtns(resrc); */
+        /* if (num_allocs + num_reservtns > 0) { */
+        /*     flux_log (h, LOG_DEBUG, "%s: found a node (%s) with %zd allocs and %zd reservtns", */
+        /*               __FUNCTION__, resrc_name (resrc), num_allocs, num_reservtns); */
+        /* } */
+        if (num_allocs > 1) {
             flux_log (h, LOG_WARNING,
                       "%s: more than one allocation on %s, results might be wonky",
                       __FUNCTION__, resrc_name (resrc));
@@ -1597,14 +1601,21 @@ static void calculate_utilization (flux_t *h, resrc_tree_t *rt, zhashx_t *util_h
                 job_util = zhashx_lookup (util_hash, job_id_str);
                 if (*alloc_size > 1) {
                     flux_log (h, LOG_WARNING,
-                              "%s: %s has an allocation with a size of %zd, results might be wonky",
+                              "%s: results might be wonky, %s has an allocation with a size of %zd",
                               __FUNCTION__, resrc_name (resrc), *alloc_size);
-                }
+                } /* else { */
+                /*     flux_log (h, LOG_DEBUG, */
+                /*               "%s: %s has an allocation with a size of %zd from job %s", */
+                /*               __FUNCTION__, resrc_name (resrc), *alloc_size, job_id_str); */
+                /* } */
                 job_util->allocated_nodes += *alloc_size;
             }
         size_t earliest_reservtn_size = 0;
         resrc_get_earliest_reservtn (resrc, &job_id_str, &earliest_reservtn_size);
         if (earliest_reservtn_size > 0) {
+            /* flux_log (h, LOG_DEBUG, */
+            /*           "%s: %s has an allocation with a size of %zd from job %s", */
+            /*           __FUNCTION__, resrc_name (resrc), earliest_reservtn_size, job_id_str); */
             job_util = zhashx_lookup (util_hash, job_id_str);
             job_util->reserved_nodes += earliest_reservtn_size;
         }
@@ -1635,9 +1646,15 @@ static void populate_util_hash (zlist_t* jobs, zhashx_t *util_hash)
 
 static void record_utilization (ssrvctx_t *ctx)
 {
-    //flux_kvs_txn_t *kvs_txn = flux_kvs_txn_create ();
+    flux_log(ctx->h, LOG_DEBUG, "Recording the node allocation/reservation at time %f",
+             ctx->sctx.sim_state->sim_time);
+
     zhashx_t *util_hash = zhashx_new ();
+    flux_log(ctx->h, LOG_DEBUG, "Populating the util hash with %zd pending jobs",
+             zlist_size (ctx->p_queue));
     populate_util_hash (ctx->p_queue, util_hash);
+    flux_log(ctx->h, LOG_DEBUG, "Populating the util hash with %zd running jobs",
+             zlist_size (ctx->r_queue));
     populate_util_hash (ctx->r_queue, util_hash);
 
     calculate_utilization (ctx->h, resrc_tree_root (ctx->rsapi), util_hash);
