@@ -415,7 +415,7 @@ static inline int fill_resource_req (flux_t *h, flux_lwj_t *j)
     } else {
         j->req->walltime = (uint64_t) walltime;
     }
-    j->req->node_exclusive = false;
+    j->req->node_exclusive = true;
     rc = 0;
 done:
     if (jcb)
@@ -1641,6 +1641,10 @@ static void record_utilization (ssrvctx_t *ctx)
     populate_util_hash (ctx->r_queue, util_hash);
 
     calculate_utilization (ctx->h, resrc_tree_root (ctx->rsapi), util_hash);
+
+    flux_kvs_txn_t *kvs_txn = flux_kvs_txn_create ();
+    char *kvs_key = calloc(100, sizeof(char));
+    char *timestamp_key = calloc(50, sizeof(char));
     const char *job_id_str;
     job_util_t *job_util;
     for (job_util = zhashx_first (util_hash);
@@ -1648,11 +1652,30 @@ static void record_utilization (ssrvctx_t *ctx)
          job_util = zhashx_next (util_hash))
         {
             job_id_str = zhashx_cursor (util_hash);
-            printf("%s has %d nodes allocation and %d nodes reserved at time %f\n",
+            snprintf(timestamp_key, 50, "%f", ctx->sctx.sim_state->sim_time);
+            // Replace the '.' (reserved char by kvs) in the floating-point time with a '_'
+            char *period_ptr = strchr(timestamp_key, '.');
+            if (period_ptr) {
+                *period_ptr = '_';
+            }
+            snprintf(kvs_key, 100, "utilization.%s.%s", timestamp_key, job_id_str);
+            flux_kvs_txn_pack(kvs_txn, 0, kvs_key, "{s:i, s:i}",
+                              "allocated", job_util->allocated_nodes,
+                              "reserved", job_util->reserved_nodes);
+            flux_log(ctx->h, LOG_INFO, "%s has %d nodes allocated and %d nodes reserved at time %f",
                    job_id_str, job_util->allocated_nodes, job_util->reserved_nodes,
                    ctx->sctx.sim_state->sim_time);
         }
+    free (timestamp_key);
+    free (kvs_key);
     zhashx_destroy (&util_hash);
+
+    flux_future_t *f = NULL;
+    if (!(f = flux_kvs_commit (ctx->h, 0, kvs_txn)) || flux_future_get (f, NULL) < 0) {
+        flux_log_error (ctx->h, "%s: flux_kvs_commit", __FUNCTION__);
+    }
+    flux_future_destroy (f);
+    flux_kvs_txn_destroy (kvs_txn);
 }
 
 static int schedule_jobs (ssrvctx_t *ctx)

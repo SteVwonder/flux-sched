@@ -1576,6 +1576,7 @@ void resrc_get_earliest_reservtn (resrc_t *resrc, const char **job_id_str, size_
     zlistx_set_comparator (start_windows, compare_windows_starttime);
     window_t *window = NULL;
     const char *id_ptr = NULL;
+    size_t *size_ptr = NULL;
     for (window = zhashx_first (resrc->twindow);
          window;
          window = zhashx_next (resrc->twindow)) {
@@ -1585,14 +1586,24 @@ void resrc_get_earliest_reservtn (resrc_t *resrc, const char **job_id_str, size_
              * evaluated as an allocation or reservation entry */
             continue;
         }
-        zlistx_add_end (start_windows, window);
+        window->job_id = id_ptr;
+        // check that the window is for a reservation, not an allocation
+        size_ptr = (size_t*)zhash_lookup (resrc->reservtns, id_ptr);
+        if (size_ptr) {
+            zlistx_add_end (start_windows, window);
+        }
     }
     zlistx_sort (start_windows);
 
     window = zlistx_first (start_windows);
     if (window) {
-        *job_id_str = zlistx_cursor (start_windows);
-        *reservtn_size = *(size_t*)zhash_lookup (resrc->reservtns, window->job_id);
+        *job_id_str = window->job_id;
+        size_ptr = (size_t*)zhash_lookup (resrc->reservtns, *job_id_str);
+        if (size_ptr) {
+            *reservtn_size = *size_ptr;
+        } else {
+            fprintf (stderr, "%s: failed to get reservation size\n", __FUNCTION__);
+        }
     } else {
         *job_id_str = "";
         *reservtn_size = 0;
