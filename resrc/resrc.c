@@ -1610,6 +1610,14 @@ void resrc_get_earliest_reservtn (resrc_t *resrc, const char **job_id_str, size_
     }
 }
 
+void resrc_flux_log (flux_t *h, resrc_t *resrc)
+{
+    char *str = NULL;
+    str = resrc_to_string (resrc);
+    flux_log (h, LOG_DEBUG, "%s", str);
+    free (str);
+}
+
 /*
  * vi: ts=4 sw=4 expandtab
  */

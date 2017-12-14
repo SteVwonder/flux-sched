@@ -39,9 +39,8 @@
 #include "src/common/libutil/xzmalloc.h"
 
 struct resrc_tree_list {
-    zlist_t *list;
+    zlistx_t *list;
 };
-
 
 struct resrc_tree {
     resrc_tree_t *parent;
@@ -121,7 +120,7 @@ resrc_tree_t *resrc_tree_copy (resrc_tree_t *resrc_tree)
         new_resrc_tree->parent = resrc_tree->parent;
         new_resrc_tree->resrc = resrc_tree->resrc;
         new_resrc_tree->children = resrc_tree_list_new ();
-        new_resrc_tree->children->list = zlist_dup (resrc_tree->children->list);
+        new_resrc_tree->children->list = zlistx_dup (resrc_tree->children->list);
     }
 
     return new_resrc_tree;
@@ -164,6 +163,41 @@ void resrc_tree_print (resrc_tree_t *resrc_tree)
             }
         }
     }
+}
+
+static void _resrc_tree_to_string (resrc_tree_t *rt, FILE *ss, int indent_level)
+{
+    int i;
+    if (rt) {
+        for (i=0; i < indent_level; i++) {
+            fputs("\t", ss);
+        }
+        fprintf(ss, "%s\n", resrc_to_string(resrc_tree_resrc(rt)));
+        resrc_tree_t *child;
+        for (child = resrc_tree_list_first (rt->children);
+             child;
+             child = resrc_tree_list_next (rt->children))
+            {
+                _resrc_tree_to_string(child, ss, indent_level+1);
+            }
+    }
+}
+
+char *resrc_tree_to_string (resrc_tree_t *rt)
+{
+    size_t len;
+    char *buf;
+    FILE *ss;
+
+    if (!rt) {
+        return NULL;
+    }
+    if (!(ss = open_memstream (&buf, &len))) {
+        return NULL;
+    }
+    _resrc_tree_to_string(rt, ss, 0);
+    fclose(ss);
+    return buf;
 }
 
 int resrc_tree_serialize (json_t *o, resrc_tree_t *resrc_tree)
@@ -268,6 +302,7 @@ void resrc_tree_unstage_resources (resrc_tree_t *resrc_tree)
     }
 }
 
+
 /***********************************************************************
  * Resource tree list
  ***********************************************************************/
@@ -275,41 +310,61 @@ void resrc_tree_unstage_resources (resrc_tree_t *resrc_tree)
 resrc_tree_list_t *resrc_tree_list_new ()
 {
     resrc_tree_list_t *new_list = xzmalloc (sizeof (resrc_tree_list_t));
-    new_list->list = zlist_new ();
+    new_list->list = zlistx_new ();
     return new_list;
 }
 
 int resrc_tree_list_append (resrc_tree_list_t *rtl, resrc_tree_t *rt)
 {
-    if (rtl && rtl->list && rt)
-        return zlist_append (rtl->list, (void *) rt);
+    if (rtl && rtl->list && rt) {
+        if (zlistx_add_end (rtl->list, (void *) rt) == NULL) {
+            return -1;
+        } else {
+            return 0;
+        }
+    }
     return -1;
 }
 
 resrc_tree_t *resrc_tree_list_first (resrc_tree_list_t *rtl)
 {
     if (rtl && rtl->list)
-        return zlist_first (rtl->list);
+        return zlistx_first (rtl->list);
     return NULL;
 }
 
 resrc_tree_t *resrc_tree_list_next (resrc_tree_list_t *rtl)
 {
     if (rtl && rtl->list)
-        return zlist_next (rtl->list);
+        return zlistx_next (rtl->list);
+    return NULL;
+}
+
+resrc_tree_t *resrc_tree_list_last (resrc_tree_list_t *rtl)
+{
+    if (rtl && rtl->list)
+        return zlistx_last (rtl->list);
+    return NULL;
+}
+
+resrc_tree_t *resrc_tree_list_prev (resrc_tree_list_t *rtl)
+{
+    if (rtl && rtl->list)
+        return zlistx_prev (rtl->list);
     return NULL;
 }
 
 size_t resrc_tree_list_size (resrc_tree_list_t *rtl)
 {
     if (rtl && rtl->list)
-        return zlist_size (rtl->list);
+        return zlistx_size (rtl->list);
     return 0;
 }
 
 void resrc_tree_list_remove (resrc_tree_list_t *rtl, resrc_tree_t *rt)
 {
-    zlist_remove (rtl->list, rt);
+    void *handle = zlistx_find(rtl->list, rt);
+    zlistx_delete (rtl->list, handle);
 }
 
 void resrc_tree_list_destroy (resrc_api_ctx_t *ctx,
@@ -325,7 +380,7 @@ void resrc_tree_list_destroy (resrc_api_ctx_t *ctx,
             }
         }
         if (resrc_tree_list->list) {
-            zlist_destroy (&(resrc_tree_list->list));
+            zlistx_destroy (&(resrc_tree_list->list));
         }
         free (resrc_tree_list);
     }

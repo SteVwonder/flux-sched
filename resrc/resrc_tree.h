@@ -6,6 +6,7 @@
  */
 
 #include "resrc.h"
+#include <flux/core.h>
 
 typedef struct resrc_tree_list resrc_tree_list_t;
 
@@ -62,6 +63,7 @@ void resrc_tree_destroy (resrc_api_ctx_t *ctx, resrc_tree_t *resrc_tree,
  * Print the resources in a resrc_tree_t object
  */
 void resrc_tree_print (resrc_tree_t *resrc_tree);
+char *resrc_tree_to_string (resrc_tree_t *rt);
 
 /*
  * Add the input resource tree to the json object
@@ -125,6 +127,16 @@ resrc_tree_t *resrc_tree_list_first (resrc_tree_list_t *rtl);
 resrc_tree_t *resrc_tree_list_next (resrc_tree_list_t *rtl);
 
 /*
+ * Get the prev element in the resource tree list
+ */
+resrc_tree_t *resrc_tree_list_prev (resrc_tree_list_t *rtl);
+
+/*
+ * Get the last element in the resource tree list
+ */
+resrc_tree_t *resrc_tree_list_last (resrc_tree_list_t *rtl);
+
+/*
  * Get the number of elements in the resource tree list
  */
 size_t resrc_tree_list_size (resrc_tree_list_t *rtl);
@@ -176,7 +188,6 @@ int resrc_tree_list_release_all_reservations (resrc_tree_list_t *rtl);
  * Unstage all resources in a list of resource trees
  */
 void resrc_tree_list_unstage_resources (resrc_tree_list_t *rtl);
-
 
 #endif /* !FLUX_RESRC_TREE_H */
 

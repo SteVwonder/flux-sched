@@ -8,6 +8,7 @@
 #include "resrc_api.h"
 #include <uuid/uuid.h>
 #include <czmq.h>
+#include <flux/core.h>
 
 #define TIME_MAX INT64_MAX
 
@@ -251,7 +252,6 @@ int resrc_release_allocation (resrc_t *resrc, int64_t rel_job);
  * Supports both now and time-based reservations.
  */
 int resrc_release_all_reservations (resrc_t *resrc);
-
 
 /*
  * Get epoch time

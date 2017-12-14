@@ -1583,7 +1583,7 @@ static void calculate_utilization (flux_t *h, resrc_tree_t *rt, zhashx_t *util_h
         size_t *alloc_size;
         zhash_t *allocs = resrc_get_allocs (resrc);
         size_t num_allocs = resrc_size_allocs(resrc);
-        /* size_t num_reservtns = resrc_size_reservtns(resrc); */
+        size_t num_reservtns = resrc_size_reservtns(resrc);
         /* if (num_allocs + num_reservtns > 0) { */
         /*     flux_log (h, LOG_DEBUG, "%s: found a node (%s) with %zd allocs and %zd reservtns", */
         /*               __FUNCTION__, resrc_name (resrc), num_allocs, num_reservtns); */
@@ -1592,33 +1592,41 @@ static void calculate_utilization (flux_t *h, resrc_tree_t *rt, zhashx_t *util_h
             flux_log (h, LOG_WARNING,
                       "%s: more than one allocation on %s, results might be wonky",
                       __FUNCTION__, resrc_name (resrc));
-        }
-        for (alloc_size = zhash_first (allocs);
-             alloc_size;
-             alloc_size = zhash_next (allocs))
-            {
-                job_id_str = zhash_cursor (allocs);
-                job_util = zhashx_lookup (util_hash, job_id_str);
-                if (*alloc_size > 1) {
-                    flux_log (h, LOG_WARNING,
-                              "%s: results might be wonky, %s has an allocation with a size of %zd",
-                              __FUNCTION__, resrc_name (resrc), *alloc_size);
-                } /* else { */
-                /*     flux_log (h, LOG_DEBUG, */
-                /*               "%s: %s has an allocation with a size of %zd from job %s", */
-                /*               __FUNCTION__, resrc_name (resrc), *alloc_size, job_id_str); */
-                /* } */
-                job_util->allocated_nodes += *alloc_size;
-            }
-        size_t earliest_reservtn_size = 0;
-        resrc_get_earliest_reservtn (resrc, &job_id_str, &earliest_reservtn_size);
-        if (earliest_reservtn_size > 0) {
+        } else if (num_allocs == 1) {
+            for (alloc_size = zhash_first (allocs);
+                 alloc_size;
+                 alloc_size = zhash_next (allocs))
+                {
+                    job_id_str = zhash_cursor (allocs);
+                    job_util = zhashx_lookup (util_hash, job_id_str);
+                    if (*alloc_size > 1) {
+                        flux_log (h, LOG_WARNING,
+                                  "%s: results might be wonky, %s has an allocation with a size of %zd",
+                                  __FUNCTION__, resrc_name (resrc), *alloc_size);
+                    } /* else { */
+                    /*     flux_log (h, LOG_DEBUG, */
+                    /*               "%s: %s has an allocation with a size of %zd from job %s", */
+                    /*               __FUNCTION__, resrc_name (resrc), *alloc_size, job_id_str); */
+                    /* } */
+                    job_util->allocated_nodes += *alloc_size;
+                }
+        } else if (num_reservtns > 0) { // num_allocs < 1
             /* flux_log (h, LOG_DEBUG, */
-            /*           "%s: %s has an allocation with a size of %zd from job %s", */
-            /*           __FUNCTION__, resrc_name (resrc), earliest_reservtn_size, job_id_str); */
-            job_util = zhashx_lookup (util_hash, job_id_str);
-            job_util->reserved_nodes += earliest_reservtn_size;
-        }
+            /*           "%s: %s has no allocs, finding earliest of the %zd reservations", */
+            /*           __FUNCTION__, resrc_name (resrc), num_reservtns); */
+            size_t earliest_reservtn_size = 0;
+            resrc_get_earliest_reservtn (resrc, &job_id_str, &earliest_reservtn_size);
+            if (earliest_reservtn_size > 0) {
+                /* flux_log (h, LOG_DEBUG, */
+                /*           "%s: %s has a reservation with a size of %zd from job %s", */
+                /*           __FUNCTION__, resrc_name (resrc), earliest_reservtn_size, job_id_str); */
+                job_util = zhashx_lookup (util_hash, job_id_str);
+                job_util->reserved_nodes += earliest_reservtn_size;
+            }
+        } /* else { */
+        /*     flux_log (h, LOG_DEBUG, "%s: %s has no allocs or reservations", */
+        /*               __FUNCTION__, resrc_name (resrc)); */
+        /* } */
     } else { // is not a node, keep recursing down
         resrc_tree_list_t* children = resrc_tree_children (rt);
         resrc_tree_t *child;

@@ -69,7 +69,8 @@ static int compare_int64_ascending (void *item1, void *item2)
 static bool select_children (flux_t *h, resrc_api_ctx_t *rsapi,
                              resrc_tree_list_t *children,
                              resrc_reqst_list_t *reqst_children,
-                             resrc_tree_t *selected_parent);
+                             resrc_tree_t *selected_parent,
+                             bool reverse_order);
 
 resrc_tree_t *select_resources (flux_t *h, resrc_api_ctx_t *rsapi,
                                 resrc_tree_t *found_tree,
@@ -79,7 +80,8 @@ resrc_tree_t *select_resources (flux_t *h, resrc_api_ctx_t *rsapi,
 static resrc_tree_t *internal_select_resources (flux_t *h, resrc_api_ctx_t *rsapi,
                                                 resrc_tree_t *candidate_tree,
                                                 resrc_reqst_t *resrc_reqst,
-                                                resrc_tree_t *selected_parent);
+                                                resrc_tree_t *selected_parent,
+                                                bool reverse_order);
 
 int sched_loop_setup (flux_t *h)
 {
@@ -150,7 +152,7 @@ int64_t find_resources (flux_t *h, resrc_api_ctx_t *rsapi,
     }
 
     // search for resources at the current time
-    *found_tree = internal_select_resources (h, rsapi, resrc_phys_tree (resrc), resrc_reqst, NULL);
+    *found_tree = internal_select_resources (h, rsapi, resrc_phys_tree (resrc), resrc_reqst, NULL, false);
     if (resrc_reqst_all_found (resrc_reqst)) {
         // return non-zero in order to continue in sched.c through
         // to the selection/allocation/reservation
@@ -180,16 +182,16 @@ int64_t find_resources (flux_t *h, resrc_api_ctx_t *rsapi,
 
         resrc_reqst_set_starttime (resrc_reqst, *completion_time + 1);
         resrc_reqst_set_endtime (resrc_reqst, *completion_time + 1 + req_walltime);
-        flux_log (h, LOG_DEBUG, "Attempting to find %"PRId64" nodes "
-                  "at time %"PRId64"",
-                  resrc_reqst_reqrd_qty (resrc_reqst),
-                  *completion_time + 1);
+        /* flux_log (h, LOG_DEBUG, "Attempting to find %"PRId64" nodes " */
+        /*           "at time %"PRId64"", */
+        /*           resrc_reqst_reqrd_qty (resrc_reqst), */
+        /*           *completion_time + 1); */
 
         // found tree is the minimal subset of candidate resource that
         // satisfiy the resource request.  This WILL NOT be culled down any further
         resrc_reqst_clear_found (resrc_reqst);
         resrc_tree_unstage_resources (resrc_phys_tree (resrc));
-        *found_tree = internal_select_resources (h, rsapi, resrc_phys_tree (resrc), resrc_reqst, NULL);
+        *found_tree = internal_select_resources (h, rsapi, resrc_phys_tree (resrc), resrc_reqst, NULL, true);
         if (resrc_reqst_all_found (resrc_reqst)) {
             // return non-zero in order to continue in sched.c through
             // to the selection/allocation/reservation
@@ -209,21 +211,30 @@ int64_t find_resources (flux_t *h, resrc_api_ctx_t *rsapi,
 static bool select_child (flux_t *h, resrc_api_ctx_t *rsapi,
                           resrc_tree_list_t *children,
                           resrc_reqst_t *child_reqst,
-                          resrc_tree_t *selected_parent)
+                          resrc_tree_t *selected_parent,
+                          bool reverse_order)
 {
     resrc_tree_t *child_tree = NULL;
     bool selected = false;
 
-    child_tree = resrc_tree_list_first (children);
+    if (reverse_order) {
+        child_tree = resrc_tree_list_last (children);
+    } else {
+        child_tree = resrc_tree_list_first (children);
+    }
     while (child_tree) {
         if (internal_select_resources (h, rsapi, child_tree,
-                child_reqst, selected_parent) &&
+                                       child_reqst, selected_parent, reverse_order) &&
             (resrc_reqst_nfound (child_reqst) >=
              resrc_reqst_reqrd_qty (child_reqst))) {
             selected = true;
             break;
         }
-        child_tree = resrc_tree_list_next (children);
+        if (reverse_order) {
+            child_tree = resrc_tree_list_prev (children);
+        } else {
+            child_tree = resrc_tree_list_next (children);
+        }
     }
 
     return selected;
@@ -236,7 +247,8 @@ static bool select_child (flux_t *h, resrc_api_ctx_t *rsapi,
 static bool select_children (flux_t *h, resrc_api_ctx_t *rsapi,
                              resrc_tree_list_t *children,
                              resrc_reqst_list_t *reqst_children,
-                             resrc_tree_t *selected_parent)
+                             resrc_tree_t *selected_parent,
+                             bool reverse_order)
 {
     resrc_reqst_t *child_reqst = NULL;
     bool selected = false;
@@ -246,7 +258,7 @@ static bool select_children (flux_t *h, resrc_api_ctx_t *rsapi,
         resrc_reqst_clear_found (child_reqst);
         selected = false;
 
-        if (!select_child (h, rsapi, children, child_reqst, selected_parent))
+        if (!select_child (h, rsapi, children, child_reqst, selected_parent, reverse_order))
             break;
         selected = true;
         child_reqst = resrc_reqst_list_next (reqst_children);
@@ -267,7 +279,8 @@ static bool select_children (flux_t *h, resrc_api_ctx_t *rsapi,
 static resrc_tree_t *internal_select_resources (flux_t *h, resrc_api_ctx_t *rsapi,
                                                 resrc_tree_t *candidate_tree,
                                                 resrc_reqst_t *resrc_reqst,
-                                                resrc_tree_t *selected_parent)
+                                                resrc_tree_t *selected_parent,
+                                                bool reverse_order)
 {
     resrc_t *resrc;
     resrc_tree_list_t *children = NULL;
@@ -286,7 +299,7 @@ static resrc_tree_t *internal_select_resources (flux_t *h, resrc_api_ctx_t *rsap
                 selected_tree = resrc_tree_new (selected_parent, resrc);
                 if (select_children (h, rsapi, resrc_tree_children (candidate_tree),
                                      resrc_reqst_children (resrc_reqst),
-                                     selected_tree)) {
+                                     selected_tree, reverse_order)) {
                     resrc_stage_resrc (resrc,
                                        resrc_reqst_reqrd_size (resrc_reqst),
                                        resrc_reqst_graph_reqs (resrc_reqst));
@@ -314,14 +327,23 @@ static resrc_tree_t *internal_select_resources (flux_t *h, resrc_api_ctx_t *rsap
          */
         selected_tree = resrc_tree_new (selected_parent, resrc);
         children = resrc_tree_children (candidate_tree);
-        child_tree = resrc_tree_list_first (children);
+        if (reverse_order) {
+            child_tree = resrc_tree_list_last (children);
+        } else {
+            child_tree = resrc_tree_list_first (children);
+        }
         while (child_tree) {
             if (internal_select_resources (h, rsapi, child_tree,
-                    resrc_reqst, selected_tree) &&
+                                           resrc_reqst, selected_tree,
+                                           reverse_order) &&
                 resrc_reqst_nfound (resrc_reqst) >=
                 resrc_reqst_reqrd_qty (resrc_reqst))
                 break;
-            child_tree = resrc_tree_list_next (children);
+            if (reverse_order) {
+                child_tree = resrc_tree_list_prev (children);
+            } else {
+                child_tree = resrc_tree_list_next (children);
+            }
         }
     }
 
@@ -333,12 +355,16 @@ resrc_tree_t *select_resources (flux_t *h, resrc_api_ctx_t *rsapi,
                                 resrc_reqst_t *resrc_reqst,
                                 resrc_tree_t *selected_parent)
 {
+    bool is_reservation = (resrc_reqst_starttime (resrc_reqst) > current_time);
     resrc_t *resrc = resrc_tree_resrc (found_tree);
-    resrc_tree_t *selected_tree = internal_select_resources (h, rsapi, resrc_phys_tree (resrc), resrc_reqst, NULL);
-    if (resrc_reqst_starttime (resrc_reqst) > current_time) {
+    resrc_tree_t *selected_tree = internal_select_resources (h, rsapi,
+                                                             resrc_phys_tree (resrc),
+                                                             resrc_reqst, NULL,
+                                                             is_reservation);
+    if (is_reservation) {
         // trigger the reserve_resources in sched.c by making
         // resrc_reqst_all_found return false
-        resrc_reqst_clear_found (resrc_reqst);
+       resrc_reqst_clear_found (resrc_reqst);
     }
     // trigger the allocate_resources in sched.c since
     // resrc_reqst_all_found will return true
@@ -404,6 +430,7 @@ int reserve_resources (flux_t *h, resrc_api_ctx_t *rsapi,
                       resrc_reqst_reqrd_qty (resrc_reqst), job_id,
                       reservation_starttime + 1,
                       reservation_starttime + 1 + walltime);
+            //flux_log (h, LOG_DEBUG, "Reserved tree:\n%s", resrc_tree_to_string (*selected_tree));
         }
     }
 
