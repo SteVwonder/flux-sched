@@ -176,6 +176,7 @@ int rsreader_hwloc_load (const char *buf, size_t len, uint32_t rank,
         goto done;
     if (hwloc_topology_set_xmlbuffer (topo, buf, len) != 0)
         goto err;
+    hwloc_topology_set_flags(topo, HWLOC_TOPOLOGY_FLAG_IS_THISSYSTEM);
     if (hwloc_topology_load (topo) != 0)
         goto err;
     if (rs2rank_set_signature ((char*)buf, len, topo, &sig) != 0)

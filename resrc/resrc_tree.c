@@ -319,7 +319,7 @@ void resrc_tree_unstage_resources (resrc_tree_t *resrc_tree)
 void resrc_tree_idle_resources (resrc_tree_t *resrc_tree)
 {
     if (resrc_tree) {
-        resrc_set_state (resrc_tree->resrc, RESOURCE_IDLE);
+        resrc_idle_resource (resrc_tree->resrc);
         if (resrc_tree_num_children (resrc_tree))
             resrc_tree_list_idle_resources (resrc_tree->children);
     }

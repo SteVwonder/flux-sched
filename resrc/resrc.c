@@ -2261,6 +2261,23 @@ void resrc_hash_flux_log (flux_t h, zhash_t *hash)
         }
 }
 
+void resrc_idle_resource (resrc_t *resrc)
+{
+    resrc_set_state (resrc, RESOURCE_IDLE);
+    zhash_destroy (&resrc->twindow);
+    resrc->twindow = zhash_new ();
+
+    if ((!strncmp (resrc->type, "node", 5)) || (!strncmp (resrc->type, "core", 5))) {
+        JSON w = Jnew ();
+        Jadd_int64 (w, "starttime", epochtime ());
+        Jadd_int64 (w, "endtime", TIME_MAX);
+        char *json_str = xstrdup (Jtostr (w));
+        zhash_insert (resrc->twindow, "0", (void *) json_str);
+        zhash_freefn (resrc->twindow, "0", free);
+        Jput (w);
+    }
+}
+
 /*
  * vi: ts=4 sw=4 expandtab
  */

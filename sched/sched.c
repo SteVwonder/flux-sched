@@ -278,15 +278,17 @@ static inline int ssrvarg_process_args (int argc, char **argv, ssrvarg_t *a)
          a->verbosity = strtol(vlevel, (char **)NULL, 10);
          free (vlevel);
     }
+    if (jobid_str) {
+        a->my_job_id = strtol (jobid_str, NULL, 10);
+    }
     if (a->sim) {
         a->r_mode = RSREADER_RESRC_EMUL;
     } else if (a->path) {
         a->r_mode = RSREADER_RESRC;
+    } else if (a->my_job_id > 0) {
+        a->r_mode = RSREADER_HIERARCHICAL;
     } else {
         a->r_mode = RSREADER_HWLOC;
-    }
-    if (jobid_str) {
-        a->my_job_id = strtol (jobid_str, NULL, 10);
     }
 done:
     return rc;
@@ -739,6 +741,22 @@ static int load_resources (ssrvctx_t *ctx)
     setup_rdl_lua (ctx->h);
 
     switch (r_mode) {
+    case RSREADER_HIERARCHICAL:
+        flux_log (ctx->h, LOG_DEBUG, "Going to load RDL from parent KVS");
+        rc = load_rdl_from_parent_kvs (ctx);
+        resrc_tree_idle_resources (resrc_phys_tree (ctx->rctx.root_resrc));
+        flux_log (ctx->h, LOG_INFO, "%s: loaded resrc", __FUNCTION__);
+        if (build_hwloc_rs2rank (ctx, RSREADER_RESRC_EMUL) < 0) {
+            flux_log (ctx->h, LOG_ERR, "failed to build rs2rank");
+            goto done;
+        }
+        flux_log (ctx->h, LOG_INFO, "%s: built rs2rank from hwloc", __FUNCTION__);
+        if (ctx->arg.verbosity > 0) {
+            flux_log (ctx->h, LOG_DEBUG, "%s: Printing resource in root_resrc tree", __FUNCTION__);
+            resrc_tree_flux_log (ctx->h, resrc_phys_tree (ctx->rctx.root_resrc));
+        }
+        break;
+
     case RSREADER_RESRC_EMUL:
         if (ctx->my_job_id > 0) {
             flux_log (ctx->h, LOG_DEBUG, "Going to load RDL from parent KVS");
@@ -2117,6 +2135,9 @@ static inline int bridge_rs2rank_tab_query (ssrvctx_t *ctx, resrc_t *r,
                                         false, rank);
         */
         rc = 0;
+    } else if (ctx->my_job_id > 0) {
+        flux_log (ctx->h, LOG_DEBUG, "hostname: %s", resrc_name (r));
+        rc = rs2rank_tab_query_by_hn (ctx->machs, resrc_name (r), false, rank);
     } else {
         flux_log (ctx->h, LOG_DEBUG, "hostname: %s, digest: %s", resrc_name (r),
                                      resrc_digest (r));

@@ -234,5 +234,6 @@ void resrc_set_sim_time (int64_t t);
 void resrc_flux_log (flux_t h, resrc_t *resrc);
 void resrc_hash_flux_log (flux_t h, zhash_t *hash);
 
+void resrc_idle_resource (resrc_t *resrc);
 
 #endif /* !FLUX_RESRC_H */

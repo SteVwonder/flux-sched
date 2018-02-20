@@ -34,6 +34,7 @@ typedef enum {
      RSREADER_RESRC_EMUL,
      RSREADER_RESRC,
      RSREADER_HWLOC,
+     RSREADER_HIERARCHICAL,
      RSREADER_FOR_RENT
 } rsreader_t;
 

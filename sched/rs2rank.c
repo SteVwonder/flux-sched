@@ -166,6 +166,27 @@ void rs2rank_tab_destroy (machs_t *m)
     }
 }
 
+int rs2rank_tab_query_by_hn (machs_t *m, const char *hn, bool reset, uint32_t *rank)
+{
+    int rc = -1;
+    zhash_t *partab = NULL;
+    partition_t *part = NULL;
+    if (!host_seen (m->tab, hn))
+        goto done;
+    if (!(partab = zhash_lookup (m->tab, hn)))
+        goto done;
+    if (!(part = zhash_first (partab)))
+        goto done;
+    if (reset)
+        part->rrobin = 0;
+    if (get_rank_rrobin (part, rank) != 0)
+        goto done;
+
+    rc = 0;
+done:
+    return rc;
+}
+
 int rs2rank_tab_query_by_sign (machs_t *m, const char *hn, const char *digest,
                                 bool reset, uint32_t *rank)
 {

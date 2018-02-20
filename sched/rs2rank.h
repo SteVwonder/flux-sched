@@ -58,6 +58,16 @@ const char *rs2rank_tab_eq_by_none (machs_t *m);
  */
 int rs2rank_tab_update (machs_t *m, const char *hn, rssig_t *s, uint32_t rank);
 
+/* Return a broker rank that manages the resource partition given by
+ * hostname hn.  If multiple partitions come from the same hostname,
+ * the "first" partition is chosen.  If multiple ranks manage the
+ * partition in a shared fashion, return a rank in round robin from
+ * the equivalent ranks set (wrapped to the first rank in the end).
+ * Passing true to reset will return the first rank of this ranks set
+ * by resetting the iterator.
+ */
+int rs2rank_tab_query_by_hn (machs_t *m, const char *hn, bool reset, uint32_t *rank);
+
 /* Return a broker rank that manages the resource partition
  * given by hostname hn and digest. If multiple ranks manage the partition
  * in a shared fashion, return a rank in round robin from the equivalent
