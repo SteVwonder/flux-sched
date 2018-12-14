@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <argz.h>
 #include <libgen.h>
 #include <errno.h>
 #include <libgen.h>
@@ -141,6 +142,7 @@ typedef struct {
     char         *path;
     char         *uri;
     char         *userplugin;
+    char         *userplugin_opts;
     bool          sim;
     bool          schedonce;          /* Use resources only once */
     bool          fail_on_error;      /* Fail immediately on error */
@@ -197,6 +199,7 @@ static inline void ssrvarg_init (ssrvarg_t *arg)
     arg->path = NULL;
     arg->uri = NULL;
     arg->userplugin = NULL;
+    arg->userplugin_opts = NULL;
     arg->sim = false;
     arg->schedonce = false;
     arg->fail_on_error = false;
@@ -213,6 +216,8 @@ static inline void ssrvarg_free (ssrvarg_t *arg)
         free (arg->uri);
     if (arg->userplugin)
         free (arg->userplugin);
+    if (arg->userplugin_opts)
+        free (arg->userplugin_opts);
     if (arg->module_name_prefix)
         free (arg->module_name_prefix);
     if (arg->sim_uri)
@@ -244,6 +249,8 @@ static inline int ssrvarg_process_args (int argc, char **argv, ssrvarg_t *a)
             sim = xstrdup (strstr (argv[i], "=") + 1);
         } else if (!strncmp ("plugin=", argv[i], sizeof ("plugin"))) {
             a->userplugin = xstrdup (strstr (argv[i], "=") + 1);
+        } else if (!strncmp ("plugin-opts=", argv[i], sizeof ("plugin-opts"))) {
+            a->userplugin_opts = xstrdup (strstr (argv[i], "=") + 1);
         } else if (!strncmp ("jobid=", argv[i], sizeof ("jobid"))) {
             jobid_str = xstrdup (strstr (argv[i], "=") + 1);
         } else if (!strncmp ("prefix=", argv[i], sizeof ("prefix"))) {
@@ -496,6 +503,29 @@ static inline bool is_newjob (JSON jcb)
     int64_t os = J_NULL, ns = J_NULL;
     get_states (jcb, &os, &ns);
     return ((os == J_NULL) && (ns == J_NULL))? true : false;
+}
+
+static int plugin_process_args (ssrvctx_t *ctx, char *userplugin_opts)
+{
+    int rc = -1;
+    char *argz = NULL;
+    size_t argz_len = 0;
+    struct sched_plugin *plugin = sched_plugin_get (ctx->loader);
+
+    if (userplugin_opts) {
+        argz_create_sep (userplugin_opts, ',', &argz, &argz_len);
+
+        if (plugin->process_args (ctx->h, argz, argz_len) < 0) {
+            goto done;
+        }
+    }
+    rc = 0;
+
+ done:
+    if (argz)
+        free (argz);
+
+    return rc;
 }
 
 /********************************************************************************
@@ -2481,6 +2511,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
     if (!resrc_reqst)
         goto done;
 
+#if 0
     int i = 0;
     flux_lwj_t *curr_prev_attempt = NULL;
     for (curr_prev_attempt = (flux_lwj_t*) zlist_first (ctx->prev_attempts);
@@ -2503,7 +2534,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
             goto done;
         }
     }
-
+#endif
 
 
     flux_log (h, LOG_DEBUG, "%s: Starting finding resources", __FUNCTION__);
@@ -3801,6 +3832,10 @@ int mod_main (flux_t h, int argc, char **argv)
     if (ctx->arg.userplugin) {
         if (sched_plugin_load (ctx->loader, ctx->arg.userplugin) < 0) {
             flux_log_error (h, "failed to load %s", ctx->arg.userplugin);
+            goto done;
+        }
+        if (plugin_process_args (ctx, ctx->arg.userplugin_opts) < 0) {
+            flux_log_error (h, "failed to process args for %s", ctx->arg.userplugin);
             goto done;
         }
         flux_log (h, LOG_INFO, "%s plugin loaded", ctx->arg.userplugin);

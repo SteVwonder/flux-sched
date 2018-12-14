@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <argz.h>
 #include <errno.h>
 #include <libgen.h>
 #include <czmq.h>
@@ -46,7 +47,7 @@ static bool select_children (flux_t h, resrc_tree_list_t *found_children,
                              resrc_reqst_list_t *reqst_children,
                              resrc_tree_t *parent_tree);
 
-int sched_loop_setup (void)
+int sched_loop_setup (flux_t h)
 {
     return 0;
 }
@@ -275,6 +276,10 @@ int reserve_resources (flux_t h, resrc_tree_list_t *rtl, int64_t job_id,
     return rc;
 }
 
+int process_args (flux_t h, char *argz, size_t argz_len)
+{
+    return 0;
+}
 
 MOD_NAME ("sched.fcfs");
 
