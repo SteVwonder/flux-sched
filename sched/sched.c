@@ -1029,7 +1029,7 @@ static void trigger_cb (flux_t *h,
     ctx->sctx.sim_state->sim_time += seconds;
     if (sched_loop) {
         flux_log (h,
-                  LOG_DEBUG,
+                  LOG_INFO,
                   "scheduler timer: events + loop took %f seconds",
                   seconds);
     } else {
