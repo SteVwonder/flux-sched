@@ -42,6 +42,8 @@
 #include "scheduler.h"
 
 static int queue_depth = SCHED_PARAM_Q_DEPTH_DEFAULT;
+static int num_allocated_jobs = 0;
+static bool reservation_attempted = false;
 
 static bool select_children (flux_t *h, resrc_api_ctx_t *rsapi,
                              resrc_tree_list_t *children,
@@ -58,12 +60,17 @@ int get_sched_properties (flux_t *h, struct sched_prop *prop)
     if (!prop)
         return -1;
 
-    prop->out_of_order_capable = (queue_depth > 1)? true : false;
+    prop->out_of_order_capable = false;
     return 0;
 }
 
-int sched_loop_setup (flux_t *h)
+int sched_loop_setup (flux_t *h, int64_t starttime)
 {
+    flux_log(h, LOG_INFO, "%s: previous loop allocated %d jobs",
+             __FUNCTION__, num_allocated_jobs);
+    num_allocated_jobs = 0;
+    reservation_attempted = false;
+
     return 0;
 }
 
@@ -89,6 +96,10 @@ int64_t find_resources (flux_t *h, resrc_api_ctx_t *rsapi,
         flux_log (h, LOG_ERR, "%s: invalid arguments", __FUNCTION__);
         goto ret;
     }
+    if (reservation_attempted) {
+        goto ret;
+    }
+
     /*
      * A start time of zero is used to restrict the search to now
      * (appropriate for FCFS) and prevent any search into the future.
@@ -263,9 +274,8 @@ int reserve_resources (flux_t *h, resrc_api_ctx_t *rsapi,
 {
     int rc = -1;
 
-    /* If queue_depth is 1, this scheduler isn't out-of-order capable */
-    if (queue_depth > 1 && *selected_tree)
-        rc = resrc_tree_reserve (*selected_tree, job_id, 0, 0);
+    reservation_attempted = true;
+
     return rc;
 }
 

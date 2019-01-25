@@ -1594,6 +1594,7 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
         resrc_reqst_clear_found (resrc_reqst);
         if ((selected_tree = plugin->select_resources (h, ctx->rsapi, found_tree,
                                                        resrc_reqst, NULL))) {
+            flux_log (h, LOG_DEBUG, "%s: select_resources didn't mess up for job %"PRId64"", __FUNCTION__, job->lwj_id);
             if (resrc_reqst_all_found (resrc_reqst)) {
                 plugin->allocate_resources (h, ctx->rsapi,
                                             selected_tree, job->lwj_id,
@@ -1619,20 +1620,46 @@ int schedule_job (ssrvctx_t *ctx, flux_lwj_t *job, int64_t starttime)
                           resrc_type (resrc_reqst_resrc (resrc_reqst)),
                           job->lwj_id);
             } else {
+                flux_log (h, LOG_DEBUG, "%s: Attempting to reserve job %"PRId64"", __FUNCTION__, job->lwj_id);
                 rc = plugin->reserve_resources (h, ctx->rsapi,
                                                 &selected_tree, job->lwj_id,
                                                 starttime, job->req->walltime,
                                                 GET_ROOT_RESRC(ctx->rsapi),
                                                 resrc_reqst);
                 if (rc) {
+                    flux_log (h, LOG_DEBUG, "%s: reservation failed for job %"PRId64"", __FUNCTION__, job->lwj_id);
                     resrc_tree_destroy (ctx->rsapi, selected_tree, false, false);
                     job->resrc_tree = NULL;
                 } else {
                     if (job->resrc_tree != NULL)
                         resrc_tree_destroy (ctx->rsapi, job->resrc_tree, false, false);
                     job->resrc_tree = selected_tree;
+                    flux_log (h, LOG_DEBUG, "%s: reservation succeeded for job %"PRId64"", __FUNCTION__, job->lwj_id);
                 }
             }
+        } else {
+            flux_log (h, LOG_ERR, "%s: Yeah, things have gone terribly wrong on job %"PRId64"", __FUNCTION__, job->lwj_id);
+        }
+    } else {
+        flux_log (h, LOG_DEBUG, "Found %"PRId64" %s(s) for job %"PRId64", "
+                  "required: %"PRId64"", nfound,
+                  resrc_type (resrc_reqst_resrc (resrc_reqst)), job->lwj_id,
+                  nreqrd);
+        flux_log (h, LOG_DEBUG, "%s: Attempting to reserve job %"PRId64"", __FUNCTION__, job->lwj_id);
+        rc = plugin->reserve_resources (h, ctx->rsapi,
+                                        &selected_tree, job->lwj_id,
+                                        starttime, job->req->walltime,
+                                        GET_ROOT_RESRC(ctx->rsapi),
+                                        resrc_reqst);
+        if (rc) {
+            flux_log (h, LOG_DEBUG, "%s: reservation failed for job %"PRId64"", __FUNCTION__, job->lwj_id);
+            resrc_tree_destroy (ctx->rsapi, selected_tree, false, false);
+            job->resrc_tree = NULL;
+        } else {
+            if (job->resrc_tree != NULL)
+                resrc_tree_destroy (ctx->rsapi, job->resrc_tree, false, false);
+            job->resrc_tree = selected_tree;
+            flux_log (h, LOG_DEBUG, "%s: reservation succeeded for job %"PRId64"", __FUNCTION__, job->lwj_id);
         }
     }
     rc = 0;
@@ -1660,6 +1687,9 @@ static int schedule_jobs (ssrvctx_t *ctx)
     int64_t starttime = (ctx->sctx.in_sim) ?
         (int64_t) ctx->sctx.sim_state->sim_time : epochtime();
 
+    clock_t start, diff;
+    start = clock ();
+
     if (priority_plugin)
         priority_plugin->prioritize_jobs (ctx->h, jobs);
     if (!behavior_plugin)
@@ -1669,15 +1699,24 @@ static int schedule_jobs (ssrvctx_t *ctx)
     zlist_sort (jobs, compare_priority);
     if (ctx->ooo_capable)
         resrc_tree_release_all_reservations (resrc_tree_root (ctx->rsapi));
-    rc = behavior_plugin->sched_loop_setup (ctx->h);
+    rc = behavior_plugin->sched_loop_setup (ctx->h, starttime);
     job = zlist_first (jobs);
     while (!rc && job && (qdepth < ctx->arg.s_params.queue_depth)) {
         if (job->state == J_SCHEDREQ) {
+            flux_log (ctx->h, LOG_DEBUG, "%s: attempting to schedule job %"PRId64", which is %d out of %zu",
+                      __FUNCTION__, job->lwj_id, qdepth, zlist_size(jobs));
             rc = schedule_job (ctx, job, starttime);
         }
         job = (flux_lwj_t*)zlist_next (jobs);
         qdepth++;
     }
+
+    diff = clock () - start;
+    double seconds = ((double)diff) / CLOCKS_PER_SEC;
+    flux_log (ctx->h,
+              LOG_INFO,
+              "scheduler timer: events + loop took %f seconds",
+              seconds);
 
     return rc;
 }

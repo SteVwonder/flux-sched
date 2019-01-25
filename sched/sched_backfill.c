@@ -44,6 +44,8 @@
 
 static int reservation_depth = 1;
 static int curr_reservation_depth = 0;
+static int curr_allocation_depth = 0;
+static zlist_t *all_completion_times = NULL;
 static zlist_t *completion_times = NULL;
 
 #if CZMQ_VERSION < CZMQ_MAKE_VERSION(3, 0, 1)
@@ -83,11 +85,47 @@ int get_sched_properties (flux_t *h, struct sched_prop *prop)
     return 0;
 }
 
-int sched_loop_setup (flux_t *h)
+static int insert_int64_into_zlist(zlist_t *list, int64_t value)
 {
-    curr_reservation_depth = 0;
-    if (!completion_times)
+    int64_t *new_value = xzmalloc (sizeof(int64_t));
+    *new_value = value;
+    int rc = zlist_append (list, new_value);
+    zlist_freefn (list, new_value, free, true);
+    return rc;
+}
+
+int sched_loop_setup (flux_t *h, int64_t starttime)
+{
+    if (completion_times) {
+        flux_log(h, LOG_INFO, "%s: previous loop reserved %d jobs (with %zu completion times) and allocated %d jobs",
+                 __FUNCTION__, curr_reservation_depth, zlist_size(completion_times), curr_allocation_depth);
+        zlist_sort (completion_times, compare_int64_ascending);
+    } else {
         completion_times = zlist_new ();
+    }
+
+    if (all_completion_times) {
+        zlist_purge (all_completion_times);
+        int64_t *completion_time = NULL;
+        for (completion_time = zlist_first (completion_times);
+             completion_time != NULL;
+             completion_time = zlist_next (completion_times)) {
+
+            /* Purge past times from consideration */
+            if (*completion_time < starttime) {
+                zlist_remove (completion_times, completion_time);
+                continue;
+            }
+
+            /* Copy to all_completion_times for use in reserve_resources */
+            insert_int64_into_zlist(all_completion_times, *completion_time);
+        }
+        zlist_sort (all_completion_times, compare_int64_ascending);
+    } else {
+        all_completion_times = zlist_new ();
+    }
+    curr_reservation_depth = 0;
+    curr_allocation_depth = 0;
     return 0;
 }
 
@@ -264,12 +302,11 @@ int allocate_resources (flux_t *h, resrc_api_ctx_t *rsapi,
         rc = resrc_tree_allocate (selected_tree, job_id, starttime, endtime);
 
         if (!rc) {
-            int64_t *completion_time = xzmalloc (sizeof(int64_t));
-            *completion_time = endtime;
-            rc = zlist_append (completion_times, completion_time);
-            zlist_freefn (completion_times, completion_time, free, true);
+            rc += insert_int64_into_zlist(completion_times, endtime);
+            rc += insert_int64_into_zlist(all_completion_times, endtime);
             flux_log (h, LOG_DEBUG, "Allocated job %"PRId64" from %"PRId64" to "
-                      "%"PRId64"", job_id, starttime, *completion_time);
+                      "%"PRId64"", job_id, starttime, endtime);
+            curr_allocation_depth++;
         }
     }
 
@@ -316,16 +353,11 @@ int reserve_resources (flux_t *h, resrc_api_ctx_t *rsapi,
         resrc_tree_destroy (rsapi, *selected_tree, false, false);
         *selected_tree = NULL;
     }
-    zlist_sort (completion_times, compare_int64_ascending);
+    zlist_sort (all_completion_times, compare_int64_ascending);
 
-    for (completion_time = zlist_first (completion_times);
+    for (completion_time = zlist_first (all_completion_times);
          completion_time;
-         completion_time = zlist_next (completion_times)) {
-        /* Purge past times from consideration */
-        if (*completion_time < starttime) {
-            zlist_remove (completion_times, completion_time);
-            continue;
-        }
+         completion_time = zlist_next (all_completion_times)) {
         /* Don't test the same time multiple times */
         if (prev_completion_time == *completion_time)
             continue;
@@ -356,6 +388,8 @@ int reserve_resources (flux_t *h, resrc_api_ctx_t *rsapi,
                               resrc_reqst_reqrd_qty (resrc_reqst), job_id,
                               *completion_time + 1,
                               *completion_time + 1 + walltime);
+                    rc = insert_int64_into_zlist(all_completion_times,
+                                                 *completion_time + 1 + walltime);
                 }
                 break;
             }
