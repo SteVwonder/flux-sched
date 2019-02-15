@@ -1,3 +1,5 @@
+This is flux-sched snapshot compiles against flux-core:3bd59f3198f1beb36c6a79bcea39009b328fb697.
+
 [![Build Status](https://travis-ci.org/flux-framework/flux-sched.svg?branch=master)](https://travis-ci.org/flux-framework/flux-sched)
 [![Coverage Status](https://coveralls.io/repos/flux-framework/flux-sched/badge.svg?branch=master&service=github)](https://coveralls.io/github/flux-framework/flux-sched?branch=master)
 
