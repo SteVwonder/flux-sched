@@ -1,3 +1,5 @@
+This snapshot of flux-sched compiles against stevwonder/flux-core:a076a709c46bf4622b5dc81752bd3e3c2667f04e
+
 [![Build Status](https://travis-ci.org/flux-framework/flux-sched.svg?branch=master)](https://travis-ci.org/flux-framework/flux-sched)
 [![Coverage Status](https://coveralls.io/repos/flux-framework/flux-sched/badge.svg?branch=master&service=github)](https://coveralls.io/github/flux-framework/flux-sched?branch=master)
 
